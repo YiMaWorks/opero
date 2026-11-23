@@ -5,7 +5,7 @@
 //     spawn  起一个进程：as = ai 时以 opero-ai 用户跑（Claude Code / Codex / 装执行器 / 登录），as = root 时以 root 跑（服务器上的命令、git）
 //     stdin  往进程里写 / 关掉输入；kill 停掉；write 放一个文件（聊天里发给员工的图片 / 文件）
 //   输出攒一下（150ms）一起交回去；每 30 秒报一次心跳（CPU / 内存 / 磁盘 / 系统 / 装了哪些执行器）。
-// 只用 Node 自带的东西，不 import 后台的模块。
+// 只用 Node 自带的东西，不 import 后台的模块（sysinfo.ts 除外：它也只用 Node 自带的）。
 import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
@@ -15,6 +15,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { sysInfo } from './sysinfo.ts'
 
 const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')).version } catch { return '0.0.0' } })()
 const DIR = process.env.OPERO_AGENT_DIR || '/var/lib/opero-agent'
@@ -354,7 +355,7 @@ let execs: { claude: string | null; codex: string | null } | null = null
 let execsAt = 0
 async function beat() {
   if (!execs || Date.now() - execsAt > 5 * 60_000) { execs = { claude: await version('claude'), codex: await version('codex') }; execsAt = Date.now() }
-  await api('POST', '/api/agent/health', { cpu: cpuPct(), mem: memPct(), disk: diskPct(), os: osName(), version: VERSION, hostname: os.hostname(), executors: execs, proxy: proxyUp ? { port: PROXY_PORT, token: PROXY_TOKEN } : null })
+  await api('POST', '/api/agent/health', { cpu: cpuPct(), mem: memPct(), disk: diskPct(), os: osName(), version: VERSION, hostname: os.hostname(), sys: sysInfo(), executors: execs, proxy: proxyUp ? { port: PROXY_PORT, token: PROXY_TOKEN } : null })
 }
 
 // ---------- 主循环 ----------

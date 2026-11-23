@@ -10,6 +10,7 @@ import { PassThrough, Writable } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { all, get, put, uid } from './db.ts'
 import { emit } from './bus.ts'
+import { cleanSys } from './sysinfo.ts'
 import { audit } from './chat.ts'
 import { sha } from './auth.ts'
 import * as keys from './keys.ts'
@@ -118,9 +119,9 @@ export function pub(sv: Server) {
   return { ...rest, via: sv.via ?? (sv.id === 'local' ? 'local' : isAgent(sv) ? 'agent' : 'ssh') }
 }
 
-export function health(sv: Server, b: any) {
+export function health(sv: Server, b: any, ip?: string) {
   const next: Server = {
-    ...sv, lastSeen: Date.now(), online: true, error: undefined,
+    ...sv, lastSeen: Date.now(), online: true, error: undefined, ip: ip || sv.ip, sys: cleanSys(b.sys) ?? sv.sys,
     cpu: num(b.cpu), mem: num(b.mem), disk: num(b.disk), os: String(b.os || sv.os || ''), agentVersion: String(b.version || sv.agentVersion || ''),
     executors: b.executors && typeof b.executors === 'object' ? { claude: b.executors.claude ?? null, codex: b.executors.codex ?? null } : sv.executors,
     // 那台本机的出口代理（只听 127.0.0.1）：端口和口令，给跑在那台的执行器配 HTTPS_PROXY

@@ -1,4 +1,4 @@
-// 接 AI 执行器（傻瓜式，照 KidLock）：① 一键安装 ② 登录（Claude 订阅：点按钮 → 浏览器里批准 → 贴回授权码；或者填 API Key）③ 测试。
+// 接 AI 执行器（傻瓜式）：① 一键安装 ② 登录（Claude 订阅：点按钮 → 浏览器里批准 → 贴回授权码；或者填 API Key）③ 测试。
 // 全程不用碰服务器命令行；安装、登录都由 Opero 在服务器上替你做（code/server/src/executors.ts）。
 import { useEffect, useRef, useState } from 'react'
 import { call } from '../live'

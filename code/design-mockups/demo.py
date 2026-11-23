@@ -172,8 +172,8 @@ def frame(t):
     s.rect(px + 10, py + 44, pw - 20, 56, 0, "#FFFFFF")
     s.text(px + 28, py + 78, "‹", 22, SUB)
     emp_avatar(s, px + 48, py + 56, "值", 32)
-    s.text(px + 90, py + 70, pick("mov 日志值班", "Log Watch"), 14.5, INK, 700)
-    s.text(px + 90, py + 88, pick("在盯 mov 三个服务", "Watching 3 mov services"), 11, FAINT)
+    s.text(px + 90, py + 70, pick("shop 日志值班", "Log Watch"), 14.5, INK, 700)
+    s.text(px + 90, py + 88, pick("在盯 shop 三个服务", "Watching 3 shop services"), 11, FAINT)
     # 输入条
     s.rect(px + 10, py + ph - 74, pw - 20, 54, 0, "#FFFFFF")
     s.add(f'<rect x="{px+24}" y="{py+ph-64}" width="{pw-100}" height="34" rx="17" fill="#F4F5F8"/>')

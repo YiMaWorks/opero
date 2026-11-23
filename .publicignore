@@ -7,6 +7,17 @@
 /docs/开源发布.md
 /docs/项目总纲.md
 /docs/Git管理.md
+/docs/README.md
+/docs/需求.md
+/docs/方案路线.md
+/docs/主线场景.md
+/docs/功能清单.md
+/docs/底座缺口.md
+/docs/传统后台映射.md
+/docs/调研-MCP现状.md
+/docs/调研-agent-CLI.md
+/docs/界面草图/
+/docs/界面设计/
 /deploy/
 /CLAUDE.md
 /AGENTS.md

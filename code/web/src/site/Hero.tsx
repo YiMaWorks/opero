@@ -13,7 +13,7 @@ const TXT = {
     sub: 'Claude Code / Codex 员工跑在你的服务器上，账号在你手上、AI 拿不到；你在手机上只做决定。',
     demo: '在线试用', star: 'GitHub', copy: '复制', copied: '已复制',
     works: '支持',
-    chat: { name: 'mov 日志值班', sub: '在盯 3 个服务', issue: '支付签名失败 37 次', cause: '微信证书换了，代码还用旧的', fix: '修复', watch: '先盯着', me: '修复，修好直接发', dev: '开发：在分支上改好了，检查全过', live: 'v1.4.2 已上线 ✓', liveSub: '盯了 10 分钟，没再报错' },
+    chat: { name: 'shop 日志值班', sub: '在盯 3 个服务', issue: '支付签名失败 37 次', cause: '微信证书换了，代码还用旧的', fix: '修复', watch: '先盯着', me: '修复，修好直接发', dev: '开发：在分支上改好了，检查全过', live: 'v1.4.2 已上线 ✓', liveSub: '盯了 10 分钟，没再报错' },
     chips: ['CPU 34% · 内存 82%', '密码在你手上，AI 拿不到', '手机上点两下'],
   },
   en: {

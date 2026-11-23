@@ -1,5 +1,5 @@
-// AI 出口（照 KidLock「走 agent 出海」：复用 Agent 本来就有的「Agent → Opero」连接，不用新开端口）。
-// KidLock 是一次请求交给出海 Agent 代发；Claude Code / Codex 是长连接、流式的，所以这里做成「隧道」：
+// AI 出口：复用 Agent 本来就有的「Agent → Opero」连接，不用新开端口。
+// Claude Code / Codex 是长连接、流式的，所以做成「隧道」：
 //   干活那台上，执行器的 HTTPS_PROXY 指向本机一个只听 127.0.0.1 的代理（Opero 这台：后台自己开；别的服务器：Agent 开），带口令；
 //   代理收到 CONNECT api.anthropic.com:443 → 经 Opero 转给选作出口的那台（Agent，或 Opero 这台自己）→ 那台去连 → 两头原样转字节（TLS 端到端，中间看不到内容）。
 //   出口只连 AI 相关的域名（ALLOW），连之前查一下解析出来的不是内网 / 本机 / 云元数据地址（防 SSRF），只许 443。

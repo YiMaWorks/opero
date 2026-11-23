@@ -47,7 +47,7 @@ import org.json.JSONObject
 
 /**
  * Opero App 就这一个界面：WebView 打开你自己那套 Opero 的网页（界面全在网页里，加功能不用发 App）。
- * 外壳只管网页做不了的（照 KidLock 安卓）：常驻推送、指纹（解锁 App / 验证本人）、点通知直达会话、选文件 / 拍照、麦克风、App 内更新。
+ * 外壳只管网页做不了的：常驻推送、指纹（解锁 App / 验证本人）、点通知直达会话、选文件 / 拍照、麦克风、App 内更新。
  *
  * 打开时：
  *   - 没连过 → 外壳自带的「连接你的 Opero」页（assets/pair.html）

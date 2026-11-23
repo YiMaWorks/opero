@@ -1,8 +1,8 @@
 # App 外壳规范（安卓，v0.1，2026-11-22）
 
-> 已定：App 外壳、网页风格参考 KidLock（那边做了很多）。代码在 `code/android/`，网页那边是 `code/web/src/native.ts`。
-> 从 KidLock 安卓借来的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 30 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
-> **没照搬的**：KidLock 的聊天、卡片、表单全是原生 Compose，每种卡片网页和 App 各写一遍、加一种卡片就要发 App（它的痛点 #2）。Opero 的界面**全在网页里**，外壳只做网页做不了的事；加功能只发网页，不用发 App。
+> 代码在 `code/android/`，网页那边是 `code/web/src/native.ts`。
+> 外壳做的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 30 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
+> 聊天、卡片、表单不用原生写：如果每种卡片网页和 App 各写一遍，加一种卡片就要发 App。Opero 的界面**全在网页里**，外壳只做网页做不了的事；加功能只发网页，不用发 App。
 
 ## 1. 外壳管什么、不管什么
 
@@ -17,7 +17,7 @@
 | 状态栏 / 导航栏颜色跟网页的深浅色 | 主题 |
 | App 内更新（只有外壳本身要更新时） | 网页随 Opero 一起发版 |
 
-**一人一套带来的不同（和 KidLock 比）**：
+**一人一套带来的不同（和多人共用的后台比）**：
 - 没有固定服务器：第一次打开填自己那套的地址；一台手机连一套。
 - **没有厂商推送**（华为 / 荣耀 / 小米…）：厂商推送要 App 发行方的密钥在服务端发，不能发给每一套自建的 Opero。只靠常驻连接 + 每 15 分钟的看门狗补取（后台存 24 小时）。要在 App 被杀后也收到，用「通知发到哪」里的 Telegram / Slack / 邮件兜底。以后要做可以加一个官方中转（待确认）。
 - 没有账号密码：手机配对拿一个**设备令牌**（系统密钥库加密存），网页「我 → 账号安全 → 接手机」能看到、能断开。
@@ -53,7 +53,7 @@
 |---|---|---|
 | `POST /api/app/pair` `{code, deviceId, name, platform, appVersion}`（不带令牌） | 用网页给的 6 位配对码（10 分钟有效、用一次作废）换设备令牌 | `{deviceToken}` |
 | `POST /api/app/ticket` `{route}` | 要一张一次性的票（1 分钟有效） | `{url}`：打开它，后台种好登录 cookie 再跳到首页（带 route 就跳到那里） |
-| `POST /api/app/verified` | 这台手机刚验过本人：后台按「这次登录」记 30 分钟（同 KidLock `lib/reauth.js` 的 grace） | `{}` |
+| `POST /api/app/verified` | 这台手机刚验过本人：后台按「这次登录」记 30 分钟 | `{}` |
 | `POST /api/app/devices` `{deviceId, platform, brand, model, osVersion, appVersion, enabled}` | 登记这台手机 | `{}` |
 | `GET /api/app/push?device=&after=&wait=25` | 长轮询：没新的就等最多 25 秒；后台存 24 小时 | `{items: [PushItem], last}`；没这台手机回 `404 {code: "DEVICE_NOT_FOUND"}` |
 | `DELETE /api/app/devices/<deviceId>` | 断开 | `{}` |
@@ -77,8 +77,8 @@
 ## 5. 构建和发版
 
 - 版本号：`code/android/app/build.gradle.kts` 的 `versionName`（每次发改它，`versionCode` 也 +1）。
-- 流水线：组件 `android`（模板：装 JDK 21 + SDK，`assembleRelease`，取没签名的包）；依赖版本和 KidLock 安卓一致（那边在云效上编过）。
-- 签名：在超级后台的服务器上签（证书不进仓库、不进流水线）。**还缺 Opero 自己的签名证书**，需要在「签名证书」里建一个（`cn.yimakeji.opero`）。
+- 流水线：组件 `android`（模板：装 JDK 21 + SDK，`assembleRelease`，取没签名的包）；依赖版本见 `gradle/libs.versions.toml`（这组一起编过）。
+- 签名：发布时签（证书不进仓库、不进流水线）。
 
 ## 6. 还没做 / 以后
 

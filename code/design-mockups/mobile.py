@@ -72,16 +72,16 @@ yy = y + 118
 s.rect(x + 12, yy, SW - 24, 92, 14, C["warn_soft"])
 s.text(x + 26, yy + 26, "等我处理 · 1", 12.5, C["warn"], 600)
 s.avatar(x + 26, yy + 38, 40, "开")
-s.text(x + 76, yy + 56, "mov 开发", 14.5, C["text"], 600)
+s.text(x + 76, yy + 56, "shop 开发", 14.5, C["text"], 600)
 s.text(x + 76, yy + 77, "删除 2,300 行旧订单", 12.5, C["warn"])
 s.button_r(x + SW - 24, yy + 46, "去确认", "primary", h=30, size=12.5, pad=12)
 yy += 108
-rows = [("Y", "mov 日志值班", "● 在盯生产 · 6 分钟无新报错", "09:52", C["ok"], 0),
-        ("发", "发布", "mov-market v1.4.2 已上生产", "09:51", None, 0),
-        ("运", "运维", "AWS-dev 磁盘清理了 3.2 GB", "09:30", None, 2),
+rows = [("Y", "shop 日志值班", "● 在盯生产 · 6 分钟无新报错", "09:52", C["ok"], 0),
+        ("发", "发布", "shop-api v1.4.2 已上生产", "09:51", None, 0),
+        ("运", "运维", "dev-1 磁盘清理了 3.2 GB", "09:30", None, 2),
         ("总", "总调度", "已派给「发布」和「运维」", "昨天", None, 0),
-        ("管", "系统管家", "新员工「uugo 开发」建好了", "昨天", None, 0),
-        ("开", "uugo 开发", "首页改版做完了，预览链接…", "周一", None, 0)]
+        ("管", "系统管家", "新员工「crm 开发」建好了", "昨天", None, 0),
+        ("开", "crm 开发", "首页改版做完了，预览链接…", "周一", None, 0)]
 for av, name, last, t, col, badge in rows:
     s.rect(x, yy, SW, 74, 0, C["panel"])
     s.avatar(x + 18, yy + 14, 46, av)
@@ -109,7 +109,7 @@ caption(0, "会话列表：「等我处理」置顶，只有真要你决定的�
 
 # ---- 2 问题卡片 ----
 x, y = phone(1)
-header(x, y, "mov 日志值班", "Claude Code · AWS-dev", av="Y")
+header(x, y, "shop 日志值班", "Claude Code · dev-1", av="Y")
 yy = y + 124
 cards.system_line(s, x + SW / 2, yy, "09:41 · 日志扫描发现新异常")
 yy += 38
@@ -119,16 +119,16 @@ s.avatar(x + 12, yy, 26, "Y")
 yy += cards.card_file(s, x + 44, yy, SW - 58) + 14
 yy += cards.bubble_me(s, x + SW - 14, yy, "修，顺便把缓存问题一起处理") + 12
 s.avatar(x + 12, yy, 26, "Y")
-cards.status_line(s, x + 44, yy + 17, "派给「mov 开发」…", spinner=True)
+cards.status_line(s, x + 44, yy + 17, "派给「shop 开发」…", spinner=True)
 bottom_menu(x, y, ["问题清单", "日志扫描", "更多"])
 caption(1, "聊天：问题卡片 + 底部菜单 + 按住说话")
 
 # ---- 3 改动 + 发布 ----
 x, y = phone(2)
-header(x, y, "mov 日志值班", "Claude Code · AWS-dev", av="Y")
+header(x, y, "shop 日志值班", "Claude Code · dev-1", av="Y")
 yy = y + 120
 s.avatar(x + 12, yy, 26, "Y")
-cards.status_line(s, x + 44, yy + 17, "「mov 开发」改完了，检查通过")
+cards.status_line(s, x + 44, yy + 17, "「shop 开发」改完了，检查通过")
 yy += 32
 yy += cards.card_change(s, x + 44, yy, SW - 58, compact=True) + 12
 s.avatar(x + 12, yy, 26, "Y")

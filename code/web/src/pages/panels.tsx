@@ -37,7 +37,7 @@ export function DiffPage({ params, nav }: PageProps) {
           <p>签名不再用缓存的 key，每次从配置取；配置里的 merchantKey 变了就清签名缓存。</p>
         </div>
         <div className="panel-actions">
-          <button className="btn ghost" onClick={() => nav.openChat('mov-dev')}>对这里说…</button>
+          <button className="btn ghost" onClick={() => nav.openChat('shop-dev')}>对这里说…</button>
           {params.sid && <button className="btn default" onClick={() => { revertMerge(params.sid); nav.close?.() }}>撤销合并</button>}
         </div>
       </div>
@@ -57,7 +57,7 @@ export function QueryResultPage({ params, nav }: PageProps) {
             <Table cols={card.data.cols} rows={card.data.rows} bad={(v) => typeof v === 'string' && /failed|ERR/.test(v)} />
             <p className="sub">完整结果由界面直接向后台取（分页、排序、导出不经过 AI）。</p>
             <div className="panel-actions">
-              <button className="btn default" onClick={() => nav.push({ page: 'query', params: { source: 'mov-prod', sql: card.data.sql } })}>在查询台里打开</button>
+              <button className="btn default" onClick={() => nav.push({ page: 'query', params: { source: 'shop-prod', sql: card.data.sql } })}>在查询台里打开</button>
             </div>
           </>
         )}

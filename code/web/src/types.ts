@@ -154,13 +154,16 @@ export interface Issue {
 }
 
 // ---------- 应用（插件）：服务器、发布、凭证、数据、触发器 ----------
-export type EnvTag = '开发' | '测试' | '生产'
+/** 环境标签：随便起名、要几个都行；「改东西先确认」是单独的开关（protect） */
+export type EnvTag = string
 
 export interface Server {
   id: string
   name: string
   ip: string
   env: EnvTag
+  /** 员工在上面改东西先出确认卡片；没设过按标签猜（像生产的就开） */
+  protect?: boolean
   os: string
   agent: string
   online: boolean
@@ -176,6 +179,8 @@ export interface Server {
   agentVersion?: string
   lastSeen?: number
   executors?: { claude?: string | null; codex?: string | null }
+  /** 机器信息（Agent 心跳 / Opero 这台自己读，自动填） */
+  sys?: { hostname: string; os: string; kernel: string; arch: string; cpuModel: string; cores: number; memGb: number; diskGb: number; ips: string[]; uptime: number }
   error?: string
   port?: number
   user?: string
@@ -231,6 +236,7 @@ export interface DataSource {
   name: string
   kind: 'MySQL' | 'PostgreSQL'
   env: EnvTag
+  protect?: boolean
   host: string
   db: string
   writable: boolean

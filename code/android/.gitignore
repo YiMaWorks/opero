@@ -5,7 +5,7 @@ app/build/
 local.properties
 *.iml
 .idea/
-# 签名证书和密码不进 Git：签名在超级后台的服务器上做
+# 签名证书和密码不进 Git：在发布系统里签名
 *.jks
 *.keystore
 keystore.properties

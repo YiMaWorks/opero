@@ -38,18 +38,18 @@ s.text(LX + 18, y, "等我处理 · 1", 12, C["warn"], 600)
 y += 12
 s.rect(LX + 10, y, LW - 20, 64, 12, C["warn_soft"])
 s.avatar(LX + 20, y + 12, 40, "开")
-s.text(LX + 72, y + 29, "mov 开发", 14, C["text"], 600)
+s.text(LX + 72, y + 29, "shop 开发", 14, C["text"], 600)
 s.text(LX + LW - 22, y + 29, "10:20", 11.5, C["faint"], 400, "end")
 s.text(LX + 72, y + 50, "删除 2,300 行旧订单 · 要指纹", 12.5, C["warn"])
 y += 84
 s.text(LX + 18, y, "员工", 12, C["faint"], 600)
 y += 10
 rows = [
-    ("Y", "mov 日志值班", "● 在盯生产 · 6 分钟无新报错", "09:52", True, 0, C["ok"]),
-    ("发", "发布", "mov-market v1.4.2 已上生产", "09:51", False, 0, None),
-    ("运", "运维", "AWS-dev 磁盘清理了 3.2 GB", "09:30", False, 2, None),
+    ("Y", "shop 日志值班", "● 在盯生产 · 6 分钟无新报错", "09:52", True, 0, C["ok"]),
+    ("发", "发布", "shop-api v1.4.2 已上生产", "09:51", False, 0, None),
+    ("运", "运维", "dev-1 磁盘清理了 3.2 GB", "09:30", False, 2, None),
     ("总", "总调度", "已派给「发布」和「运维」", "昨天", False, 0, None),
-    ("管", "系统管家", "新员工「uugo 开发」建好了", "昨天", False, 0, None),
+    ("管", "系统管家", "新员工「crm 开发」建好了", "昨天", False, 0, None),
 ]
 for av, name, last, t, act, badge, st in rows:
     if act:
@@ -70,8 +70,8 @@ s.rect(CX, 0, CW, H, 0, C["bg"])
 s.rect(CX, 0, CW, 72, 0, C["panel"])
 s.line(CX, 72, CX + CW, 72)
 s.avatar(CX + 20, 16, 40, "Y")
-s.text(CX + 72, 34, "mov 日志值班", 16, C["text"], 600)
-s.text(CX + 72, 55, "mov 三个项目的线上问题 · Claude Code · AWS-dev", 12.5, C["sub"])
+s.text(CX + 72, 34, "shop 日志值班", 16, C["text"], 600)
+s.text(CX + 72, 55, "shop 三个项目的线上问题 · Claude Code · dev-1", 12.5, C["sub"])
 r = s.button_r(CX + CW - 20, 20, "···", "default", h=32, pad=10) - 8
 s.button_r(r, 20, "档案", "default", h=32)
 
@@ -84,7 +84,7 @@ s.avatar(mx, y, 30, "Y")
 y += cards.card_issue(s, mx + 40, y, mw) + 14
 y += cards.bubble_me(s, CX + CW - 28, y, "修，顺便把缓存问题一起处理") + 14
 s.avatar(mx, y, 30, "Y")
-cards.status_line(s, mx + 42, y + 18, "派给「mov 开发」· 改完已检查通过、自动合并")
+cards.status_line(s, mx + 42, y + 18, "派给「shop 开发」· 改完已检查通过、自动合并")
 y += 30
 y += cards.card_change(s, mx + 40, y, mw) + 14
 s.avatar(mx, y, 30, "Y")
@@ -104,7 +104,7 @@ for i, m in enumerate(menus):
         s.line(x0, by + 16, x0, by + 32)
     s.text(x0 + mwid / 2, by + 29, m, 13.5, C["text"], 500, "middle")
 s.line(CX, by + 48, CX + CW, by + 48)
-s.text(CX + 22, by + 80, "跟「mov 日志值班」说点什么…（Enter 发送）", 14, C["faint"])
+s.text(CX + 22, by + 80, "跟「shop 日志值班」说点什么…（Enter 发送）", 14, C["faint"])
 s.text(CX + 22, by + 114, "附件   截图   语音", 12.5, C["sub"])
 s.button_r(CX + CW - 20, by + 90, "发送", "primary", h=32)
 

@@ -94,7 +94,7 @@ export function ServerPage({ params, nav }: PageProps) {
           <Row title="状态" right={<><StatusDot tone={s.online ? 'ok' : 'danger'} /> {s.online ? '在线' : '离线'}</>} />
           <Row title="环境" right={<Tag tone={envTone(s.env)}>{s.env}</Tag>} />
           <Row title="Agent" right={`v${s.agent} · 自动升级`} />
-          <Row title="策略" sub="禁编译 / 禁自测（可按机器放开）· 资源上限 内存 80% CPU 98%" />
+          <Row title="策略" sub="只读命令直接跑，改东西先确认 · 资源上限 内存 70% CPU 90%" />
         </Section>
         <Section title="服务">
           {s.services.map((v) => (
@@ -129,8 +129,8 @@ export function ServerAddPage({ nav }: PageProps) {
   const token = 'opr_' + 'x7k2m9q4'
   // 服务器和你自己的电脑用的是同一个 Agent：电脑上以你的用户跑（不要管理员权限），只主动连出
   const cmd = kind === 'win'
-    ? `下载 https://opero.yimakeji.cn/opero-agent-setup.exe 双击安装，按提示粘贴令牌 ${token}`
-    : `curl -fsSL https://opero.yimakeji.cn/agent.sh | bash -s -- ${token}${kind === 'mac' ? ' --desktop' : ''}`
+    ? `下载 https://opero.example.com/opero-agent-setup.exe 双击安装，按提示粘贴令牌 ${token}`
+    : `curl -fsSL https://opero.example.com/agent.sh | bash -s -- ${token}${kind === 'mac' ? ' --desktop' : ''}`
   const wait = () => {
     setState('waiting')
     setTimeout(() => {
@@ -297,7 +297,7 @@ export function CredentialEditPage({ params, nav }: PageProps) {
       <div className="page-body form">
         <Field label="是什么"><Segmented value={c.group} onChange={(v) => setC({ ...c, group: v })} options={GROUPS.map((g) => ({ value: g, label: g }))} /></Field>
         <p className="field-hint">{GROUP_HINT[c.group]}</p>
-        <Field label="名字"><input value={c.name} onChange={(e) => setC({ ...c, name: e.target.value })} placeholder="比如：mov-prod 只读账号" /></Field>
+        <Field label="名字"><input value={c.name} onChange={(e) => setC({ ...c, name: e.target.value })} placeholder="比如：shop-prod 只读账号" /></Field>
         <Field label="它在公司那边能做什么" hint="照实写（只读 / 读写 / 能部署…）；员工能做的不会超过这个账号本身的权限">
           <input value={c.scope} onChange={(e) => setC({ ...c, scope: e.target.value })} placeholder="比如：只读" />
         </Field>
@@ -452,7 +452,7 @@ export function TriggerEditPage({ params, nav }: PageProps) {
   const existing = useStore((s) => s.triggers.find((x) => x.id === params.id))
   const employees = useStore((s) => s.employees)
   const [t, setT] = useState<Trigger>(() => existing ?? { id: '', name: '', kind: '定时', rule: '', employee: params.employee ?? employees[0]?.id ?? '', enabled: true, last: '还没触发' })
-  const ph: Record<Trigger['kind'], string> = { 定时: '每天 09:00 / 每周一 10:00', Webhook: '保存后生成地址和密钥', 监控: '比如：AWS-dev 内存 > 90% 持续 5 分钟', 邮件: '收件地址 ops@… 里标题含「告警」的' }
+  const ph: Record<Trigger['kind'], string> = { 定时: '每天 09:00 / 每周一 10:00', Webhook: '保存后生成地址和密钥', 监控: '比如：dev-1 内存 > 90% 持续 5 分钟', 邮件: '收件地址 ops@… 里标题含「告警」的' }
   const save = () => {
     if (!t.name.trim()) { toast('先起个名字'); return }
     saveTrigger({ ...t, id: t.id || uid('t') })
@@ -582,11 +582,11 @@ export function ChannelsPage({ nav }: PageProps) {
 const INBOX: { group: string; items: { from: string; ch: string; text: string; when: string }[] }[] = [
   { group: '要你看 · 3', items: [
     { from: '张总', ch: '邮件', text: '明天的评审能改到下午 3 点吗？', when: '09:12' },
-    { from: '阿浩', ch: 'Slack #mov-dev', text: 'v1.4.2 上生产了吗？', when: '09:20' },
+    { from: '阿浩', ch: 'Slack #shop-dev', text: 'v1.4.2 上生产了吗？', when: '09:20' },
     { from: '客户 Lily', ch: 'Telegram', text: '导出 10 月订单时页面报 403', when: '09:25' },
   ] },
   { group: '知道就行 · 9', items: [
-    { from: '云效', ch: '邮件', text: 'mov-nimbus 构建成功 #1835', when: '08:50' },
+    { from: 'CI', ch: '邮件', text: 'shop-admin 构建成功 #1835', when: '08:50' },
     { from: '晓雨', ch: 'Slack #ops', text: '周五晚上 RDS 维护 30 分钟', when: '08:41' },
     { from: '日历', ch: '邮件', text: '周会改到周四 10:00', when: '08:10' },
   ] },

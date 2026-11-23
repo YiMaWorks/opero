@@ -13,7 +13,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * 本机保存（照 KidLock data/Store.kt）：连的是哪套 Opero、这台手机的设备令牌（系统密钥库加密后再存）、推送取到哪了、解锁设置。
+ * 本机保存：连的是哪套 Opero、这台手机的设备令牌（系统密钥库加密后再存）、推送取到哪了、解锁设置。
  * 一人一套：没有账号密码，配对时拿到一个设备令牌，网页里「我 → 账号安全 → 手机」能随时作废。
  */
 class Store(ctx: Context) {
@@ -65,7 +65,7 @@ class Store(ctx: Context) {
     }
 }
 
-/** 令牌用 Android 系统密钥库（AES/GCM）加密后再存（同 KidLock） */
+/** 令牌用 Android 系统密钥库（AES/GCM）加密后再存 */
 object Crypto {
     private const val ALIAS = "opero_store_v1"
 

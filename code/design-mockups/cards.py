@@ -53,7 +53,7 @@ def card_issue(s, x, y, w, compact=False):
     h = 196
     _frame(s, x, y, w, h, C["danger"])
     _head(s, x, y, w, "问题 #42", C["danger"], "支付失败 SIGN_ERR", "严重", C["danger"], C["danger_soft"])
-    rows = [("影响", "mov-market 生产 · 微信支付 · 37 次 / 10 分钟"),
+    rows = [("影响", "shop-api 生产 · 微信支付 · 37 次 / 10 分钟"),
             ("原因", "09:40 换了商户密钥，签名还在用缓存里的旧 key"),
             ("建议", "签名器改成每次读配置，换 key 后清缓存")]
     if compact:
@@ -77,7 +77,7 @@ def card_issue(s, x, y, w, compact=False):
 def card_change(s, x, y, w, merged=True, compact=False):
     h = 236
     _frame(s, x, y, w, h, C["primary"])
-    title = "mov-market · fix/pay-sign-42" if not compact else "fix/pay-sign-42"
+    title = "shop-api · fix/pay-sign-42" if not compact else "fix/pay-sign-42"
     _head(s, x, y, w, "改动", C["primary"], title, size=14)
     files = [("PayService.java", "+12", "−3"), ("WechatSigner.java", "+8", "−2")]
     for i, (f, a, d) in enumerate(files):
@@ -108,7 +108,7 @@ def card_change(s, x, y, w, merged=True, compact=False):
 def card_release(s, x, y, w, compact=False):
     h = 170
     _frame(s, x, y, w, h, C["info"])
-    _head(s, x, y, w, "发布", C["info"], "mov-market → 生产 v1.4.2" if not compact else "→ 生产 v1.4.2")
+    _head(s, x, y, w, "发布", C["info"], "shop-api → 生产 v1.4.2" if not compact else "→ 生产 v1.4.2")
     steps = [("编译", "done"), ("签名", "done"), ("部署", "done"), ("观察", "doing")]
     sx = x + 20
     seg = (w - 40) / (len(steps) - 1)
@@ -135,7 +135,7 @@ def card_query(s, x, y, w, rows=5):
     cols = [("id", 70), ("status", 70), ("err_code", 90), ("created_at", 90)]
     h = 92 + rows * 26 + 36
     _frame(s, x, y, w, h)
-    _head(s, x, y, w, "查询", C["sub"], "mov-prod · 只读", size=13.5)
+    _head(s, x, y, w, "查询", C["sub"], "shop-prod · 只读", size=13.5)
     s.text(x + w - 16, y + 24, "23 ms · 5 行", 12, C["faint"], 400, "end")
     s.rect(x + 14, y + 38, w - 28, 26, 6, C["code_bg"])
     s.text(x + 22, y + 55, "SELECT id,status,err_code … WHERE user_id=10086", 11.5, C["sub"], mono=True)
@@ -165,8 +165,8 @@ def card_confirm(s, x, y, w):
     h = 170
     _frame(s, x, y, w, h, C["danger"])
     _head(s, x, y, w, "要你确认", C["danger"], "删除 2,300 行旧订单", "危险", C["danger"], C["danger_soft"])
-    s.text(x + 16, y + 56, "mov-prod · DELETE FROM order_tmp WHERE created_at < '2025-01-01'", 12, C["sub"], mono=True)
-    s.text(x + 16, y + 82, "已存快照，7 天内可撤销 · 由「mov 开发」发起（替你清理测试数据）", 12.5, C["text"])
+    s.text(x + 16, y + 56, "shop-prod · DELETE FROM order_tmp WHERE created_at < '2025-01-01'", 12, C["sub"], mono=True)
+    s.text(x + 16, y + 82, "已存快照，7 天内可撤销 · 由「shop 开发」发起（替你清理测试数据）", 12.5, C["text"])
     s.rect(x + 14, y + 96, w - 28, 26, 8, C["warn_soft"])
     s.text(x + 24, y + 113, "超过 1000 行属于危险操作，需要你本人验证", 12.5, C["warn"])
     by = y + h - 40

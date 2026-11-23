@@ -1,6 +1,6 @@
 // 数据仓库：页面只从这里读数据、只调这里的动作。
 // 现在数据来自 data/mock.ts（演示）；接后台时：初始数据改成调接口、消息改成服务器推送，动作改成调接口——页面不用改。
-import { useSyncExternalStore } from 'react'
+import { useRef, useSyncExternalStore } from 'react'
 import type {
   AuditEntry, Card, QueueItem, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, Message, Plugin, ReleaseApp,
   ReleaseRecord, SavedQuery, Server, Session, Settings, Trigger, Usage, User, Workspace,
@@ -126,7 +126,16 @@ function subscribe(l: () => void) {
 
 /** 选取 state 里的一块。选择器要返回 state 里已有的引用（不要在里面 new 对象 / 数组），否则会一直重绘。 */
 export function useStore<T>(sel: (s: State) => T): T {
-  return useSyncExternalStore(subscribe, () => sel(state), () => sel(state))
+  // 选择器每次 filter / map 出新数组时，内容没变就还给上一次那个（不然 useSyncExternalStore 会一直重画：React #185）
+  const last = useRef<T>(undefined as T)
+  const get = () => {
+    const v = sel(state)
+    const p = last.current
+    if (Array.isArray(v) && Array.isArray(p) && v.length === p.length && v.every((x, i) => x === p[i])) return p
+    last.current = v
+    return v
+  }
+  return useSyncExternalStore(subscribe, get, get)
 }
 
 // ---------- 小工具 ----------
@@ -288,14 +297,14 @@ export function stopWorking(sid: string) {
 export function runFixDemo(sid: string) {
   const st = uid('st')
   patchSession(sid, { working: '在修 #42…' })
-  later(300, () => append(sid, { id: st, from: 'system', kind: 'status', spinning: true, text: '派给「mov 开发」…' }))
-  later(1700, () => patchMsg(sid, st, { text: '「mov 开发」在改 PayService.java、WechatSigner.java…' }))
+  later(300, () => append(sid, { id: st, from: 'system', kind: 'status', spinning: true, text: '派给「shop 开发」…' }))
+  later(1700, () => patchMsg(sid, st, { text: '「shop 开发」在改 PayService.java、WechatSigner.java…' }))
   later(3300, () => patchMsg(sid, st, { text: 'CI 检查中：编译 · 类型检查 · 单元测试…' }))
   later(4900, () => {
     removeMsg(sid, st)
-    append(sid, { from: 'mov-log', kind: 'card', card: {
+    append(sid, { from: 'shop-log', kind: 'card', card: {
       id: 'c-change-42', type: 'change', v: 1, state: 'open', level: 'info',
-      data: { project: 'mov-market', branch: 'fix/pay-sign-42', merged: true,
+      data: { project: 'shop-api', branch: 'fix/pay-sign-42', merged: true,
         files: [{ name: 'PayService.java', add: 12, del: 3 }, { name: 'WechatSigner.java', add: 8, del: 2 }],
         checks: ['编译', '类型检查', '单元测试 48'], ci: 'CI #1832 · 2 分 14 秒' },
       actions: [
@@ -305,9 +314,9 @@ export function runFixDemo(sid: string) {
     set((s) => ({ issues: s.issues.map((i) => (i.id === 42 ? { ...i, status: 'fixing' } : i)) }))
   })
   later(5900, () => {
-    append(sid, { from: 'mov-log', kind: 'card', card: {
+    append(sid, { from: 'shop-log', kind: 'card', card: {
       id: 'c-rel-42', type: 'release', v: 1, state: 'open', level: 'info',
-      data: { app: 'mov-market', env: '生产', version: 'v1.4.2', steps: ['编译', '签名', '部署', '观察'], step: 0, watched: 0, total: 10, watchFor: 'SIGN_ERR' },
+      data: { app: 'shop-api', env: '生产', version: 'v1.4.2', steps: ['编译', '签名', '部署', '观察'], step: 0, watched: 0, total: 10, watchFor: 'SIGN_ERR' },
       actions: [{ id: 'rollback', label: '回滚到 v1.4.1', tool: 'release.rollback' }] } })
     patchSession(sid, { working: '在发布 v1.4.2…' })
   })
@@ -315,21 +324,21 @@ export function runFixDemo(sid: string) {
   for (let w = 1; w <= 10; w++) later(9600 + w * 350, () => patchCard(sid, 'c-rel-42', (c) => ({ data: { ...c.data, watched: w } })))
   later(13500, () => {
     patchCard(sid, 'c-rel-42', (c) => ({ data: { ...c.data, step: 4 } }))
-    append(sid, { from: 'mov-log', kind: 'text', text: '已发布 v1.4.2，盯了 10 分钟没有新的 SIGN_ERR。问题 #42 已关闭，交接和变更记录 mov 开发已经写好。' })
+    append(sid, { from: 'shop-log', kind: 'text', text: '已发布 v1.4.2，盯了 10 分钟没有新的 SIGN_ERR。问题 #42 已关闭，交接和变更记录 shop 开发已经写好。' })
     patchSession(sid, { working: undefined, last: '#42 已修复，v1.4.2 已上生产', time: now() })
     set((s) => ({
       issues: s.issues.map((i) => (i.id === 42 ? { ...i, status: 'fixed' } : i)),
-      releases: [{ id: 372, app: 'mov-market', env: '生产', version: 'v1.4.2', status: '成功', by: '发布', when: now(), duration: '3 分 40 秒',
+      releases: [{ id: 372, app: 'shop-api', env: '生产', version: 'v1.4.2', status: '成功', by: '发布', when: now(), duration: '3 分 40 秒',
         steps: [{ name: '编译', ok: true }, { name: '签名', ok: true }, { name: '部署', ok: true }, { name: '发布后观察 10 分钟', ok: true }] }, ...s.releases],
     }))
-    audit({ via: 'mov 日志值班', action: 'release.publish', target: 'mov-market · 生产 v1.4.2', level: '写', result: '成功', how: '直接做（审核方式：自动）' })
+    audit({ via: 'shop 日志值班', action: 'release.publish', target: 'shop-api · 生产 v1.4.2', level: '写', result: '成功', how: '直接做（审核方式：自动）' })
   })
 }
 
 export function revertMerge(sid: string) {
   patchCard(sid, 'c-change-42', (c) => ({ data: { ...c.data, reverted: true } }))
   append(sid, { from: 'system', kind: 'system', text: '你撤销了 fix/pay-sign-42 的合并' })
-  audit({ via: 'mov 日志值班', action: 'workspace.revert_merge', target: 'mov-market · fix/pay-sign-42', level: '写', result: '成功', how: '本人点「撤销合并」' })
+  audit({ via: 'shop 日志值班', action: 'workspace.revert_merge', target: 'shop-api · fix/pay-sign-42', level: '写', result: '成功', how: '本人点「撤销合并」' })
 }
 
 // ---------- work 基本操作 ----------
@@ -389,7 +398,7 @@ export function saveEmployee(e: Employee) {
     return
   }
   const exists = state.employees.some((x) => x.id === e.id)
-  if (!exists) e = { ...e, repo: e.repo || `codeup.aliyun.com/owner/emp-${e.id}`, repoSynced: '刚刚', works: [{ no: 1, from: now(), reason: '刚建', host: e.host }] }
+  if (!exists) e = { ...e, repo: e.repo || `github.com/acme/emp-${e.id}`, repoSynced: '刚刚', works: [{ no: 1, from: now(), reason: '刚建', host: e.host }] }
   set((s) => ({ employees: exists ? s.employees.map((x) => (x.id === e.id ? e : x)) : [...s.employees, e] }))
   if (!exists) {
     const sid = sessionFor(e.id)
@@ -451,7 +460,7 @@ export function mergeOfficialUpdate() {
     removeMsg(sid, st)
     append(sid, { from: 'dev-opero', kind: 'card', card: {
       id: uid('c'), type: 'generic', v: 1, state: 'open', level: 'info',
-      data: { title: `合并${up.version} · 预览中`, tag: '检查通过', rows: [['冲突', '没有（你的插件和菜单都在）'], ['预览', 'https://pre-4.opero.yimakeji.cn'], ['上线后', '保留上一版，健康检查不过自动回滚']] },
+      data: { title: `合并${up.version} · 预览中`, tag: '检查通过', rows: [['冲突', '没有（你的插件和菜单都在）'], ['预览', 'https://pre-4.opero.example.com'], ['上线后', '保留上一版，健康检查不过自动回滚']] },
       actions: [{ id: 'online', label: '上线', style: 'primary', tool: 'opero.promote' }] } })
     patchSession(sid, { last: `${up.version} 合并好了，预览中`, time: now(), unread: 1 })
     set((s) => ({ custom: { ...s.custom, update: undefined, base: `${up.version}（预览中）` } }))

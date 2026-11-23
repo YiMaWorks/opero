@@ -1,4 +1,4 @@
-// 图片编辑器（照 KidLock components/ImageEditor.jsx）：选好图片先裁剪、缩放、旋转、翻转、调亮度 / 对比度 / 饱和度，再按尺寸和格式导出。
+// 图片编辑器：选好图片先裁剪、缩放、旋转、翻转、调亮度 / 对比度 / 饱和度，再按尺寸和格式导出。
 // 约定：所有上传图片的地方都先过它，让人自己切图。用法：const f = await editImage(原文件, { aspect: 1, round: true, maxSize: 256 })，取消返回 null。
 // 一次选好几张就排队一张一张来；可以「用原图」。
 import { useCallback, useEffect, useRef, useState } from 'react'

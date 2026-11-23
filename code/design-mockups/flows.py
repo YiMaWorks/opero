@@ -184,7 +184,7 @@ def dev():
         ("拉代码、定位", "IDE · Git", None),
         ("改代码、自己测", "本地环境", "环境不一致"),
         ("提 PR、等评审", "Codeup / GitHub", "等人评审"),
-        ("打包", "云效流水线", None),
+        ("打包", "CI 流水线", None),
         ("发布到服务器", "发布系统 · 签名", "怕发错"),
         ("盯日志、确认好了", "SSH · 监控", "半夜也得看"),
         ("回复用户", "微信群 · 工单", "等人转达"),
@@ -352,7 +352,7 @@ def ui():
     chip(s, 64, 160, "以前 · 在 IDE 里", "#fff", "#9096A3", 15, 32)
     # IDE 主窗口
     X, Y, W, H = 70, 214, 560, 420
-    win(s, X, Y, W, H, "PayService.java — mov-market — IDE")
+    win(s, X, Y, W, H, "PayService.java — shop-api — IDE")
     s.rect(X, Y + 28, 130, H - 28, 0, "#202127")
     for i, f in enumerate(["▾ src", "  ▾ pay", "    PayService.java", "    WechatSigner.java", "  ▸ order", "  ▸ user", "▸ resources", "▸ test", "pom.xml", "Dockerfile"]):
         s.text(X + 10, Y + 52 + i * 20, f, 11, "#E6E6E6" if "PayService" in f else "#8C919C", mono=True)
@@ -363,10 +363,10 @@ def ui():
     # 终端
     s.rect(X + 130, Y + 310, W - 130, H - 310, 0, "#16171B")
     s.text(X + 142, Y + 330, "终端", 11, "#8C919C")
-    for i, t in enumerate(["$ ssh deploy@dev-1", "$ tail -f /var/log/mov/app.log | grep SIGN_ERR", "  ERROR SIGN_ERR invalid signature (×37)", "$ mvn -q test   ..."]):
+    for i, t in enumerate(["$ ssh deploy@dev-1", "$ tail -f /var/log/shop/app.log | grep SIGN_ERR", "  ERROR SIGN_ERR invalid signature (×37)", "$ mvn -q test   ..."]):
         s.text(X + 142, Y + 350 + i * 17, t, 11, "#F48771" if "ERROR" in t else "#B5CEA8", mono=True)
     # 周围乱七八糟的窗口
-    win(s, 560, 250, 200, 120, "云效流水线", dark=False)
+    win(s, 560, 250, 200, 120, "CI 流水线", dark=False)
     for i in range(3):
         s.rect(575, 292 + i * 22, 14, 14, 4, ["#12A150", "#C26A00", "#D92D20"][i])
         s.rect(596, 295 + i * 22, 140, 8, 3, "#E3E5EA")
@@ -376,7 +376,7 @@ def ui():
     for i in range(3):
         s.rect(484, 628 + i * 24, 16, 16, 5, "#D7DAE2")
         s.rect(506, 632 + i * 24, 120 - i * 20, 8, 3, "#E3E5EA")
-    win(s, 120, 650, 260, 110, "Jira · MOV-1024", dark=False)
+    win(s, 120, 650, 260, 110, "Jira · SHOP-1024", dark=False)
     s.rect(136, 690, 180, 9, 3, "#E3E5EA"); s.rect(136, 708, 220, 9, 3, "#E3E5EA"); s.rect(136, 726, 140, 9, 3, "#E3E5EA")
     s.text(70, 812, "你自己找日志、读代码、敲命令、切窗口；只能在电脑前做。", 14, FAINT)
 
@@ -390,8 +390,8 @@ def ui():
     s.rect(PX + 10, PY + 40, PW - 20, 52, 0, "#FFFFFF")
     s.text(PX + 30, PY + 72, "‹", 22, SUB)
     emp_avatar(s, PX + 50, PY + 52, "值", 28)
-    s.text(PX + 88, PY + 64, "mov 日志值班", 14, INK, 700)
-    s.text(PX + 88, PY + 82, "在盯 mov 三个项目的线上日志", 11, FAINT)
+    s.text(PX + 88, PY + 64, "shop 日志值班", 14, INK, 700)
+    s.text(PX + 88, PY + 82, "在盯 shop 三个项目的线上日志", 11, FAINT)
     yy = PY + 108
     yy += mini_card(s, PX + 22, yy, PW - 44, "问题", RED, "#42 支付签名失败 37 次", ["原因：微信证书 11-20 换了，代码还用旧的", "影响：约 6% 订单付不了款"], ["修复", "先盯着"]) + 10
     yy += bubble(s, PX + PW - 22 - 120, yy, 120, "修复，修好直接发", me=True) + 10
@@ -527,7 +527,7 @@ def bug():
          ("改代码", "IDE · Git 分支", None),
          ("自己测", "本地跑 · 手点", "漏测"),
          ("提 PR、等评审", "Codeup / GitHub", "等人评审"),
-         ("打包", "云效流水线", None),
+         ("打包", "CI 流水线", None),
          ("发布", "发布系统 · 签名", "怕发错"),
          ("验证", "测试环境 · 生产", "半夜也得看"),
          ("关单、回复", "工单 · 群里", "等人转达")],

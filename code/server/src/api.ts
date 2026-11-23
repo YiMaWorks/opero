@@ -22,6 +22,7 @@ import * as queue from './queue.ts'
 import * as keys from './keys.ts'
 import { delSecret, getSecret, hasSecret, setSecret } from './vault.ts'
 import type { Credential, DataSource, Device, Employee, KbDoc, Message, SavedQuery, Server, Session, Trigger, Workspace } from './types.ts'
+import { envOf, isProtected } from './env.ts'
 
 const now = () => new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16)
 const put1 = <T extends { id: string }>(coll: Parameters<typeof put>[0], item: T): T => { put(coll, item); emit({ t: 'put', coll, item: pub(coll, item) }); return item }
@@ -466,11 +467,11 @@ route('POST', '/api/servers', async (c) => {
   const ip = String(b.ip ?? '').trim()
   if (!name || !ip) throw bad('名字和地址都要填')
   if (all<Server>('servers').some((s) => s.name === name)) throw bad('已经有同名的服务器')
-  const env = ['开发', '测试', '生产'].includes(b.env) ? b.env : '测试'
+  const env = envOf(b.env, '测试')
   const user = String(b.user || 'root')
   let credential = b.credential ? String(b.credential) : undefined
   if (!credential && b.secret) credential = inlineCred(`${name} 的 SSH ${b.authKind === 'key' ? '私钥' : '密码'}`, '服务器', b.authKind === 'key' ? '密钥' : '账号密码', env, user, String(b.secret), `${user}@${ip}`)
-  const sv: Server = { id: uid('sv'), name, ip, port: Number(b.port) || 22, user, credential, env, os: '', agent: 'SSH', online: false, cpu: 0, mem: 0, disk: 0, services: [], logs: [] }
+  const sv: Server = { id: uid('sv'), name, ip, port: Number(b.port) || 22, user, credential, env, ...(typeof b.protect === 'boolean' ? { protect: b.protect } : {}), os: '', agent: 'SSH', online: false, cpu: 0, mem: 0, disk: 0, services: [], logs: [] }
   put1('servers', sv)
   audit({ via: '—', action: 'server.add', target: `${name} · ${user}@${ip}`, level: '写', result: '成功', how: '本人' })
   return pub('servers', await checkServer(sv))
@@ -479,7 +480,14 @@ route('PUT', '/api/servers/:id', (c) => {
   const old = get<Server>('servers', c.params.id)
   if (!old) throw new HttpError(404, '没有')
   const b = c.body ?? {}
-  const next: Server = { ...old, ...(b.name ? { name: String(b.name) } : {}), ...(b.env ? { env: b.env } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
+  const name = b.name === undefined ? undefined : String(b.name).trim().slice(0, 40)
+  if (name !== undefined && !name) throw bad('名字不能空')
+  if (name && all<Server>('servers').some((s) => s.id !== old.id && s.name === name)) throw bad('已经有同名的服务器')
+  const env = b.env === undefined ? undefined : envOf(b.env, old.env)
+  const protect = typeof b.protect === 'boolean' ? b.protect : undefined
+  const changes = [name && name !== old.name && `名字 → ${name}`, env && env !== old.env && `环境 ${old.env} → ${env}`, protect !== undefined && protect !== isProtected(old) && (protect ? '改东西先确认' : '改东西不用确认')].filter(Boolean)
+  if (changes.length) audit({ via: '—', action: 'server.update', target: `${old.name} · ${changes.join(' · ')}`, level: '写', result: '成功', how: '本人' })
+  const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
   return pub('servers', put1('servers', next))
 })
 route('DELETE', '/api/servers/:id', (c) => {
@@ -514,7 +522,7 @@ function saveCred(c: Ctx, id?: string) {
   const name = String(b.name ?? old?.name ?? '').trim()
   if (!name) throw bad('先起个名字')
   const cred: Credential = {
-    id: old?.id ?? uid('cr'), name, group: String(b.group ?? old?.group ?? '其它'), kind: String(b.kind ?? old?.kind ?? 'Token'), env: b.env ?? old?.env ?? '生产',
+    id: old?.id ?? uid('cr'), name, group: String(b.group ?? old?.group ?? '其它'), kind: String(b.kind ?? old?.kind ?? 'Token'), env: envOf(b.env, old?.env ?? '生产'),
     scope: String(b.scope ?? old?.scope ?? ''), usedBy: Array.isArray(b.usedBy) ? b.usedBy : old?.usedBy ?? [], updated: now(), aiAllowed: b.aiAllowed ?? old?.aiAllowed ?? true,
     user: b.user !== undefined ? String(b.user) : old?.user,
   }
@@ -545,10 +553,10 @@ route('POST', '/api/data-sources', async (c) => {
   const name = String(b.name ?? '').trim()
   if (!name || !b.host || !b.db) throw bad('名字、地址、库名都要填')
   const kind = b.kind === 'PostgreSQL' ? 'PostgreSQL' : 'MySQL'
-  const env = ['开发', '测试', '生产'].includes(b.env) ? b.env : '生产'
+  const env = envOf(b.env, '生产')
   let credential = b.credential ? String(b.credential) : undefined
   if (!credential && b.password) credential = inlineCred(`${name} 的数据库账号`, '数据库', '数据库', env, String(b.user ?? ''), String(b.password), b.writable ? '读写' : '只读')
-  const ds: DataSource = { id: uid('ds'), name, kind, env, host: String(b.host), port: Number(b.port) || undefined, db: String(b.db), user: String(b.user ?? ''), credential, writable: !!b.writable, tables: [] }
+  const ds: DataSource = { id: uid('ds'), name, kind, env, ...(typeof b.protect === 'boolean' ? { protect: b.protect } : {}), host: String(b.host), port: Number(b.port) || undefined, db: String(b.db), user: String(b.user ?? ''), credential, writable: !!b.writable, tables: [] }
   put1('dataSources', ds)
   audit({ via: '—', action: 'data.add', target: `${name} · ${kind} ${ds.host}/${ds.db}`, level: '写', result: '成功', how: '本人' })
   try { ds.tables = await loadSchema(ds); put1('dataSources', ds) } catch (e) { return { ...ds, error: `连不上：${(e as Error).message}` } }
@@ -558,7 +566,7 @@ route('PUT', '/api/data-sources/:id', (c) => {
   const old = get<DataSource>('dataSources', c.params.id)
   if (!old) throw new HttpError(404, '没有')
   const b = c.body ?? {}
-  return put1('dataSources', { ...old, ...(b.name ? { name: String(b.name) } : {}), ...(b.env ? { env: b.env } : {}), ...(b.writable !== undefined ? { writable: !!b.writable } : {}) })
+  return put1('dataSources', { ...old, ...(b.name ? { name: String(b.name) } : {}), ...(b.env ? { env: envOf(b.env, old.env) } : {}), ...(typeof b.protect === 'boolean' ? { protect: b.protect } : {}), ...(b.writable !== undefined ? { writable: !!b.writable } : {}) })
 })
 route('DELETE', '/api/data-sources/:id', (c) => { del1('dataSources', c.params.id); return { ok: true } })
 route('POST', '/api/data-sources/:id/schema', async (c) => {
@@ -738,7 +746,7 @@ route('DELETE', '/api/app/list/:id', (c) => {
 const RAW_INSTALL = 'https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh'
 route('POST', '/api/agents/join', (c) => {
   const b = c.body ?? {}
-  const env = ['开发', '测试', '生产'].includes(b.env) ? b.env : '测试'
+  const env = envOf(b.env, '测试')
   const token = agents.newJoinToken(env, String(b.name ?? '').trim() || undefined)
   const url = baseUrl(c.req, cfg.publicUrl)
   const cmd = `curl -fsSL ${RAW_INSTALL} | sudo bash -s -- --agent ${url} ${token}`
@@ -782,7 +790,7 @@ route('GET', '/api/agent/poll', async (c) => {
 route('POST', '/api/agent/events', (c) => { agents.events(c.agent!.serverId, c.body?.events ?? []); return { ok: true } }, { auth: 'agent' })
 route('POST', '/api/agent/health', (c) => {
   const sv = get<Server>('servers', c.agent!.serverId)
-  if (sv) agents.health(sv, c.body ?? {})
+  if (sv) agents.health(sv, c.body ?? {}, c.ip)
   return { ok: true }
 }, { auth: 'agent' })
 

@@ -1,4 +1,4 @@
-// 风格小样：一个缩小的 Opero 界面（左栏 · 顶上两行字 · 一张卡片带跳色），照 KidLock 的风格选择。设置页、顶部快捷切换都用
+// 风格小样：一个缩小的 Opero 界面（左栏 · 顶上两行字 · 一张卡片带跳色）。设置页、顶部快捷切换都用
 import { themeVars, type ThemeDef } from '../themes'
 
 export function ThemeCard({ t, on, onClick }: { t: ThemeDef; on: boolean; onClick: () => void }) {

@@ -30,14 +30,14 @@ export function EmployeesPage({ nav }: PageProps) {
         <Sheet title="从模板建员工" onClose={() => setTpl(false)}>
           <p className="sub">模板 = 员工记忆仓库里的角色、规矩、设置；不带它的聊天记录和你的账号。</p>
           <div className="sheet-list">
-            {['mov 日志值班', '发布', '运维', '消息助理', 'mov 开发'].map((n) => (
+            {['shop 日志值班', '发布', '运维', '消息助理', 'shop 开发'].map((n) => (
               <Row key={n} title={n} sub="内置模板" onClick={() => { setTpl(false); employeeFromTemplate(n, '内置') }} />
             ))}
           </div>
           <Field label="或者用同事分享的模板（git 地址）">
             <div className="inline-form">
-              <input value={url} onChange={(v) => setUrl(v.target.value)} placeholder="https://codeup.aliyun.com/xxx/emp-template-review.git" />
-              <button className="btn primary" onClick={() => { if (!url.trim()) { toast('先填地址'); return } setTpl(false); employeeFromTemplate('mov 开发', url.trim()) }}>导入</button>
+              <input value={url} onChange={(v) => setUrl(v.target.value)} placeholder="https://github.com/you/emp-template-review.git" />
+              <button className="btn primary" onClick={() => { if (!url.trim()) { toast('先填地址'); return } setTpl(false); employeeFromTemplate('shop 开发', url.trim()) }}>导入</button>
             </div>
           </Field>
         </Sheet>
@@ -157,7 +157,7 @@ export function EmployeePage({ params, nav }: PageProps) {
         <Section>
           <Row title="聊天设置" sub="头像、名字、背景、提醒" chevron onClick={() => nav.push({ page: 'chatSettings', params: { id: e.id } })} />
           <Row title="导出成模板" sub="分享给同事：角色、规矩、设置（不带聊天记录和你的账号）" chevron onClick={() => {
-            const link = `https://codeup.aliyun.com/owner/emp-template-${e.id}.git`
+            const link = `https://github.com/acme/emp-template-${e.id}.git`
             navigator.clipboard?.writeText(link).catch(() => {})
             toast(`模板地址已复制：${link}`)
           }} />
@@ -213,7 +213,7 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
             {COLORS.map((c) => <button key={c} className={'swatch' + (c === e.color ? ' on' : '')} style={{ background: c }} onClick={() => up({ color: c })} aria-label={c} />)}
           </div>
         </div>
-        <Field label="名字"><input value={e.name} onChange={(v) => up({ name: v.target.value })} placeholder="比如：uugo 运营" /></Field>
+        <Field label="名字"><input value={e.name} onChange={(v) => up({ name: v.target.value })} placeholder="比如：crm 运营" /></Field>
         <Field label="头像上的字" hint="留空用名字第一个字"><input value={e.avatar} maxLength={2} onChange={(v) => up({ avatar: v.target.value })} /></Field>
         <Field label="职责一句话"><input value={e.title} onChange={(v) => up({ title: v.target.value })} placeholder="会显示在聊天顶栏" /></Field>
         <Field label="职责（提示词）" hint={LIVE ? '每次派活都带上（系统提示词），写清它负责什么、做事的规矩' : '写进它 git 的 CLAUDE.md「我的角色」，以后派活不用长篇大论'}>
@@ -245,7 +245,7 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
           <Field label="跑在哪台服务器" hint="只能选 Opero 这台或装了 Agent 的；那台要先装好 AI 执行器（应用 → 服务器 → 点它 → AI 执行器）">
             <select value={servers.some((s) => s.id === e.host) ? e.host : 'local'} onChange={(v) => up({ host: v.target.value })}>
               {servers.filter((s) => s.id === 'local' || s.via === 'agent').map((s) => (
-                <option key={s.id} value={s.id}>{s.id === 'local' ? 'Opero 这台' : `${s.name}（${s.env}${s.online ? '' : ' · 离线'}）`}</option>
+                <option key={s.id} value={s.id}>{s.id === 'local' ? (s.name === '本机' ? 'Opero 这台' : s.name) : `${s.name}（${s.env}${s.online ? '' : ' · 离线'}）`}</option>
               ))}
             </select>
           </Field>

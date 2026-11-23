@@ -13,9 +13,9 @@ export interface MenuDef {
 }
 
 export const MENU_REGISTRY: Record<string, MenuDef> = {
-  问题清单: { plugin: 'core', desc: '这个员工负责的项目的问题', route: ({ employeeId }) => ({ page: 'issues', params: { project: employeeId.startsWith('mov') ? 'mov' : undefined } }) },
+  问题清单: { plugin: 'core', desc: '这个员工负责的项目的问题', route: ({ employeeId }) => ({ page: 'issues', params: { project: employeeId.startsWith('shop') ? 'shop' : undefined } }) },
   日志扫描: { plugin: 'server', desc: '日志扫描触发器', route: () => ({ page: 'triggers' }) },
-  查生产库: { plugin: 'data', desc: '查询台（只读账号）', route: () => ({ page: 'query', params: { source: 'mov-prod' } }) },
+  查生产库: { plugin: 'data', desc: '查询台（只读账号）', route: () => ({ page: 'query', params: { source: 'shop-prod' } }) },
   发布记录: { plugin: 'release', desc: '最近的发布', route: () => ({ page: 'releases' }) },
   应用: { plugin: 'release', desc: '应用和环境、AI 发版设置', route: () => ({ page: 'releases', params: { tab: 'apps' } }) },
   改动记录: { plugin: 'core', desc: '工作空间的提交和分支', route: ({ workspace }) => ({ page: 'workspace', params: { id: workspace } }) },

@@ -53,7 +53,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const [sending, setSending] = useState(false)
 
   useEffect(() => {
-    // 照 KidLock：离底部 120px 以内才跟着滚到最新，往上翻着看的时候不打扰
+    // 离底部 120px 以内才跟着滚到最新，往上翻着看的时候不打扰
     const el = listRef.current
     if (!el) return
     const added = messages.length - seenLen.current
@@ -293,7 +293,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
                   onPointerDown={(e) => { (e.target as HTMLElement).setPointerCapture?.(e.pointerId); nativeHaptic(); setRec({ start: Date.now(), y: e.clientY, cancel: false, secs: 0 }) }}
                   onPointerMove={(e) => setRec((r) => (r ? { ...r, cancel: r.y - e.clientY > 60 } : r))}
                   onPointerUp={() => {
-                    if (rec && !rec.cancel) sendMessage(session.id, Date.now() - rec.start < 800 ? '（语音太短，原型里按住久一点）' : '（语音转文字）帮我看下 AWS-dev 的内存为什么这么高')
+                    if (rec && !rec.cancel) sendMessage(session.id, Date.now() - rec.start < 800 ? '（语音太短，原型里按住久一点）' : '（语音转文字）帮我看下 dev-1 的内存为什么这么高')
                     setRec(null)
                   }}
                   onPointerCancel={() => setRec(null)}>

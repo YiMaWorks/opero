@@ -1,4 +1,4 @@
-// AI 回复按 Markdown 显示（KidLock 的约定：AI 回复一律走这里，不要自己 pre-wrap）。
+// AI 回复按 Markdown 显示。
 // 只认常用的几种：代码块 ``` · 行内 `代码` · **加粗** · [链接](地址) · 列表 · 引用 · 标题。直接生成 React 元素，不用 innerHTML。
 import type { ReactNode } from 'react'
 import { toast } from '../store'

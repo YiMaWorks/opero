@@ -154,7 +154,7 @@ code/server          Backend (Node 22, TypeScript run directly, node:sqlite) + i
 code/web             Web UI (React 19 + Vite + TypeScript)
 code/android         Android app shell (Kotlin, WebView + push + fingerprint)
 code/design-mockups  Scripts that generate the design images and logo
-docs/                Specs and design docs (see docs/README.md)
+docs/                Specs and design docs (start with docs/设计.md)
 deploy/              Build and deploy scripts
 ```
 

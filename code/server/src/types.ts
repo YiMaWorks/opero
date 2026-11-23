@@ -1,5 +1,7 @@
+import type { SysInfo } from './sysinfo.ts'
 // 后台用到的数据结构：和网页 code/web/src/types.ts 一致（网页直接拿去用），这里只列后台要读写的字段。
-export type EnvTag = '开发' | '测试' | '生产'
+/** 环境标签：随便起名（见 env.ts） */
+export type EnvTag = string
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Approval = 'auto' | 'edits' | 'ask' | 'plan'
 
@@ -84,6 +86,8 @@ export interface Server {
   checked?: number
   error?: string
   hostKey?: string
+  /** 员工在上面改东西先出确认卡片；没设过按环境标签猜（env.ts isProtected） */
+  protect?: boolean
   /** 接入方式：local = Opero 自己这台；agent = 装了 Opero Agent（员工能在上面干活）；ssh = 只用 SSH 跑命令 */
   via?: 'local' | 'agent' | 'ssh' | 'pending' | 'rejected'
   /** Agent 自己的公钥（ed25519 原始 32 字节 base64）和指纹（SHA256:…）：Opero 按指纹认机器，换地址也认得 */
@@ -96,6 +100,8 @@ export interface Server {
   lastSeen?: number
   agentUrl?: string
   executors?: { claude?: string | null; codex?: string | null }
+  /** 机器信息：Agent 每次心跳报、Opero 这台自己读（主机名、系统、内核、CPU、内存 / 磁盘大小、内网地址、开机时长） */
+  sys?: SysInfo
   /** Agent 那台本机出口代理（127.0.0.1）的端口和口令 */
   proxyPort?: number
   proxyToken?: string
@@ -120,6 +126,8 @@ export interface DataSource {
   name: string
   kind: 'MySQL' | 'PostgreSQL'
   env: EnvTag
+  /** 改数据的确认卡片标成危险；没设过按环境标签猜 */
+  protect?: boolean
   host: string
   port?: number
   db: string

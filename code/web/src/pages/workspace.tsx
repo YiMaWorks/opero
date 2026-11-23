@@ -99,7 +99,7 @@ export function WorkspacePage({ params, nav }: PageProps) {
 
 export function WorkspaceAddPage({ nav }: PageProps) {
   const servers = useStore((s) => s.servers)
-  const [provider, setProvider] = useState<Workspace['provider']>('Codeup')
+  const [provider, setProvider] = useState<Workspace['provider']>('GitHub')
   const [url, setUrl] = useState('')
   const [branch, setBranch] = useState('main')
   const [host, setHost] = useState(servers[0]?.name ?? '')
@@ -107,7 +107,7 @@ export function WorkspaceAddPage({ nav }: PageProps) {
   const save = () => {
     if (!name) { toast('先填仓库地址'); return }
     addWorkspace({ id: name, name, provider, repo: url.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, ''), branch, host,
-      dir: `/home/dev/work/${name}`, last: '刚接入，正在拉代码', employees: [], branches: [{ name: branch, status: '主分支' }], commits: [], docs: [] })
+      dir: `/srv/opero/work/${name}`, last: '刚接入，正在拉代码', employees: [], branches: [{ name: branch, status: '主分支' }], commits: [], docs: [] })
     nav.back()
   }
   return (
@@ -115,10 +115,10 @@ export function WorkspaceAddPage({ nav }: PageProps) {
       <PageHeader title="接入仓库" {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>接入</button>} />
       <div className="page-body form">
         <Field label="代码托管">
-          <Segmented value={provider} options={[{ value: 'Codeup', label: 'Codeup' }, { value: 'GitHub', label: 'GitHub' }, { value: 'Gitea', label: 'Gitea' }]} onChange={setProvider} />
+          <Segmented value={provider} options={[{ value: 'GitHub', label: 'GitHub' }, { value: 'Gitea', label: 'Gitea' }, { value: 'Codeup', label: 'Codeup' }]} onChange={setProvider} />
         </Field>
-        <Field label="仓库地址" hint="用你带进来的「Codeup 个人令牌」拉代码：你能看的仓库员工就能看；没有就先去「权限和凭证」带进来">
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://codeup.aliyun.com/xxx/AI/my-app.git" />
+        <Field label="仓库地址" hint="用你带进来的「GitHub 个人令牌」（或别的托管的令牌）拉代码：你能看的仓库员工就能看；没有就先去「权限和凭证」带进来">
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/you/my-app.git" />
         </Field>
         <Field label="主分支"><input value={branch} onChange={(e) => setBranch(e.target.value)} /></Field>
         <Field label="拉到哪台服务器">
@@ -126,7 +126,7 @@ export function WorkspaceAddPage({ nav }: PageProps) {
             {servers.map((s) => <option key={s.id} value={s.name}>{s.name}（{s.env}）</option>)}
           </select>
         </Field>
-        {name && <p className="hint">会拉到 <span className="mono">{host}:/home/dev/work/{name}</span>，然后可以给它配员工。</p>}
+        {name && <p className="hint">会拉到 <span className="mono">{host}:/srv/opero/work/{name}</span>，然后可以给它配员工。</p>}
       </div>
     </div>
   )

@@ -1,4 +1,4 @@
-// AI 执行器的「傻瓜式」安装和登录（照 KidLock 的 cc.install / cc.login）：网页上点按钮，这里替用户在服务器上做。
+// AI 执行器的「傻瓜式」安装和登录：网页上点按钮，这里替用户在服务器上做。
 //   安装：以 AI 用户跑官方安装脚本（curl https://claude.ai/install.sh | bash），不行再用 npm（国内镜像）装；Codex 用 npm 装。
 //   登录（Claude 订阅）：以 AI 用户跑 `claude setup-token`。它是全屏终端界面，输出不是终端时什么都不打，所以用 util-linux 的
 //     script 给它一个伪终端，再用下面的小终端模拟器还原屏幕找登录网址和 token；网页把网址给用户，用户在浏览器里批准后把授权码贴回来，
@@ -66,29 +66,35 @@ function sh(host: string, script: string, env: Record<string, string> = {}, time
 
 // ---------- 安装 ----------
 const CLAUDE_OFFICIAL = 'curl -fsSL https://claude.ai/install.sh | bash'
-const NPM = (pkg: string, reg = '') => `command -v npm >/dev/null || { echo "没有 npm"; exit 1; }; npm install -g ${pkg} --prefix "$HOME/.local" --no-fund --no-audit${reg ? ` --registry ${reg}` : ''}`
+// 官方脚本没装完 / 以前装坏了，会在 ~/.local/bin 留一个跑不起来的 claude（npm 不肯覆盖：EEXIST）：跑不起来的先挪开再装
+const NPM = (pkg: string, bin: string, reg = '') => `command -v npm >/dev/null || { echo "没有 npm"; exit 1; }
+f="$HOME/.local/bin/${bin}"
+if [ -e "$f" ] || [ -L "$f" ]; then
+  if "$f" --version >/dev/null 2>&1; then echo "$f 已经能用"; exit 0; fi
+  echo "$f 跑不起来（上次没装完），挪到 $f.broken 再装"; mv -f "$f" "$f.broken"
+fi
+npm install -g ${pkg} --prefix "$HOME/.local" --no-fund --no-audit${reg ? ` --registry ${reg}` : ''}`
 const MIRROR = 'https://registry.npmmirror.com'
 
 export function startInstall(executor: 'claude' | 'codex', host = hosts.LOCAL): Job {
   if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
   job = { id: uid('j'), type: 'install', executor, host, state: 'running', log: '', started: Date.now() }
   const steps = executor === 'claude'
-    ? [['用官方安装脚本装 Claude Code', CLAUDE_OFFICIAL], ['官方脚本没成功，改用 npm 装', NPM('@anthropic-ai/claude-code')], ['再试国内镜像', NPM('@anthropic-ai/claude-code', MIRROR)]]
-    : [['用 npm 装 Codex', NPM('@openai/codex')], ['再试国内镜像', NPM('@openai/codex', MIRROR)]]
+    ? [['用官方安装脚本装 Claude Code', CLAUDE_OFFICIAL], ['官方脚本没成功，改用 npm 装', NPM('@anthropic-ai/claude-code', 'claude')], ['再试国内镜像', NPM('@anthropic-ai/claude-code', 'claude', MIRROR)]]
+    : [['用 npm 装 Codex', NPM('@openai/codex', 'codex')], ['再试国内镜像', NPM('@openai/codex', 'codex', MIRROR)]]
   const bin = executor === 'claude' ? cfg.claudeBin : cfg.codexBin
   ;(async () => {
     for (const [title, script] of steps) {
       log(`\n▶ ${title}\n`)
       const code = await sh(host, script, runner.egressEnv(executor, host))
-      if (code === 0) {
-        const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
-        if (v.code === 0) {
-          log(`\n✓ 装好了：${v.out.split('\n').pop()}\n`)
-          audit({ via: '—', action: 'ai.install', target: executor === 'claude' ? 'Claude Code' : 'Codex', level: '写', result: '成功', how: '网页一键安装' })
-          return done('ok', v.out.split('\n').pop() ?? '')
-        }
-        log(`\n装完了但找不到命令：${v.out.slice(-300)}\n`)
+      // 退出码不是 0 也看一眼：官方脚本有时装好了、最后一步报错
+      const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
+      if (v.code === 0) {
+        log(`\n✓ 装好了：${v.out.split('\n').pop()}\n`)
+        audit({ via: '—', action: 'ai.install', target: executor === 'claude' ? 'Claude Code' : 'Codex', level: '写', result: '成功', how: '网页一键安装' })
+        return done('ok', v.out.split('\n').pop() ?? '')
       }
+      if (code === 0) log(`\n装完了但找不到命令：${v.out.slice(-300)}\n`)
     }
     done('fail', '没装上：看上面的日志。常见原因是服务器连不上外网，可以让运维帮忙按 INSTALL.md 手动装')
   })()

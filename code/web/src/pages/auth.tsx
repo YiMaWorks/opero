@@ -38,7 +38,7 @@ export function LoginPage() {
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7
 const STEPS = ['你的账号', '接入服务器', '接 AI 执行器', '带入权限', '拉 Opero 代码', '系统管家', '后台开发员工']
-const PERMS = ['Codeup 个人令牌', '数据库账号', '云账号（AccessKey）', '其它服务器']
+const PERMS = ['GitHub 个人令牌', '数据库账号', '云账号（AccessKey）', '其它服务器']
 
 /** 开机向导：从一台空服务器到能和系统管家聊天 */
 export function Onboarding() {
@@ -49,7 +49,7 @@ export function Onboarding() {
   const [model, setModel] = useState('Opus 5.5')
   const [auth, setAuth] = useState<'key' | 'sub'>('key')
   const [key, setKey] = useState('')
-  const [picked, setPicked] = useState<string[]>(['Codeup 个人令牌'])
+  const [picked, setPicked] = useState<string[]>(['GitHub 个人令牌'])
   const [repo, setRepo] = useState('https://github.com/your-name/opero.git')
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }) }, [step, busy])
@@ -58,7 +58,7 @@ export function Onboarding() {
     setBusy(true)
     setTimeout(() => { setBusy(false); setStep((s) => (s + 1) as Step) }, ms)
   }
-  const cmd = 'curl -fsSL https://opero.yimakeji.cn/agent.sh | bash -s -- opr_x7k2m9q4'
+  const cmd = 'curl -fsSL https://opero.example.com/agent.sh | bash -s -- opr_x7k2m9q4'
 
   return (
     <div className="onboard">
@@ -77,7 +77,7 @@ export function Onboarding() {
         <Bot>欢迎！我是 Opero，你的个人开发助理。跟着走 6 步，10 分钟内就能和你的 AI 员工聊天。</Bot>
         <DoneCard title="① 你的账号" text={`已登录：${me.email}。这套 Opero 只有你一个人用：你在公司有什么权限就带进来，没有的这里也没有；习惯不同就自己二开`} />
 
-        {step >= 1 && (step > 1 ? <DoneCard title="② 接入服务器" text="已连接 AWS-dev · Ubuntu 24.04 · 2 核 8G · Agent 2.0.1" /> : (
+        {step >= 1 && (step > 1 ? <DoneCard title="② 接入服务器" text="已连接 dev-1 · Ubuntu 24.04 · 2 核 8G · Agent 2.0.1" /> : (
           <StepCard title="② 接入服务器" desc="在要干活的服务器上用 root 跑这一条（装 Agent、建开发用户和工作区；服务器只主动连出，不开端口）：">
             <div className="cmd-box mono">{cmd}<button className="btn ghost sm" onClick={() => { navigator.clipboard?.writeText(cmd).catch(() => {}); toast('已复制') }}>复制</button></div>
             <div className="row-actions"><button className="btn primary" disabled={busy} onClick={() => next(1400)}>{busy ? '等它连上来…' : '我已经运行了'}</button></div>
@@ -117,7 +117,7 @@ export function Onboarding() {
           </StepCard>
         ))}
 
-        {step >= 4 && (step > 4 ? <DoneCard title="⑤ 拉 Opero 代码" text="已拉到 AWS-dev:/home/dev/work/opero，成了工作空间「opero」" /> : (
+        {step >= 4 && (step > 4 ? <DoneCard title="⑤ 拉 Opero 代码" text="已拉到 dev-1:/srv/opero/work/opero，成了工作空间「opero」" /> : (
           <StepCard title="⑤ 把后台自己的代码拉到服务器" desc="填你 fork 的 Opero 仓库；以后「后台开发」员工就在这里给 Opero 加功能。">
             <Field label="仓库地址"><input value={repo} onChange={(e) => setRepo(e.target.value)} /></Field>
             <div className="row-actions"><button className="btn primary" disabled={busy} onClick={() => next(1100)}>{busy ? '拉代码中…' : '拉取'}</button></div>

@@ -2,7 +2,9 @@
 # Opero 安装 / 升级（像以前的论坛系统：一台 Linux 服务器、一条命令）。要 root。代码从 GitHub 拉，不经过 Opero 官网：
 #   curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash
 #   或者在拉下来的代码里：sudo bash code/server/scripts/install.sh
-#   换代码来源（镜像 / 自己的 fork）：OPERO_REPO=https://…/opero.git OPERO_BRANCH=main
+#   换代码来源（镜像 / 自己的 fork / 私有仓库）：OPERO_REPO=https://…/opero.git OPERO_BRANCH=main，记在 /etc/opero/source.env，
+#   之后 opero update 一直用它；换回 GitHub：OPERO_REPO=https://github.com/yimaworks/opero.git OPERO_BRANCH=main sudo -E opero update
+#   私有仓库的账号令牌不要写进地址（会进 opero 命令和 git 配置），用 root 的 git 凭据（git config --global credential.helper store）
 # 选项：
 #   --update        只升级程序（数据、配置不动）；opero update 就是它
 #   --with-claude   顺便给 AI 用户装 Claude Code（默认不装：装好后在网页开机向导里点「一键安装」，有进度、会登录）
@@ -11,7 +13,7 @@
 #   --cn            用国内镜像下载 Node 和 npm 包
 #   --agent URL [TOKEN]  只装 Opero Agent（让员工能在这台干活）：URL 是你那套 Opero 的地址，TOKEN 是网页「应用 → 服务器 → 接入」给的一次性令牌（带了马上接入；
 #                   不带也行：这台按自己的指纹去连，你在网页上核对指纹后点「接受」）。换 Opero 地址：sudo opero agent-url <新地址>。
-#                   重装 / 换令牌重跑都行：Opero 认得是同一台机器。可以和别的 Agent（比如 KidLock 的 kl-logagent）装在同一台，互不影响。
+#                   重装 / 换令牌重跑都行：Opero 认得是同一台机器。可以和别的 Agent 装在同一台，互不影响。
 # 装完的样子：
 #   /opt/opero/node      Node 22（只给 Opero 用）
 #   /opt/opero/app       程序（code/server + code/web/dist）
@@ -40,6 +42,12 @@ done
 
 HOME_DIR=/opt/opero; APP=$HOME_DIR/app; NODE_DIR=$HOME_DIR/node
 ETC=/etc/opero; DATA=/var/lib/opero; WORK=/srv/opero/work
+SOURCE_ENV=$ETC/source.env   # 自定义的代码来源，opero update 沿用
+if [ -n "${OPERO_REPO:-}" ]; then
+  mkdir -p $ETC && printf 'OPERO_REPO=%q\nOPERO_BRANCH=%q\n' "$OPERO_REPO" "${OPERO_BRANCH:-main}" > $SOURCE_ENV && chmod 600 $SOURCE_ENV
+elif [ -f $SOURCE_ENV ]; then
+  . $SOURCE_ENV
+fi
 REPO=${OPERO_REPO:-https://github.com/yimaworks/opero.git}
 BRANCH=${OPERO_BRANCH:-main}
 SRC=$HOME_DIR/src   # 代码的 git 副本，opero update 在这里拉最新
@@ -110,8 +118,9 @@ case "\${1:-}" in
   stop) systemctl stop opero-agent ;;
   start) systemctl start opero-agent ;;
   update) shift; [ "\$(id -u)" = 0 ] || { echo "要 root：sudo opero update"; exit 1; }
-    [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch $BRANCH $REPO $SRC || exit 1
-    git -C $SRC remote set-url origin $REPO && git -C $SRC fetch --quiet --depth 1 origin $BRANCH && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
+    R=\${OPERO_REPO:-$REPO}; B=\${OPERO_BRANCH:-$BRANCH}
+    [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch "\$B" "\$R" $SRC || exit 1
+    git -C $SRC remote set-url origin "\$R" && git -C $SRC fetch --quiet --depth 1 origin "\$B" && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
     exec bash $SRC/code/server/scripts/install.sh --update "\$@" ;;
   ai) shift; sudo -u opero-ai -H bash -l "\$@" ;;
   fingerprint) set -a; . $ETC/agent.env; set +a; exec $NODE_DIR/bin/node --disable-warning=ExperimentalWarning $APP/code/server/src/agent.ts --fingerprint ;;
@@ -149,7 +158,7 @@ EOF
     - 点它 →「AI 执行器」：一键安装 Claude Code、登录（都是点按钮）
     - 员工的「编辑 → 跑在哪台服务器」选它，员工就在这台干活
   常用：opero status · opero logs · sudo opero update
-  这台上原来的其它 Agent（比如 KidLock 的）不受影响。
+  这台上原来的其它 Agent 不受影响。
 EOF
   else
     journalctl -u opero-agent -n 30 --no-pager || true
@@ -320,8 +329,9 @@ case "\${1:-}" in
   fingerprint) run fingerprint ;;
   info) run info ;;
   update) shift; [ "\$(id -u)" = 0 ] || { echo "要 root：sudo opero update"; exit 1; }
-    [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch $BRANCH $REPO $SRC || exit 1
-    git -C $SRC remote set-url origin $REPO && git -C $SRC fetch --quiet --depth 1 origin $BRANCH && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
+    R=\${OPERO_REPO:-$REPO}; B=\${OPERO_BRANCH:-$BRANCH}
+    [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch "\$B" "\$R" $SRC || exit 1
+    git -C $SRC remote set-url origin "\$R" && git -C $SRC fetch --quiet --depth 1 origin "\$B" && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
     exec bash $SRC/code/server/scripts/install.sh --update "\$@" ;;
   ai) shift; sudo -u opero-ai -H bash -l "\$@" ;;
   *) echo "用法：opero status | logs | restart | start | stop | info | reset-password | fingerprint | update | ai（切到 AI 用户的 shell，登录 claude / codex）" ;;

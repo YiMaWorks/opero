@@ -90,7 +90,7 @@ Tell the user to open the address and:
 
 ## 6. More servers (Opero Agent)
 
-Employees can also work on other servers. Opero installs a small **Agent** there; it connects out to Opero (no inbound port needed) and coexists with other agents on the machine (for example KidLock's `kl-logagent`).
+Employees can also work on other servers. Opero installs a small **Agent** there; it connects out to Opero (no inbound port needed) and coexists with other agents already on the machine.
 
 1. In Opero: **应用 → 服务器和 Agent → 接入 → 装 Agent → 生成安装命令** (one-time token, valid 30 minutes).
 2. On the other server, run that command as root. It looks like:

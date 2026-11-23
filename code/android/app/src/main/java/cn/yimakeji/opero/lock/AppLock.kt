@@ -11,7 +11,7 @@ import cn.yimakeji.opero.data.Api
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
- * 指纹 / 面容（照 KidLock lock/AppLock.kt）：
+ * 指纹 / 面容：
  *   - 解锁 App：打开、离开超过设定时间再回来，先盖一层锁屏，验过才能看（设置里开，默认关）
  *   - 验证本人（危险操作、看明文…）：网页调 OperoNative.verify → 这里弹系统验证；30 分钟内验过不再问
  *   没录指纹 / 面容的手机可以用锁屏密码（DEVICE_CREDENTIAL）

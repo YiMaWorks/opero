@@ -1,6 +1,6 @@
 /* Opero 设计系统（docs/规范/表单与卡片.md 第 7 节）+ 布局。颜色全部用变量，深色主题只换变量。≤ 860px 走手机布局。 */
 :root {
-  /* 中性色照 KidLock「冰川」（浅）/「夜」（深）；强调色是 Opero 品牌紫。我的气泡 = 强调色 → 紫罗兰渐变（同 KidLock 聊天样式） */
+  /* 中性色：浅色偏冷灰，深色偏夜蓝；强调色是 Opero 品牌紫。我的气泡 = 强调色 → 紫罗兰渐变 */
   --primary: #5B4FE9; --primary-2: #7B6FF0; --on-primary: #FFFFFF; --primary-soft: #EEECFE; --primary-text: #4338CA; --violet: #8B5CF6; --nav-solid: #2C2848; --nav-on-text: #FFFFFF; --bg-solid: #F4F5F8; --panel-solid: #FFFFFF; --wallpaper: #F4F5F8;
   --ok: #12A150; --ok-soft: #E8F7EE;
   --warn: #C26A00; --warn-soft: #FFF3E2;
@@ -76,7 +76,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .m-page.full { height: 100%; overflow: auto; }
 
 /* 一级导航（电脑） */
-/* 左边一栏照 KidLock：紫色渐变，图标在上、字在下 */
+/* 左边一栏紫色渐变，图标在上、字在下 */
 .nav { background: var(--nav); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 6px; }
 .nav-logo { width: 42px; height: 42px; border-radius: 12px; background: rgba(255,255,255,.08); display: grid; place-items: center; margin-bottom: 12px; }
 .nav-btn { position: relative; width: 60px; padding: 8px 0 6px; border-radius: 12px; color: var(--nav-text); display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11.5px; }
@@ -104,7 +104,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .search.live input { flex: 1; border: 0; outline: 0; background: transparent; font-size: 15px; color: var(--text); min-width: 0; }
 .slist-body { overflow: auto; flex: 1; padding: 0 0 12px; }
 .mobile .slist-body { background: var(--panel); }
-/* 一行照 KidLock：44 圆角方头像 · 名字 14/600 · 预览 12.5 · 在干活 = 蓝色跳动点 / 等你 = 橙色「!」 */
+/* 一行44 圆角方头像 · 名字 14/600 · 预览 12.5 · 在干活 = 蓝色跳动点 / 等你 = 橙色「!」 */
 .sitem { width: 100%; display: flex; gap: 12px; align-items: center; padding: 10px 14px; text-align: left; position: relative; border-bottom: 1px solid var(--line-soft); user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .sitem:hover { background: color-mix(in srgb, var(--panel) 60%, transparent); }
 .sitem.pinned { background: var(--pinned); }
@@ -156,7 +156,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .avatar-dot.ok { background: var(--ok); }
 .avatar-dot.warn { background: var(--warn); }
 
-/* ---------- 聊天（照 KidLock 聊天样式：顶栏 44 头像 + 在干活胶囊；消息区不放头像；我的气泡渐变；输入区在底部白条里） ---------- */
+/* ---------- 聊天 ---------- */
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--bg); position: relative; }
 .empty-chat { align-items: center; justify-content: center; gap: 8px; }
 .chat-head { display: flex; gap: 12px; align-items: center; padding: 12px 18px; min-height: 68px; background: var(--panel); border-bottom: 1px solid var(--line); flex: none; }
@@ -198,7 +198,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .spinner { display: inline-block; flex: none; width: 13px; height: 13px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--primary); animation: spin .8s linear infinite; }
 .dot-ok { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 @keyframes spin { to { transform: rotate(360deg); } }
-/* 在干活：消息区底部一行（照 KidLock：转圈 + 在做什么 + 红色「停止」） */
+/* 在干活：消息区底部一行 */
 .working-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 12.5px; color: var(--primary-text); background: var(--panel); border-top: 1px solid var(--line); }
 .working-bar span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .desktop .working-bar { justify-content: center; background: transparent; border-top: 0; padding: 4px 24px 8px; }
@@ -213,7 +213,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .menu-icon svg { width: 18px; height: 18px; }
 .menu-bar button { flex: 1; padding: 12px 4px; font-size: 13.5px; font-weight: 500; border-left: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .menu-bar button:hover { background: var(--hover); }
-/* 电脑：底部白条（照 KidLock）：第一行 底部菜单 + work 设置（模型 / 思考 / 审核 / 上下文）；第二行 ＋ · 输入框 · 发送；最下一行提示 */
+/* 电脑：底部白条：第一行 底部菜单 + work 设置（模型 / 思考 / 审核 / 上下文）；第二行 ＋ · 输入框 · 发送；最下一行提示 */
 .desktop .chat-foot { padding: 10px 18px 12px; display: flex; flex-direction: column; gap: 8px; }
 .composer-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ctl-select { height: 30px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 0 8px; font-size: 12.5px; color: var(--text); outline: 0; cursor: pointer; }
@@ -234,7 +234,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .composer-send .icon-btn.boxed, .composer-send .btn { height: 36px; }
 .composer-send .btn.primary svg { width: 16px; height: 16px; }
 .composer-hint { font-size: 11.5px; color: var(--faint); }
-/* 手机：照 KidLock App：44 高的圆角输入条 + 44 圆形按钮（发送 = 主色，停止 = 红） */
+/* 手机：44 高的圆角输入条 + 44 圆形按钮（发送 = 主色，停止 = 红） */
 .composer.m { display: flex; gap: 8px; align-items: center; padding: 8px 10px; }
 .composer.m input { flex: 1; height: 44px; border-radius: 22px; border: 0; outline: 0; background: var(--bg); padding: 0 16px; font-size: 15px; min-width: 0; }
 .composer.m input:focus { box-shadow: 0 0 0 2px var(--primary-soft); }
@@ -277,6 +277,7 @@ mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding
 .chip { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; padding: 4px 10px; border-radius: 14px; color: var(--primary-text); background: var(--primary-soft); }
 button.chip:not(.on) { background: var(--soft); color: var(--sub); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-input { font-size: 12px; padding: 4px 10px; border-radius: 14px; width: 150px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .add { color: var(--ok); } .del { color: var(--danger); }
 .count-badge { min-width: 20px; height: 20px; border-radius: 10px; background: var(--danger); color: #fff; font-size: 11.5px; display: inline-grid; place-items: center; padding: 0 6px; }
 .x-icon { width: 18px; height: 18px; border-radius: 50%; background: var(--danger); color: #fff; display: grid; place-items: center; font-size: 13px; line-height: 1; }
@@ -578,7 +579,7 @@ button.chip:not(.on) { background: var(--soft); color: var(--sub); }
 .flow-steps { margin: 0; padding-left: 70px; font-size: 13px; color: var(--sub); line-height: 1.8; }
 .ai-down { padding: 8px 16px; font-size: 12.5px; background: var(--warn-soft); color: var(--warn); border-bottom: 1px solid var(--line); }
 
-/* AI 回复按 Markdown 显示（照 KidLock .kl-md） */
+/* AI 回复按 Markdown 显示 */
 .md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
 .md p { margin: 0 0 6px; }
 .md ul, .md ol { margin: 4px 0 6px; padding-left: 20px; }
@@ -654,7 +655,7 @@ button.chip:not(.on) { background: var(--soft); color: var(--sub); }
 .more-list button span { display: flex; flex-direction: column; gap: 2px; }
 .more-list small { font-size: 12px; color: var(--faint); }
 .work-sheet > * { flex: none; }
-/* 风格选择：每套一个缩小的界面（照 KidLock） */
+/* 风格选择：每套一个缩小的界面 */
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
 .theme-card { display: flex; flex-direction: column; gap: 6px; align-items: stretch; text-align: left; padding: 6px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); }
 .theme-card:hover { border-color: var(--primary); }
@@ -736,7 +737,7 @@ body { background: var(--bg-solid); }
 [data-glass="1"] .nav, [data-glass="1"] .slist, [data-glass="1"] .side, [data-glass="1"] .chat-head, [data-glass="1"] .chat-foot,
 [data-glass="1"] .page-head, [data-glass="1"] .sheet, [data-glass="1"] .ctx, [data-glass="1"] .tabbar { backdrop-filter: blur(18px) saturate(1.2); -webkit-backdrop-filter: blur(18px) saturate(1.2); }
 [data-glass="1"] .overlay, [data-glass="1"] .panel.m, [data-glass="1"] .m-page.full, [data-glass="1"] .panel { background: var(--wallpaper); }
-/* ---------- 图片编辑器（照 KidLock：裁剪 · 调色 · 输出，右边看效果） ---------- */
+/* ---------- 图片编辑器 ---------- */
 .imged-mask { z-index: 90; align-items: center; }
 .imged { width: min(1000px, 96vw); height: min(680px, 92vh); background: var(--panel-solid); border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-lg); animation: sheet-in .2s ease-out; }
 .imged-head { display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 18px; border-bottom: 1px solid var(--line); }

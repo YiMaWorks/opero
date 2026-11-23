@@ -152,7 +152,7 @@ code/server          后台（Node 22，直接跑 TypeScript，node:sqlite）+ �
 code/web             网页界面（React 19 + Vite + TypeScript）
 code/android         安卓外壳（Kotlin，WebView + 推送 + 指纹）
 code/design-mockups  生成设计图和 Logo 的脚本
-docs/                规范和设计文档（索引见 docs/README.md）
+docs/                规范和设计文档（从 docs/设计.md 看起）
 deploy/              构建、部署脚本
 ```
 

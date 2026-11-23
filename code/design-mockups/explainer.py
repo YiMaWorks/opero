@@ -58,7 +58,7 @@ SESS = [
     ("修登录 bug", "fix login bug"), ("查生产库订单", "query prod orders"), ("ssh 到 prod-1 看日志", "ssh prod-1, check logs"),
     ("重构支付模块", "refactor payments"), ("清理测试数据", "clean test data"), ("发版 v1.4.1", "release v1.4.1"),
     ("排查 503", "debug 503s"), ("改导出接口", "fix export API"), ("续 SSL 证书", "renew SSL cert"),
-    ("查 nimbus 内存", "check nimbus memory"), ("写单元测试", "write unit tests"), ("回滚 v1.4.0？", "roll back v1.4.0?"),
+    ("查 shop-admin 内存", "check shop-admin memory"), ("写单元测试", "write unit tests"), ("回滚 v1.4.0？", "roll back v1.4.0?"),
     ("又一个新会话", "yet another session"), ("这个是哪台服务器？", "which server was this?"),
 ]
 

@@ -19,7 +19,7 @@ import cn.yimakeji.opero.R
 import cn.yimakeji.opero.data.Api
 
 /**
- * 通知栏（照 KidLock push/Notifier.kt，类别按 Opero 的「少红点」规则收成 3 种）：
+ * 通知栏（类别按 Opero 的「少红点」规则收成 3 种）：
  *   decide 要你决定（卡片等你点、危险操作要你确认）= 高优先级，横幅 + 声音
  *   alarm  严重告警（生产挂了）= 闹钟铃声、长震、一直响到你点「我知道了」
  *   info   知道就行（做完了、设成「每条都提醒」的员工的消息）= 普通

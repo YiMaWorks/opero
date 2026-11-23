@@ -16,7 +16,7 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
- * App 内更新（KidLock update/ 的简化版）：问自己那套 Opero 有没有新外壳（GET /api/app/update → versionCode / versionName / url / sha256 / must / notes），
+ * App 内更新：问自己那套 Opero 有没有新外壳（GET /api/app/update → versionCode / versionName / url / sha256 / must / notes），
  * 下载到 files/update/、核对 sha256，交给系统安装器（第一次要在系统设置里允许「安装未知应用」）。
  * 外壳很少要更新：界面都在网页里，网页随 Opero 一起发版。
  */

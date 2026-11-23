@@ -8,6 +8,7 @@ import { emit } from './bus.ts'
 import { getSecret, scrub } from './vault.ts'
 import * as agents from './agents.ts'
 import type { Credential, Server } from './types.ts'
+import { sysInfo } from './sysinfo.ts'
 
 export const LOCAL_ID = 'local'
 
@@ -114,7 +115,7 @@ export async function checkServer(sv: Server): Promise<Server> {
   let next: Server
   if (r.code === 0 && /MEM=/.test(r.out)) {
     const h = parseHealth(r.out)
-    next = { ...cur, ...h, online: true, checked: Date.now(), error: undefined }
+    next = { ...cur, ...h, online: true, checked: Date.now(), error: undefined, ...(sv.id === LOCAL_ID ? { sys: sysInfo() } : {}) }
   } else {
     next = { ...cur, online: false, checked: Date.now(), error: r.out.slice(-300) }
   }

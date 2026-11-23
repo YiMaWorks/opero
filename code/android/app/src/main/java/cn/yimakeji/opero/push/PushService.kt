@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * 常驻连接（照 KidLock push/PushService.kt）：前台服务里一直长轮询（没新的就等 25 秒），有提醒马上弹。
+ * 常驻连接：前台服务里一直长轮询（没新的就等 25 秒），有提醒马上弹。
  * 断网 / 出错按 2、4、8…60 秒重试，网络恢复马上重连；设备令牌被作废（401）就停。
  * 开机（BootReceiver）、打开 App、看门狗（Watchdog，每 15 分钟）都会把它拉起来。
  */

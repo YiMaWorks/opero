@@ -151,7 +151,7 @@ def patrol():
     # 日志平台（后面）
     win(s, 300, 214, 470, 300, "日志平台 · 搜索", dark=False)
     s.rect(316, 254, 438, 30, 7, "#F4F5F8", "#E2E4EA")
-    s.text(328, 274, 'level:ERROR AND service:mov-market', 12, SUB, mono=True)
+    s.text(328, 274, 'level:ERROR AND service:shop-api', 12, SUB, mono=True)
     import random
     rnd = random.Random(7)
     for i in range(36):
@@ -162,9 +162,9 @@ def patrol():
         s.rect(322, 379 + i * 22, 60, 8, 3, "#E9B4AE")
         s.rect(390, 379 + i * 22, 200 + rnd.randint(0, 140), 8, 3, "#DADDE4")
     # 终端（前面）
-    win(s, 70, 330, 520, 400, "ssh deploy@AWS-prod-1 — 终端")
+    win(s, 70, 330, 520, 400, "ssh deploy@prod-1-1 — 终端")
     logs = [
-        ("$ zgrep ERROR /var/log/mov/app.log.*.gz | wc -l", MONO_GRY),
+        ("$ zgrep ERROR /var/log/shop/app.log.*.gz | wc -l", MONO_GRY),
         ("21384", MONO_GRY),
         ("$ grep ERROR app.log | tail -n 14", MONO_GRY),
         ("10:21:07 ERROR SIGN_ERR invalid signature", MONO_RED),
@@ -179,7 +179,7 @@ def patrol():
         ("10:21:15 ERROR NPE OrderService.java:214", MONO_RED),
         ("10:21:15 WARN  pool slow 903ms", MONO_YEL),
         ("10:21:16 ERROR SIGN_ERR invalid signature", MONO_RED),
-        ("$ ssh deploy@AWS-prod-2   # 下一台…", MONO_GRY),
+        ("$ ssh deploy@prod-1-2   # 下一台…", MONO_GRY),
     ]
     for i, (t, c) in enumerate(logs):
         s.text(86, 374 + i * 21, t, 12, c, mono=True)
@@ -188,7 +188,7 @@ def patrol():
     callout(s, 3, 700, 330, 552, 800, ["分不清新老问题", "看不出原因和影响"], w=220)
 
     # 手机
-    cx, cy, cw = phone(s, 870, 206, "值", "mov 日志值班", "在盯 mov 三个项目 · 每 5 分钟", ["问题清单", "日志扫描", "查生产库"])
+    cx, cy, cw = phone(s, 870, 206, "值", "shop 日志值班", "在盯 shop 三个项目 · 每 5 分钟", ["问题清单", "日志扫描", "查生产库"])
     sysline(s, cx + cw / 2, cy + 6, "今天 09:30")
     h = card2(s, cx, cy + 16, cw, "早报", BLUE, "昨晚扫了 3 台 · 2.1 万行日志", [("新问题", "1 个（严重）"), ("老问题", "4 个，没变多"), ("已忽略", "12 类，没提醒你")], ["看问题清单"])
     y = cy + 16 + h + 10
@@ -210,11 +210,11 @@ def bug():
     s = SVG(1600, 1110, "#FAFAFC")
     defs(s)
     header(s, "Bug 处理：界面的变化", "以前在工单系统里来回问、在 IDE 里改、在流水线里等；现在在和「开发员工」的聊天里，从截图到上线")
-    panels(s, "以前 · 工单 + IDE + 流水线", "现在 · 和「mov 开发」聊天")
+    panels(s, "以前 · 工单 + IDE + 流水线", "现在 · 和「shop 开发」聊天")
 
     # 工单
-    win(s, 70, 214, 470, 430, "工单 · MOV-1024 导出订单报错", dark=False)
-    s.text(90, 270, "MOV-1024  导出 10 月订单报错", 16, INK, 700)
+    win(s, 70, 214, 470, 430, "工单 · SHOP-1024 导出订单报错", dark=False)
+    s.text(90, 270, "SHOP-1024  导出 10 月订单报错", 16, INK, 700)
     for i, (k, v, c) in enumerate([("状态", "处理中", ORANGE), ("经办人", "张三 → 李四 → 张三", SUB), ("优先级", "高", RED)]):
         s.text(90, 302 + i * 24, k, 12.5, FAINT)
         s.text(160, 302 + i * 24, v, 12.5, c, 600)
@@ -239,7 +239,7 @@ def bug():
     callout(s, 2, 372, 304, 316, 800, ["经办人转来转去", "状态靠手动改"], w=220)
     callout(s, 3, 748, 287, 552, 800, ["改完还要盯流水线", "失败了再回 IDE"], w=220)
 
-    cx, cy, cw = phone(s, 870, 206, "开", "mov 开发", "Opus 5.5 · 在分支上改，检查过再合并", ["改动记录", "预览", "发布记录"])
+    cx, cy, cw = phone(s, 870, 206, "开", "shop 开发", "Opus 5.5 · 在分支上改，检查过再合并", ["改动记录", "预览", "发布记录"])
     sysline(s, cx + cw / 2, cy + 6, "今天 14:02")
     # 我：截图 + 一句话
     s.add(f'<rect x="{cx+cw-120}" y="{cy+16}" width="120" height="78" rx="12" fill="#DCE3F5"/>')
@@ -286,11 +286,11 @@ def ops():
     # 短信
     s.add('<rect x="96" y="560" width="330" height="110" rx="18" fill="#FFFFFF" filter="url(#sh)"/>')
     s.text(116, 588, "短信 · 03:12", 12, FAINT)
-    s.text(116, 614, "【告警】AWS-prod-1 磁盘使用率 92%", 13.5, INK, 700)
-    s.text(116, 638, "【告警】nimbus 服务 503（第 3 次）", 13.5, INK, 700)
+    s.text(116, 614, "【告警】prod-1-1 磁盘使用率 92%", 13.5, INK, 700)
+    s.text(116, 638, "【告警】shop-admin 服务 503（第 3 次）", 13.5, INK, 700)
     s.text(116, 660, "请尽快处理。退订回 T", 12, FAINT)
-    win(s, 450, 560, 320, 160, "ssh root@AWS-prod-1")
-    for i, (t, c) in enumerate([("# df -h /", MONO_GRY), ("/dev/xvda1  100G  92G  8G  92%", MONO_RED), ("# du -sh /var/log/*", MONO_GRY), ("41G  /var/log/mov", MONO_YEL), ("# systemctl restart nimbus", MONO_GRY)]):
+    win(s, 450, 560, 320, 160, "ssh root@prod-1-1")
+    for i, (t, c) in enumerate([("# df -h /", MONO_GRY), ("/dev/xvda1  100G  92G  8G  92%", MONO_RED), ("# du -sh /var/log/*", MONO_GRY), ("41G  /var/log/shop", MONO_YEL), ("# systemctl restart shop-admin", MONO_GRY)]):
         s.text(464, 604 + i * 20, t, 12, c, mono=True)
     callout(s, 3, 744, 330, 552, 790, ["一屏几十张图", "自己看哪里不对"], w=220)
     callout(s, 1, 410, 600, 70, 790, ["半夜 3 点被叫醒", "短信一条接一条"], w=230)
@@ -298,9 +298,9 @@ def ops():
 
     cx, cy, cw = phone(s, 870, 206, "运", "运维", "盯着 6 台服务器 · 用你带进来的账号", ["服务器", "操作记录", "触发器"])
     sysline(s, cx + cw / 2, cy + 6, "今天 08:30")
-    h = card2(s, cx, cy + 16, cw, "早报", BLUE, "昨晚处理了 2 件，都可撤销", [("03:12", "磁盘 92%：清了旧日志，现 51%"), ("03:15", "nimbus 503：已重启，疑内存泄漏"), ("提醒", "证书 12 天后到期，已排续期")], ["看操作记录"])
+    h = card2(s, cx, cy + 16, cw, "早报", BLUE, "昨晚处理了 2 件，都可撤销", [("03:12", "磁盘 92%：清了旧日志，现 51%"), ("03:15", "shop-admin 503：已重启，疑内存泄漏"), ("提醒", "证书 12 天后到期，已排续期")], ["看操作记录"])
     y = cy + 16 + h + 10
-    h2 = card2(s, cx, y, cw, "要你确认", ORANGE, "nimbus 内存泄漏：先加内存撑着？", [("方案", "prod-1 内存 4G → 8G，+¥80/月"), ("同时", "已让「mov 开发」去修泄漏")], ["指纹确认", "先不加"], tag="要你决定", tagc=(ORANGE, ORANGE_SOFT))
+    h2 = card2(s, cx, y, cw, "要你确认", ORANGE, "shop-admin 内存泄漏：先加内存撑着？", [("方案", "prod-1 内存 4G → 8G，+¥80/月"), ("同时", "已让「shop 开发」去修泄漏")], ["指纹确认", "先不加"], tag="要你决定", tagc=(ORANGE, ORANGE_SOFT))
     callout(s, 1, cx + cw + 4, cy + 60, 1268, 250, ["半夜的事它先处理完", "早上一条早报，每件都能撤销"], new=True)
     callout(s, 2, cx + cw + 4, y + 50, 1268, 420, ["花钱、改生产才问你", "卡片 + 指纹，30 分钟内不再问"], new=True)
     callout(s, 3, cx + cw + 4, y + 104, 1268, 580, ["查原因交给开发员工", "员工之间自己转，不用你传话"], new=True)

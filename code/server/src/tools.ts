@@ -11,6 +11,7 @@ import { isReadSql, resultText, runQuery } from './dbconn.ts'
 import { syncWorkspace } from './git.ts'
 import * as runner from './runner.ts'
 import type { Card, Credential, DataSource, Employee, KbDoc, Server, Workspace } from './types.ts'
+import { isProtected } from './env.ts'
 
 type Run = { emp: string; sid: string; runId: string }
 export interface ToolResult { text: string; isError?: boolean }
@@ -159,10 +160,11 @@ async function serverExec(run: Run, emp: Employee, a: { server?: string; command
   if (cred && !cred.aiAllowed) return fail('这台服务器的账号设成了「只有主人本人能用」，员工不能用')
   const ro = isReadOnly(command)
   const danger = DANGER.test(command)
-  const prod = sv.env === '生产' && kvGet<{ prodProtect?: boolean }>('settings', {}).prodProtect
+  // 这台自己设过就按它；没设过 = 像生产的标签 + 「我 → 设置」的生产保护开着
+  const prod = sv.protect ?? (isProtected(sv) && !!kvGet<{ prodProtect?: boolean }>('settings', {}).prodProtect)
   if (emp.approval === 'plan' && !ro) return fail('现在是「只看不改」，只能跑只读命令')
   if (danger || (!ro && (emp.approval !== 'auto' || prod))) {
-    const yes = await confirmCard(run, emp, { title: `在 ${sv.name}（${sv.env}）上执行`, detail: command, why: String(a.reason ?? ''), danger: danger || sv.env === '生产' })
+    const yes = await confirmCard(run, emp, { title: `在 ${sv.name}（${sv.env}）上执行`, detail: command, why: String(a.reason ?? ''), danger: danger || isProtected(sv) })
     if (!yes) return fail('主人没同意')
   }
   const r = await execOn(sv, command, 120_000)
@@ -184,7 +186,7 @@ async function dbQuery(run: Run, emp: Employee, a: { database?: string; sql?: st
     if (!ds.writable) return fail('这个库只接了只读账号，不能改数据')
     if (emp.approval === 'plan') return fail('现在是「只看不改」')
     const danger = /\b(drop|truncate|alter)\b/i.test(sql) || (/^\s*(delete|update)\b/i.test(sql) && !/\bwhere\b/i.test(sql))
-    const yes = await confirmCard(run, emp, { title: `改 ${ds.name}（${ds.env}）的数据`, detail: sql, why: String(a.reason ?? ''), danger: danger || ds.env === '生产', note: '改之前没有自动快照，确认 SQL 没问题再点' })
+    const yes = await confirmCard(run, emp, { title: `改 ${ds.name}（${ds.env}）的数据`, detail: sql, why: String(a.reason ?? ''), danger: danger || isProtected(ds), note: '改之前没有自动快照，确认 SQL 没问题再点' })
     if (!yes) return fail('主人没同意')
   }
   try {

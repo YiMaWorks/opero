@@ -85,7 +85,7 @@ export default function App() {
 
   // 电脑上默认打开一个会话；手机上停在列表
   useEffect(() => {
-    if (!mobile && !current && sessions.length) setCurrent(sessions.find((s) => s.id === 's-mov-log')?.id ?? sessions[0].id)
+    if (!mobile && !current && sessions.length) setCurrent(sessions.find((s) => s.id === 's-shop-log')?.id ?? sessions[0].id)
   }, [mobile, current, sessions])
 
   const stack = stacks[tab]
@@ -130,7 +130,7 @@ export default function App() {
     switch (card.type) {
       case 'issue':
         if (action.id === 'fix') {
-          patchCard(sid, card.id, { state: 'done', result: '你选了「修复」· 已交给「mov 开发」' })
+          patchCard(sid, card.id, { state: 'done', result: '你选了「修复」· 已交给「shop 开发」' })
           runFixDemo(sid)
         } else {
           setIssueStatus(Number(card.data.no), action.id === 'watch' ? 'watching' : 'ignored')
@@ -159,7 +159,7 @@ export default function App() {
         if (action.id === 'revert') revertMerge(sid)
         return
       case 'query':
-        if (action.id === 'save') saveQuery({ id: uid('q'), source: 'mov-prod', name: '用户最近的订单', sql: card.data.sql })
+        if (action.id === 'save') saveQuery({ id: uid('q'), source: 'shop-prod', name: '用户最近的订单', sql: card.data.sql })
         else toast('已导出 CSV（原型）')
         return
       case 'release':

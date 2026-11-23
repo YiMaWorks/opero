@@ -38,7 +38,7 @@ object PushState {
 }
 
 /**
- * 推送接口（照 KidLock push/PushClient.kt）：登记 POST /api/app/devices；长轮询 GET /api/app/push?after=&wait=；断开 DELETE /api/app/devices/<id>
+ * 推送接口：登记 POST /api/app/devices；长轮询 GET /api/app/push?after=&wait=；断开 DELETE /api/app/devices/<id>
  * 一人一套没法用厂商推送（厂商推送要 App 发行方的密钥，不能发给每一套自建的 Opero），所以只有常驻连接 + 看门狗补取。
  */
 object PushClient {

@@ -37,7 +37,7 @@ export function SearchOverlay({ onClose, onOpenChat, onOpen }: {
         <div className="search live"><IconSearch /><input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜员工、聊天记录、项目、问题" /></div>
       </header>
       <div className="overlay-body">
-        {!res && <p className="hint center">试试：签名、发布、uugo、#41</p>}
+        {!res && <p className="hint center">试试：签名、发布、crm、#41</p>}
         {empty && <p className="hint center">没找到「{q}」</p>}
         {res && res.employees.length > 0 && (
           <Section title="员工">
@@ -165,10 +165,10 @@ const LANGS = ['中文', 'English', '日本語', '한국어'] as const
 type Lang = (typeof LANGS)[number]
 const TEMPLATES: Record<string, Record<Lang, string>> = {
   邮件: {
-    中文: '张总好，可以的，明天下午 3 点评审。我会把 mov-market 的发布计划一起带上。',
-    English: 'Hi Zhang, 3 PM tomorrow works for me. I will bring the mov-market release plan as well.',
-    日本語: '張さん、明日の午後3時で大丈夫です。mov-market のリリース計画も持っていきます。',
-    한국어: '장 대표님, 내일 오후 3시 괜찮습니다. mov-market 배포 계획도 함께 준비하겠습니다.',
+    中文: '张总好，可以的，明天下午 3 点评审。我会把 shop-api 的发布计划一起带上。',
+    English: 'Hi Zhang, 3 PM tomorrow works for me. I will bring the shop-api release plan as well.',
+    日本語: '張さん、明日の午後3時で大丈夫です。shop-api のリリース計画も持っていきます。',
+    한국어: '장 대표님, 내일 오후 3시 괜찮습니다. shop-api 배포 계획도 함께 준비하겠습니다.',
   },
   Slack: {
     中文: '上了，今天 11:56 发的生产，盯了 10 分钟没有新报错。',
