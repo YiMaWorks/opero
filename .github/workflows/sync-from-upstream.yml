@@ -1,1 +1,64 @@
+# Public mirror: every hour, copy the latest upstream (private development repo) into this repo,
+# minus the paths listed in .publicignore, as one squashed commit.
+# Needs one repository secret: UPSTREAM_REPO_URL = https://<user>:<token>@<host>/<path>.git (read-only token).
+name: Sync from upstream
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Fetch upstream
+        env:
+          UPSTREAM_REPO_URL: ${{ secrets.UPSTREAM_REPO_URL }}
+        run: |
+          test -n "$UPSTREAM_REPO_URL" || { echo "::error::secret UPSTREAM_REPO_URL is not set"; exit 1; }
+          git clone --quiet --depth 200 --branch master "$UPSTREAM_REPO_URL" /tmp/upstream
+
+      - name: Mirror tree
+        run: |
+          set -euo pipefail
+          NEW=$(git -C /tmp/upstream rev-parse HEAD)
+          LAST=$(git log -1 --format='%(trailers:key=Upstream-Commit,valueonly)' | tr -d ' \n' || true)
+          if [ "$LAST" = "$NEW" ]; then echo "Already at $NEW"; exit 0; fi
+
+          # Replace the working tree with the upstream tree, minus .publicignore
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          rsync -a --exclude=.git --exclude-from=/tmp/upstream/.publicignore /tmp/upstream/ ./
+
+          git add -A
+          if git diff --cached --quiet; then echo "No public changes"; exit 0; fi
+
+          # Commit message: English upstream subjects since the last sync (internal ones are skipped)
+          {
+            if [ -z "$LAST" ]; then
+              echo "Initial public release"
+            else
+              N=$(git -C /tmp/upstream rev-list --count "$LAST..$NEW" 2>/dev/null || echo "?")
+              echo "chore: sync from upstream ($N commits)"
+              echo
+              git -C /tmp/upstream log --format='- %s' "$LAST..$NEW" 2>/dev/null \
+                | grep -vP '\p{Han}' | grep -v 'chore(cc)' | head -n 50 || true
+            fi
+            echo
+            echo "Upstream-Commit: $NEW"
+          } > /tmp/msg
+
+          git -c user.name="opero-bot" -c user.email="opero-bot@users.noreply.github.com" commit -q -F /tmp/msg
+          git push
 
