@@ -62,7 +62,7 @@ export function SideNav({ tab, active, onPick }: Props) {
     title = '应用'
     action = LIVE ? null : { label: '定制和二开', route: { page: 'customize' } }
     const list: [Route['page'], string, string, string][] = LIVE ? [
-      ['servers', '服务器', '服', `${s.servers.length}`],
+      ['servers', '服务器和 Agent', '服', `${s.servers.length}`],
       ['credentials', '权限和凭证', '权', `${s.credentials.length}`],
       ['data', '数据', '数', `${s.dataSources.length}`],
       ['triggers', '触发器', '触', `${s.triggers.filter((t) => t.enabled).length}`],

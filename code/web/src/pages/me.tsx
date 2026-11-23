@@ -11,6 +11,7 @@ import { ThemeCard } from '../components/ThemeCard'
 import { MeHeader } from '../components/MeHeader'
 import { appVersion, getShell, nativeUnpair, setShell, type ShellPrefs } from '../native'
 import { CUR, LIVE } from '../mode'
+import { LangPicker } from '../components/LangPicker'
 import { LIVE_APPS } from './live'
 
 export function MePage({ params, nav }: PageProps) {
@@ -155,8 +156,7 @@ export function SettingsPage({ nav }: PageProps) {
           <ThemePicker />
           <div className="lrow col">
             <span className="row-main"><span className="row-title">语言</span></span>
-            <Segmented value={s.lang} onChange={(v) => { up({ lang: v }); if (v === 'en') toast('English UI is coming soon（英文界面在做）') }}
-              options={[{ value: 'zh', label: '中文' }, { value: 'en', label: 'English' }]} />
+            <LangPicker onPick={(p) => up({ lang: p })} />
           </div>
         </Section>
       </div>

@@ -2,15 +2,17 @@
 // 全程不用碰服务器命令行；安装、登录都由 Opero 在服务器上替你做（code/server/src/executors.ts）。
 import { useEffect, useRef, useState } from 'react'
 import { call } from '../live'
-import { toast } from '../store'
+import { toast, useStore } from '../store'
 import { Field, Segmented } from './ui'
 import { IconCheck } from './icons'
 
 export interface AiInfo {
   aiUser: string; isolated: boolean; claude: string | null; codex: string | null
   claudeKey: boolean; claudeBaseUrl: string; codexKey: boolean; codexBaseUrl: string
+  /** 网络出口：'' = 直连；local = 经 Opero 这台；服务器编号 = 经那台 Agent */
+  claudeEgress?: string; codexEgress?: string
 }
-interface Job { id: string; type: 'install' | 'login'; executor: 'claude' | 'codex'; state: 'running' | 'waitCode' | 'verifying' | 'ok' | 'fail'; log: string; url?: string; message?: string }
+interface Job { id: string; type: 'install' | 'login'; executor: 'claude' | 'codex'; host?: string; screen?: string; state: 'running' | 'waitCode' | 'verifying' | 'ok' | 'fail'; log: string; url?: string; message?: string }
 
 /** 后台的安装 / 登录进度：每秒问一次，做完停 */
 function useJob(onDone: (j: Job) => void) {
@@ -47,7 +49,8 @@ function Step({ n, title, ok, children }: { n: number; title: string; ok?: boole
   )
 }
 
-export function ExecutorSetup({ info, reload, onReady }: { info: AiInfo; reload: () => Promise<unknown>; onReady?: (exec: string) => void }) {
+/** host：在哪台服务器上装 / 登录（local = Opero 这台，其它 = 装了 Agent 的服务器）；账号是所有服务器共用的 */
+export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info: AiInfo; reload: () => Promise<unknown>; onReady?: (exec: string) => void; host?: string }) {
   const [exec, setExec] = useState<'Claude Code' | 'Codex'>(info.claude || !info.codex ? 'Claude Code' : 'Codex')
   const codex = exec === 'Codex'
   const installed = codex ? info.codex : info.claude
@@ -63,23 +66,23 @@ export function ExecutorSetup({ info, reload, onReady }: { info: AiInfo; reload:
     await reload()
     toast(j.state === 'ok' ? (j.type === 'install' ? '装好了' : '登录成功') : (j.message ?? '没成功'))
   })
-  const mine = job && job.executor === (codex ? 'codex' : 'claude') ? job : null
+  const mine = job && job.executor === (codex ? 'codex' : 'claude') && (job.host ?? 'local') === host ? job : null
   const live = mine && (mine.state === 'running' || mine.state === 'waitCode' || mine.state === 'verifying')
 
-  const install = async () => { setTest(null); const r = await call<{ job: Job }>('POST', '/api/ai/install', { executor: exec }); if (r) setJob(r.job) }
-  const login = async () => { setCode(''); const r = await call<{ job: Job }>('POST', '/api/ai/login'); if (r) setJob(r.job) }
+  const install = async () => { setTest(null); const r = await call<{ job: Job }>('POST', '/api/ai/install', { executor: exec, host }); if (r) setJob(r.job) }
+  const login = async () => { setCode(''); const r = await call<{ job: Job }>('POST', '/api/ai/login', { host }); if (r) setJob(r.job) }
   const sendCode = async () => { if (!code.trim()) { toast('先把授权码贴进来'); return } const r = await call<{ job: Job }>('POST', '/api/ai/login/code', { code: code.trim() }); if (r?.job) setJob(r.job) }
   const saveKey = async () => {
     if (!key.trim()) { toast('先把 Key 贴进来'); return }
     setBusy('save')
-    const r = await call('PUT', '/api/ai', codex ? { codexKey: key.trim(), ...(adv ? { codexBaseUrl: base } : {}) } : { claudeKey: key.trim(), ...(adv ? { claudeBaseUrl: base } : {}) }, '已加密保存')
+    const r = await call('PUT', '/api/ai', { host, ...(codex ? { codexKey: key.trim(), ...(adv ? { codexBaseUrl: base } : {}) } : { claudeKey: key.trim(), ...(adv ? { claudeBaseUrl: base } : {}) }) }, '已加密保存')
     setBusy('')
     if (r) { setKey(''); await reload() }
   }
   const runTest = async () => {
     setBusy('test')
     setTest(null)
-    const r = await call<{ ok: boolean; ms: number; out: string }>('POST', '/api/ai/test', { executor: exec })
+    const r = await call<{ ok: boolean; ms: number; out: string }>('POST', '/api/ai/test', { executor: exec, host })
     setBusy('')
     if (r) { setTest(r); if (r.ok) onReady?.(exec) }
   }
@@ -102,7 +105,9 @@ export function ExecutorSetup({ info, reload, onReady }: { info: AiInfo; reload:
         {mine?.type === 'install' && mine.state === 'fail' && <div className="banner b-warn">{mine.message}</div>}
       </Step>
 
-      <Step n={2} title="登录" ok={loggedIn}>
+      <EgressStep n={2} exec={exec} host={host} info={info} reload={reload} />
+
+      <Step n={3} title="登录" ok={loggedIn}>
         {loggedIn && <p className="sub">已经登录（令牌加密存在这台服务器上）。要换账号，按下面重新来一遍。</p>}
         {!codex && <Segmented value={how} onChange={setHow} options={[{ value: 'sub', label: '用 Claude 账号登录（Pro / Max 订阅）' }, { value: 'key', label: '用 API Key（按量付费）' }]} />}
 
@@ -132,7 +137,11 @@ export function ExecutorSetup({ info, reload, onReady }: { info: AiInfo; reload:
               </div>
             </>
           ) : (
-            <div className="banner b-info"><i className="spinner" /> {mine.state === 'verifying' ? '正在验证能不能用…' : '正在向 Anthropic 确认…'}</div>
+            <>
+              <div className="banner b-info"><i className="spinner" /> {mine.state === 'verifying' ? '正在验证能不能用…' : '正在向 Anthropic 确认（一般几秒钟）…'}</div>
+              {mine.screen && <pre className="console small">{mine.screen}</pre>}
+              <button className="btn ghost sm" onClick={() => call<{ job: Job }>('POST', '/api/ai/job/cancel').then((r) => r && setJob(r.job))}>等太久了，重新来</button>
+            </>
           )
         )}
 
@@ -154,12 +163,52 @@ export function ExecutorSetup({ info, reload, onReady }: { info: AiInfo; reload:
         )}
       </Step>
 
-      <Step n={3} title="试一下" ok={!!test?.ok}>
+      <Step n={4} title="试一下" ok={!!test?.ok}>
         <button className="btn default" disabled={!installed || !!busy || !!live} onClick={runTest}>{busy === 'test' ? '测试中（最多 2 分钟）…' : '让它回一句话'}</button>
         {test && <div className={'banner ' + (test.ok ? 'b-ok' : 'b-warn')}>{test.ok ? `能用了：回复用了 ${(test.ms / 1000).toFixed(1)} 秒` : '没成功，执行器说：'}</div>}
         {test && !test.ok && <pre className="console small">{test.out || '（没有输出）'}</pre>}
       </Step>
       <p className="field-hint">令牌和 Key 加密存在这台服务器上，只在员工干活时交给执行器；员工连服务器、数据库用的账号它都拿不到。</p>
     </div>
+  )
+}
+
+/** 网络出口：服务器连不上 Anthropic / OpenAI（比如国内）时，让执行器的请求经另一台 Agent（比如海外那台）出去；那台不用开端口 */
+function EgressStep({ n, exec, host, info, reload }: { n: number; exec: 'Claude Code' | 'Codex'; host: string; info: AiInfo; reload: () => Promise<unknown> }) {
+  const servers = useStore((s) => s.servers)
+  const codex = exec === 'Codex'
+  const cur = (codex ? info.codexEgress : info.claudeEgress) ?? ''
+  const [busy, setBusy] = useState('')
+  const [res, setRes] = useState<{ ok: boolean; via: string; status: string; secs: number; out: string } | null>(null)
+  const options = [
+    { value: '', label: '直连（从员工干活的那台直接出去）' },
+    ...(host !== 'local' ? [{ value: 'local', label: '经 Opero 这台出去' }] : []),
+    ...servers.filter((x) => x.via === 'agent' && x.id !== host).map((x) => ({ value: x.id, label: `经「${x.name}」出去${x.online ? '' : '（离线）'}` })),
+  ]
+  const pick = async (v: string) => {
+    setBusy('save')
+    setRes(null)
+    await call('PUT', '/api/ai', { host, [codex ? 'codexEgress' : 'claudeEgress']: v }, '已保存，之后安装、登录、干活都走这个出口')
+    await reload()
+    setBusy('')
+  }
+  const testIt = async () => {
+    setBusy('test')
+    setRes(null)
+    const r = await call<{ ok: boolean; via: string; status: string; secs: number; out: string }>('POST', '/api/ai/egress-test', { executor: exec, host })
+    setBusy('')
+    if (r) setRes(r)
+  }
+  return (
+    <Step n={n} title="网络出口" ok={!!res?.ok}>
+      <p className="sub">{`服务器连不上 ${codex ? 'OpenAI' : 'Anthropic'}（比如在国内）时，选一台能连上的服务器（装了 Agent 的）当出口。出口那台不用开端口，只帮忙连 AI 的接口。`}</p>
+      <select value={cur} disabled={!!busy} onChange={(e) => pick(e.target.value)}>
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <button className="btn default sm" disabled={!!busy} onClick={testIt}>{busy === 'test' ? '测试中…' : '测一下通不通'}</button>
+      {res && (res.ok
+        ? <div className="banner b-ok">{res.via === 'egress' ? `通了：经出口访问 ${codex ? 'OpenAI' : 'Anthropic'} 接口用了 ${res.secs.toFixed(1)} 秒` : `通了：直连访问 ${codex ? 'OpenAI' : 'Anthropic'} 接口用了 ${res.secs.toFixed(1)} 秒`}</div>
+        : <div className="banner b-warn">{`不通：${res.out || '连不上'}。换一个出口再试。`}</div>)}
+    </Step>
   )
 }

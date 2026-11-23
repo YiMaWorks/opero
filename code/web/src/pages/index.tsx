@@ -12,7 +12,7 @@ import { MeEditPage } from './meEdit'
 import { DiffPage, PlaceholderPage, QueryResultPage } from './panels'
 import { LIVE } from '../mode'
 import {
-  ComingSoonPage, DataSourceAddPage, ExecutorsPage, LiveAppsPage, LiveCredentialEditPage, LiveDataPage, LiveEmployeePage, LiveKnowledgePage,
+  ComingSoonPage, DataSourceAddPage, LiveServersPage, ExecutorsPage, LiveAppsPage, LiveCredentialEditPage, LiveDataPage, LiveEmployeePage, LiveKnowledgePage,
   LiveQueryPage, LiveSecurityPage, LiveServerAddPage, LiveServerPage, LiveTriggerEditPage, LiveTriggersPage, LiveWorkspaceAddPage, LiveWorkspacePage, LiveWorkspacesPage,
 } from './live'
 
@@ -26,7 +26,7 @@ function livePage(route: Route, p: { params: Record<string, any>; nav: Nav }) {
   if (SOON[route.page]) return <ComingSoonPage params={{ title: SOON[route.page], ...p.params }} nav={p.nav} />
   switch (route.page) {
     case 'apps': return <LiveAppsPage {...p} />
-    case 'servers': return null
+    case 'servers': return <LiveServersPage {...p} />
     case 'server': return <LiveServerPage {...p} />
     case 'serverAdd': return <LiveServerAddPage {...p} />
     case 'credentialEdit': return <LiveCredentialEditPage {...p} />

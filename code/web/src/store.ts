@@ -2,11 +2,12 @@
 // 现在数据来自 data/mock.ts（演示）；接后台时：初始数据改成调接口、消息改成服务器推送，动作改成调接口——页面不用改。
 import { useSyncExternalStore } from 'react'
 import type {
-  AuditEntry, Card, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, Message, Plugin, ReleaseApp,
+  AuditEntry, Card, QueueItem, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, Message, Plugin, ReleaseApp,
   ReleaseRecord, SavedQuery, Server, Session, Settings, Trigger, Usage, User, Workspace,
 } from './types'
 import * as seed from './data/mock'
 import { LIVE } from './mode'
+import { normPref, resolve, setPref } from './i18n'
 import * as live from './live'
 
 export interface State {
@@ -35,6 +36,8 @@ export interface State {
   channels: Channel[] // 消息渠道
   kb: KbDoc[] // 知识库
   flows: Flow[] // 流程
+  /** 真的一套：排队的消息（所有员工的） */
+  queue: QueueItem[]
   toast: string | null
   verify: { title: string; desc?: string; onOk: () => void } | null
 }
@@ -61,7 +64,7 @@ function init(): State {
       employees: [], sessions: [], messages: {}, workspaces: [], issues: [], servers: [], apps: [], releases: [], credentials: [],
       dataSources: [], savedQueries: [], triggers: [], plugins: [], audit: [], usage: [],
       settings: { ...seed.seedSettings, prodProtect: true, budget: 0, budgetStop: false, fallback: '', aiDown: false, notifyTo: ['App 推送'], ...(saved.settings ?? {}) },
-      custom: seed.seedCustom, channels: [], kb: [], flows: [], toast: null, verify: null,
+      custom: seed.seedCustom, channels: [], kb: [], flows: [], queue: [], toast: null, verify: null,
     }
   }
   const prefs = saved.prefs ?? {}
@@ -89,6 +92,7 @@ function init(): State {
     channels: seed.seedChannels,
     kb: seed.seedKb,
     flows: seed.seedFlows,
+    queue: [],
     toast: null,
     verify: null,
   }
@@ -522,6 +526,12 @@ export function setMe(patch: Partial<User>) {
 }
 
 export function setSettings(patch: Partial<Settings>) {
+  if (patch.lang !== undefined) {
+    // 换语言：本机马上换、记住；装好的一套同步到后台（手机 App、别的电脑打开也用这个）
+    const p = normPref(patch.lang)
+    patch = { ...patch, lang: p, langResolved: resolve(p) }
+    setPref(p)
+  }
   if (LIVE) live.saveLater('/api/settings', patch)
   set((s) => ({ settings: { ...s.settings, ...patch } }))
 }

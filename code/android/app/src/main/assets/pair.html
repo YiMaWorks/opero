@@ -41,30 +41,57 @@
       <circle cx="50" cy="50" r="8.5" fill="#2EE6B0"/>
     </svg>
   </div>
-  <h1>连接你的 Opero</h1>
-  <p>Opero 没有公共服务器，App 只连你自己服务器上装的那套。还没装？在电脑上打开 github.com/wfcaven/opero 看安装说明。</p>
+  <h1 data-k="title">连接你的 Opero</h1>
+  <p data-k="intro">Opero 没有公共服务器，App 只连你自己服务器上装的那套。还没装？在电脑上打开 github.com/yimaworks/opero 看安装说明。</p>
   <div class="err" id="err"></div>
-  <label>地址
-    <input id="server" inputmode="url" autocomplete="url" placeholder="https://opero.你的域名 或 http://服务器IP:7300" />
+  <label><span data-k="addr">地址</span>
+    <input id="server" inputmode="url" autocomplete="url" data-ph="addrPh" placeholder="https://opero.你的域名 或 http://服务器IP:7300" />
   </label>
-  <label>配对码
-    <input id="code" inputmode="numeric" maxlength="8" placeholder="6 位数字" />
-    <span class="hint">在电脑上打开 Opero →「我 → 账号安全 → 接手机」拿。配对后这台手机才能收提醒、用指纹验证本人；不填也能先打开看。</span>
+  <label><span data-k="code">配对码</span>
+    <input id="code" inputmode="numeric" maxlength="8" data-ph="codePh" placeholder="6 位数字" />
+    <span class="hint" data-k="codeHint">在电脑上打开 Opero →「我 → 账号安全 → 接手机」拿。配对后这台手机才能收提醒、用指纹验证本人；不填也能先打开看。</span>
   </label>
-  <button id="go">连接</button>
+  <button id="go" data-k="go">连接</button>
 </main>
 <script>
+  // 多语言：跟着手机系统语言（简体 / 繁體 / English / 日本語 / Deutsch / Français / العربية）
+  const L = {
+    'zh-CN': { title: '连接你的 Opero', intro: 'Opero 没有公共服务器，App 只连你自己服务器上装的那套。还没装？在电脑上打开 github.com/yimaworks/opero 看安装说明。', addr: '地址', addrPh: 'https://opero.你的域名 或 http://服务器IP:7300', code: '配对码', codePh: '6 位数字', codeHint: '在电脑上打开 Opero →「我 → 账号安全 → 接手机」拿。配对后这台手机才能收提醒、用指纹验证本人；不填也能先打开看。', go: '连接', going: '连接中…', needAddr: '先填地址' },
+    'zh-TW': { title: '連接你的 Opero', intro: 'Opero 沒有公共伺服器，App 只連你自己伺服器上裝的那套。還沒裝？在電腦上打開 github.com/yimaworks/opero 看安裝說明。', addr: '位址', addrPh: 'https://opero.你的網域 或 http://伺服器IP:7300', code: '配對碼', codePh: '6 位數字', codeHint: '在電腦上打開 Opero →「我 → 帳號安全 → 接手機」取得。配對後這支手機才能收提醒、用指紋驗證本人；不填也能先打開看。', go: '連接', going: '連接中…', needAddr: '先填位址' },
+    en: { title: 'Connect your Opero', intro: 'Opero has no public server: the app only connects to the Opero you installed on your own server. Not installed yet? See github.com/yimaworks/opero on a computer.', addr: 'Address', addrPh: 'https://opero.your-domain or http://server-ip:7300', code: 'Pairing code', codePh: '6 digits', codeHint: 'On a computer, open Opero → Me → Account security → Connect phone. Pairing lets this phone get alerts and verify it\'s you with your fingerprint; you can also skip it and just open.', go: 'Connect', going: 'Connecting…', needAddr: 'Enter the address first' },
+    ja: { title: 'あなたの Opero に接続', intro: 'Opero に公開サーバーはありません。アプリは自分のサーバーにインストールした Opero にだけ接続します。まだの場合は、PC で github.com/yimaworks/opero のインストール手順を見てください。', addr: 'アドレス', addrPh: 'https://opero.あなたのドメイン または http://サーバーIP:7300', code: 'ペアリングコード', codePh: '6 桁の数字', codeHint: 'PC で Opero を開き「自分 → アカウントのセキュリティ → スマホを接続」で取得します。ペアリングすると通知と指紋による本人確認が使えます。空欄のままでも開けます。', go: '接続', going: '接続中…', needAddr: '先にアドレスを入力してください' },
+    de: { title: 'Mit deinem Opero verbinden', intro: 'Opero hat keinen öffentlichen Server: Die App verbindet sich nur mit dem Opero auf deinem eigenen Server. Noch nicht installiert? Schau dir github.com/yimaworks/opero am Computer an.', addr: 'Adresse', addrPh: 'https://opero.deine-domain oder http://server-ip:7300', code: 'Kopplungscode', codePh: '6 Ziffern', codeHint: 'Am Computer: Opero öffnen → Ich → Kontosicherheit → Handy verbinden. Nach dem Koppeln bekommt dieses Handy Benachrichtigungen und kann dich per Fingerabdruck bestätigen. Du kannst es auch leer lassen.', go: 'Verbinden', going: 'Verbinde…', needAddr: 'Gib zuerst die Adresse ein' },
+    fr: { title: 'Connecter ton Opero', intro: "Opero n'a pas de serveur public : l'app se connecte uniquement à l'Opero installé sur ton propre serveur. Pas encore installé ? Va sur github.com/yimaworks/opero depuis un ordinateur.", addr: 'Adresse', addrPh: 'https://opero.ton-domaine ou http://ip-serveur:7300', code: 'Code d’appairage', codePh: '6 chiffres', codeHint: 'Sur un ordinateur : Opero → Moi → Sécurité du compte → Connecter un téléphone. Une fois appairé, ce téléphone reçoit les alertes et peut confirmer ton identité par empreinte. Tu peux aussi laisser vide.', go: 'Connecter', going: 'Connexion…', needAddr: "Saisis d'abord l'adresse" },
+    ar: { title: 'اتصل بـ Opero الخاص بك', intro: 'لا يوجد خادم عام لـ Opero: التطبيق يتصل فقط بـ Opero المثبّت على خادمك. لم تثبّته بعد؟ افتح github.com/yimaworks/opero على الحاسوب.', addr: 'العنوان', addrPh: 'https://opero.نطاقك أو http://IP-الخادم:7300', code: 'رمز الاقتران', codePh: '6 أرقام', codeHint: 'على الحاسوب: افتح Opero ← أنا ← أمان الحساب ← ربط الهاتف. بعد الاقتران يتلقى هذا الهاتف التنبيهات ويمكنه التحقق منك ببصمة الإصبع؛ يمكنك تركه فارغًا.', go: 'اتصال', going: 'جارٍ الاتصال…', needAddr: 'أدخل العنوان أولًا' },
+  }
+  const pick = () => {
+    for (const l of (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || 'en'])) {
+      const x = l.toLowerCase()
+      if (/^zh-(tw|hk|mo)|^zh-hant/.test(x)) return 'zh-TW'
+      if (x.startsWith('zh')) return 'zh-CN'
+      for (const c of ['en', 'ja', 'de', 'fr', 'ar']) if (x === c || x.startsWith(c + '-')) return c
+    }
+    return 'en'
+  }
+  const lang = pick()
+  const T = L[lang]
+  document.documentElement.lang = lang
+  document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr'
+  document.title = T.title
+  document.querySelectorAll('[data-k]').forEach((el) => { el.textContent = T[el.dataset.k] })
+  document.querySelectorAll('[data-ph]').forEach((el) => { el.placeholder = T[el.dataset.ph] })
+
   const q = new URLSearchParams(location.search)
   const $ = (id) => document.getElementById(id)
   $('server').value = q.get('server') || ''
   const showErr = (msg) => { $('err').textContent = msg; $('err').classList.toggle('on', !!msg) }
   showErr(q.get('error') || '')
-  window.__operoPair = (ok, msg) => { $('go').disabled = false; $('go').textContent = '连接'; if (!ok) showErr(msg) }
+  window.__operoPair = (ok, msg) => { $('go').disabled = false; $('go').textContent = T.go; if (!ok) showErr(msg) }
   $('go').onclick = () => {
     const server = $('server').value.trim()
-    if (!server) { showErr('先填地址'); return }
+    if (!server) { showErr(T.needAddr); return }
     showErr('')
-    $('go').disabled = true; $('go').textContent = '连接中…'
+    $('go').disabled = true; $('go').textContent = T.going
     if (window.OperoNative) window.OperoNative.pair(server, $('code').value.trim())
     else location.href = server
   }

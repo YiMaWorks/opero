@@ -6,6 +6,7 @@ import ssh2 from 'ssh2'
 import { all, get, put } from './db.ts'
 import { emit } from './bus.ts'
 import { getSecret, scrub } from './vault.ts'
+import * as agents from './agents.ts'
 import type { Credential, Server } from './types.ts'
 
 export const LOCAL_ID = 'local'
@@ -15,7 +16,9 @@ export interface ExecResult { code: number; out: string; ms: number }
 const MAX_OUT = 200_000
 
 export function execOn(sv: Server, command: string, timeoutMs = 60_000): Promise<ExecResult> {
-  return sv.id === LOCAL_ID ? execLocal(command, timeoutMs) : execSsh(sv, command, timeoutMs)
+  if (sv.id === LOCAL_ID) return execLocal(command, timeoutMs)
+  if (agents.isAgent(sv)) return agents.exec(sv.id, command, { timeoutMs }) // 装了 Agent 的：经 Agent（root）跑，不用 SSH
+  return execSsh(sv, command, timeoutMs)
 }
 
 function execLocal(command: string, timeoutMs: number): Promise<ExecResult> {
@@ -105,6 +108,7 @@ export function parseHealth(out: string) {
 }
 
 export async function checkServer(sv: Server): Promise<Server> {
+  if (agents.isAgent(sv)) return get<Server>('servers', sv.id) ?? sv // Agent 自己每 30 秒报一次
   const r = await execOn(sv, HEALTH, 20_000)
   const cur = get<Server>('servers', sv.id) ?? sv
   let next: Server
@@ -133,11 +137,13 @@ export function startHealthLoop() {
     if (busy) return
     busy = true
     try {
-      await Promise.all(all<Server>('servers').map((s) => checkServer(s).catch(() => {})))
+      agents.sweep()
+      await Promise.all(all<Server>('servers').filter((s) => !agents.isAgent(s) && s.via !== 'pending' && s.via !== 'rejected' && !s.agentFp).map((s) => checkServer(s).catch(() => {})))
     } finally { busy = false }
   }
   setTimeout(tick, 3000)
   setInterval(tick, 60_000).unref()
+  setInterval(() => agents.sweep(), 30_000).unref()
 }
 
 // ---------- 只读命令判断（认不出的一律当写） ----------

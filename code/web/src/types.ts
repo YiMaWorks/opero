@@ -101,6 +101,11 @@ export interface Message {
   card?: Card
 }
 
+/** 真的一套：已经传好、还没发（或排着队）的附件 */
+export interface QAtt { id: string; name: string; size: string; ext: string; image: boolean; mediaType: string; url: string; w?: number; h?: number }
+/** 真的一套：员工在干活时排队的一句话（带着它自己的图片 / 文件） */
+export interface QueueItem { id: string; emp: string; sid: string; text: string; files: QAtt[]; at: number; source: 'me' | 'auto' }
+
 export interface Session {
   id: string
   employee: string
@@ -120,6 +125,8 @@ export interface Workspace {
   provider: 'Codeup' | 'GitHub' | 'Gitea' | 'Gitee' | 'GitLab' | 'Git'
   credential?: string
   error?: string
+  /** 真的一套：拉在哪台服务器上（local 或装了 Agent 的服务器编号） */
+  server?: string
   repo: string
   branch: string
   host: string
@@ -162,6 +169,16 @@ export interface Server {
   disk: number
   services: { name: string; status: '运行中' | '已停止' | '异常' }[]
   logs: string[]
+  /** 真的一套：接入方式（本机 / 装了 Opero Agent / 只用 SSH）、Agent 版本、最后心跳、装了哪些执行器、连不上的原因 */
+  via?: 'local' | 'agent' | 'ssh' | 'pending' | 'rejected'
+  /** Agent 的指纹（SHA256:…），Opero 按它认机器 */
+  agentFp?: string
+  agentVersion?: string
+  lastSeen?: number
+  executors?: { claude?: string | null; codex?: string | null }
+  error?: string
+  port?: number
+  user?: string
 }
 
 export interface ReleaseApp {
@@ -312,7 +329,10 @@ export interface Settings {
   themeLight: string
   themeDark: string
   customTheme: { mode: 'light' | 'dark'; bg: string; ink: string; accent: string }
-  lang: 'zh' | 'en'
+  /** 界面语言：auto = 跟随系统，或 zh-CN / zh-TW / en / ja / de / fr / ar（i18n/index.ts）；旧值 zh 当 zh-CN */
+  lang: string
+  /** 实际在用的语言（auto 时按这台设备的系统），后台据此让员工用这个语言回复 */
+  langResolved?: string
   notify: 'decide' | 'errors' | 'all'
   notifyTo: string[] // 通知发到哪：App 推送 / Telegram / Slack / 邮件
   budget: number // 每月预算（元），0 = 不限

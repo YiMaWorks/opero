@@ -3,7 +3,7 @@
 //     一轮说完、没有待处理的话就关 stdin，进程退出；下一句用 --resume 接着同一个会话。
 //   Codex：codex exec --json，提示词走 stdin；干活时你再发的话排队，这一轮完了接着做。
 // 执行器跑在 AI 专用的系统用户下（OPERO_AI_USER，经 sudo），读不到 Opero 的数据目录和保险箱；它要连服务器、查库、同步代码都经 MCP 工具找 Opero。
-import { spawn, type ChildProcess } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -13,9 +13,13 @@ import { get, kvGet, put, uid } from './db.ts'
 import { emit, push } from './bus.ts'
 import { addMsg, delMsg, empSays, getMsg, monthCost, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
 import { getSecret, scrub } from './vault.ts'
-import type { Employee, Workspace } from './types.ts'
+import type { Employee, Server, Workspace } from './types.ts'
+import * as hosts from './hosts.ts'
+import * as agents from './agents.ts'
+import * as tunnel from './tunnel.ts'
 
-export interface Attachment { path: string; name: string; mediaType: string; image: boolean }
+/** path = 员工那台机器上看到的路径；local = Opero 这台上的原文件（远程员工时两者不同） */
+export interface Attachment { path: string; name: string; mediaType: string; image: boolean; local?: string }
 
 interface Live {
   emp: string
@@ -23,10 +27,10 @@ interface Live {
   runId: string
   token: string
   kind: 'claude' | 'codex'
+  host: string
   proc: ChildProcess
   stdinOpen: boolean
   pending: number // 已写进去、还没说完的话（Claude）
-  queue: { text: string; files: Attachment[] }[] // 排队的话（Codex）
   statusId: string
   said: number // 这一轮说了几段话
   lastResult: string
@@ -43,17 +47,35 @@ const live = new Map<string, Live>()
 /** 进程还在起（第一次要先看执行器支不支持 --effort）：这时来的话先攒着，起好了再交过去 */
 const booting = new Map<string, { text: string; files: Attachment[] }[]>()
 const stopEarly = new Set<string>()
-const byToken = new Map<string, { emp: string; sid: string; runId: string }>()
+const byToken = new Map<string, { emp: string; sid: string; runId: string; remote?: boolean }>()
 
 export const isWorking = (emp: string) => live.has(emp) || booting.has(emp)
 export const runOf = (token: string) => byToken.get(token)
 export const workingList = () => [...live.keys()]
 
 // ---------- AI 执行器的账号（在「AI 执行器」页配，值在保险箱） ----------
-export interface AiConf { claudeCred?: string; claudeBaseUrl?: string; codexCred?: string; codexBaseUrl?: string }
+/** claudeEgress / codexEgress：网络出口，空 = 从干活那台直连，'local' = 经 Opero 这台，其它 = 经那台 Agent（tunnel.ts） */
+export interface AiConf { claudeCred?: string; claudeBaseUrl?: string; codexCred?: string; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string }
 export const aiConf = () => kvGet<AiConf>('ai', {})
 
-function aiEnv(kind: 'claude' | 'codex'): { env: Record<string, string>; secrets: string[] } {
+/** 执行器的网络出口：让它的 HTTPS 请求走干活那台本机的代理，经 Opero 隧道从选的出口出去（出口就是干活那台时直连） */
+export function egressEnv(kind: 'claude' | 'codex', host: string): Record<string, string> {
+  const c = aiConf()
+  const egress = (kind === 'claude' ? c.claudeEgress : c.codexEgress) || ''
+  if (!egress || egress === host) return {}
+  let url = ''
+  if (hosts.isLocal(host)) url = `http://${encodeURIComponent(egress)}:${tunnel.LOCAL_TOKEN}@127.0.0.1:${tunnel.LOCAL_PORT}`
+  else {
+    const sv = get<Server>('servers', host)
+    if (!sv?.proxyPort || !sv.proxyToken) return {}
+    url = `http://${encodeURIComponent(egress)}:${sv.proxyToken}@127.0.0.1:${sv.proxyPort}`
+  }
+  const opero = (() => { try { return new URL(cfg.publicUrl).hostname } catch { return '' } })()
+  const noProxy = ['localhost', '127.0.0.1', '::1', opero].filter(Boolean).join(',')
+  return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, NO_PROXY: noProxy, no_proxy: noProxy }
+}
+
+function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL): { env: Record<string, string>; secrets: string[] } {
   const c = aiConf()
   const env: Record<string, string> = {}
   const secrets: string[] = []
@@ -67,69 +89,68 @@ function aiEnv(kind: 'claude' | 'codex'): { env: Record<string, string>; secrets
     if (k) { secrets.push(k); Object.assign(env, { OPENAI_API_KEY: k, CODEX_API_KEY: k }) }
     if (c.codexBaseUrl) env.OPENAI_BASE_URL = c.codexBaseUrl
   }
+  Object.assign(env, egressEnv(kind, host))
   return { env, secrets }
 }
 
-/** 以 AI 用户跑一个命令（登录 shell，PATH 里有它自己装的 claude / codex） */
-export function spawnAi(bin: string, args: string[], env: Record<string, string>, cwd: string): ChildProcess {
-  // 一键安装的 Claude Code / Codex 在 AI 用户的 ~/.local/bin；npm 用 Opero 自己的 Node。登录 shell 的 PATH 不一定带这两个，补上
-  const wrapper = `export PATH="$HOME/.local/bin:$PATH:${path.dirname(process.execPath)}"; umask 007; exec "$0" "$@"`
-  const fullEnv = { ...process.env, ...env } as Record<string, string>
-  if (cfg.aiUser) {
-    const keep = Object.keys(env)
-    return spawn('sudo', ['-n', '-u', cfg.aiUser, '-H', ...(keep.length ? [`--preserve-env=${keep.join(',')}`] : []), '--', 'bash', '-lc', wrapper, bin, ...args],
-      { cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
-  }
-  return spawn('bash', ['-lc', wrapper, bin, ...args], { cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
-}
+// 本机起进程的工具在 hosts.ts（远程员工经 Agent 跑）；executors 等还按原来的名字用
+export const spawnAi = hosts.spawnAi
+export const runAi = (bin: string, args: string[], opts: Parameters<typeof hosts.runAiOn>[3] = {}) => hosts.runAiOn(hosts.LOCAL, bin, args, opts)
+const killTree = hosts.killTree
 
-/** 跑一下拿输出（看版本、测试执行器） */
-export function runAi(bin: string, args: string[], opts: { env?: Record<string, string>; cwd?: string; input?: string; timeoutMs?: number } = {}): Promise<{ code: number; out: string; ms: number }> {
-  const t0 = Date.now()
-  return new Promise((resolve) => {
-    const p = spawnAi(bin, args, opts.env ?? {}, opts.cwd ?? cfg.work)
-    p.stdin!.on('error', () => {})
-    let out = ''
-    p.stdout!.on('data', (b) => { out += b })
-    p.stderr!.on('data', (b) => { out += b })
-    p.stdin!.end(opts.input ?? '')
-    const t = setTimeout(() => killTree(p), opts.timeoutMs ?? 30_000)
-    p.on('close', (code) => { clearTimeout(t); resolve({ code: code ?? -1, out: out.trim(), ms: Date.now() - t0 }) })
-    p.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: String(e), ms: Date.now() - t0 }) })
-  })
-}
-
-function killTree(p: ChildProcess) {
-  try { if (p.pid) process.kill(-p.pid, 'SIGTERM') } catch { try { p.kill('SIGTERM') } catch { /* 已经没了 */ } }
-  setTimeout(() => { try { if (p.pid) process.kill(-p.pid, 'SIGKILL') } catch { /* 已经没了 */ } }, 5000).unref()
+/** 员工跑在哪台：local 或装了 Agent 的服务器；那台的 Agent 被移除了就退回本机 */
+export function hostOf(emp: Employee): string {
+  if (hosts.isLocal(emp.host)) return hosts.LOCAL
+  const sv = get<Server>('servers', emp.host)
+  return agents.isAgent(sv) ? emp.host : hosts.LOCAL
 }
 
 const helpCache = new Map<string, boolean>()
-async function supportsEffort(): Promise<boolean> {
-  if (helpCache.has('effort')) return helpCache.get('effort')!
-  const r = await runAi(cfg.claudeBin, ['--help'], { timeoutMs: 20_000 })
+async function supportsEffort(host: string): Promise<boolean> {
+  if (helpCache.has(host)) return helpCache.get(host)!
+  const r = await hosts.runAiOn(host, cfg.claudeBin, ['--help'], { timeoutMs: 20_000 })
   const ok = r.out.includes('--effort')
-  helpCache.set('effort', ok)
+  if (r.code === 0) helpCache.set(host, ok) // 没跑成（比如 Agent 刚好断了）不记，下次再问
   return ok
 }
 
 // ---------- 员工的工作目录和规矩 ----------
+/** 员工自己的目录（Opero 这台上；聊天里传的文件先放这里） */
 export function empHome(emp: Employee) {
   const d = path.join(cfg.work, 'emp', emp.id)
   fs.mkdirSync(path.join(d, 'uploads'), { recursive: true, mode: 0o2770 })
   return d
 }
-function cwdOf(emp: Employee): { cwd: string; ws?: Workspace } {
+/** 员工干活那台机器上它自己的目录 */
+const homeOn = (emp: Employee, host: string) => (hosts.isLocal(host) ? empHome(emp) : path.posix.join(agents.REMOTE_WORK, 'emp', emp.id))
+function cwdOf(emp: Employee, host: string): { cwd: string; ws?: Workspace } {
   const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
-  if (ws && fs.existsSync(ws.dir)) return { cwd: ws.dir, ws }
-  return { cwd: empHome(emp) }
+  // 工作空间要和员工在同一台机器上
+  if (ws && (ws.server ?? hosts.LOCAL) === host && (!hosts.isLocal(host) || fs.existsSync(ws.dir))) return { cwd: ws.dir, ws }
+  return { cwd: homeOn(emp, host) }
+}
+
+/** 远程员工：聊天里传的文件先送到那台的 uploads 目录 */
+function place(emp: Employee, host: string, files: Attachment[]): Attachment[] {
+  if (hosts.isLocal(host) || !files.length) return files
+  const dir = path.posix.join(homeOn(emp, host), 'uploads')
+  return files.map((f) => {
+    const remote = path.posix.join(dir, path.basename(f.path))
+    try { agents.writeFile(host, remote, fs.readFileSync(f.local ?? f.path)) } catch { /* 读不到就算了 */ }
+    return { ...f, path: remote, local: f.local ?? f.path }
+  })
 }
 
 const MODEL_IDS: Record<string, string> = { 'Opus 5.5': 'claude-opus-5-5', 'Sonnet 5.5': 'claude-sonnet-5-5', 'Haiku 5.5': 'claude-haiku-5-5', 'Fable 5.1': 'claude-fable-5-1' }
 
+const LANG_NAMES: Record<string, string> = { 'zh-CN': '简体中文', 'zh-TW': '繁體中文', en: 'English', ja: '日本語', de: 'Deutsch', fr: 'Français', ar: 'العربية' }
+
 function rules(emp: Employee, cwd: string, ws?: Workspace) {
-  const habits = kvGet<{ habits?: string }>('settings', {}).habits?.trim()
+  const st = kvGet<{ habits?: string; lang?: string; langResolved?: string }>('settings', {})
+  const habits = st.habits?.trim()
+  const ln = LANG_NAMES[st.lang && st.lang !== 'auto' ? (st.lang === 'zh' ? 'zh-CN' : st.lang) : st.langResolved ?? ''] ?? ''
   return [
+    ln && `主人的界面语言是「${ln}」：回复主人、发卡片、写给主人看的内容都用 ${ln}（主人用别的语言跟你说话就跟着主人）。`,
     `你是 Opero 里的 AI 员工「${emp.name}」${emp.title ? `：${emp.title}` : ''}。主人在手机或电脑上通过聊天和你协作。`,
     emp.prompt?.trim() && `## 你的角色\n${emp.prompt.trim()}`,
     emp.persona?.trim() && `## 说话风格\n${emp.persona.trim()}`,
@@ -145,6 +166,16 @@ function rules(emp: Employee, cwd: string, ws?: Workspace) {
   ].filter(Boolean).join('\n\n')
 }
 
+// ---------- 排队（queue.ts 接上来）：插不进去的话进队；一轮结束发下一条 ----------
+let hooks: { busy?: (emp: string, text: string, files: Attachment[]) => void; idle?: (emp: string, stopped: boolean) => void } = {}
+export function setHooks(h: typeof hooks) { hooks = h }
+/** 员工在干活、而且现在能插话（Claude Code 的输入通道开着，或者进程正在起） */
+export function canInterject(empId: string) {
+  if (booting.has(empId)) return true
+  const l = live.get(empId)
+  return !!l && l.kind === 'claude' && l.stdinOpen
+}
+
 // ---------- 派活 ----------
 export async function send(empId: string, text: string, files: Attachment[] = []): Promise<void> {
   const emp = get<Employee>('employees', empId)
@@ -157,13 +188,11 @@ export async function send(empId: string, text: string, files: Attachment[] = []
   }
   const cur = live.get(empId)
   if (cur) {
+    files = place(emp, cur.host, files)
     if (cur.kind === 'claude' && cur.stdinOpen) {
       writeUser(cur, text, files)
       system(cur.sid, '已插话：员工下一步会看到这句')
-    } else {
-      cur.queue.push({ text, files })
-      system(cur.sid, '已排队：这一轮做完接着做')
-    }
+    } else hooks.busy?.(empId, text, files)
     return
   }
   const budget = kvGet<{ budget?: number; budgetStop?: boolean }>('settings', {})
@@ -180,7 +209,7 @@ function writeUser(l: Live, text: string, files: Attachment[]) {
   for (const f of files) {
     if (!f.image || !/^image\/(png|jpeg|gif|webp)$/.test(f.mediaType)) continue
     try {
-      const data = fs.readFileSync(f.path)
+      const data = fs.readFileSync(f.local ?? f.path)
       if (data.length < 5 * 1024 * 1024) content.push({ type: 'image', source: { type: 'base64', media_type: f.mediaType, data: data.toString('base64') } })
     } catch { /* 读不到就只给路径 */ }
   }
@@ -194,36 +223,40 @@ const withFiles = (text: string, files: Attachment[]) =>
 function start(emp: Employee, text: string, files: Attachment[]) {
   const s = sessionFor(emp.id)
   const kind: 'claude' | 'codex' = /codex/i.test(emp.executor) ? 'codex' : 'claude'
-  const { cwd, ws } = cwdOf(emp)
+  const host = hostOf(emp)
+  const { cwd, ws } = cwdOf(emp, host)
+  files = place(emp, host, files)
   const runId = uid('r')
   const token = crypto.randomBytes(24).toString('base64url')
-  const { env, secrets } = aiEnv(kind)
-  const mcpEnv = { OPERO_API: `http://127.0.0.1:${cfg.port}`, OPERO_TOKEN: token }
-  const uploads = path.join(empHome(emp), 'uploads')
+  const { env, secrets } = aiEnv(kind, host)
+  const mcpEnv = { OPERO_API: hosts.apiBase(host), OPERO_TOKEN: token }
+  const uploads = hosts.isLocal(host) ? path.join(empHome(emp), 'uploads') : path.posix.join(homeOn(emp, host), 'uploads')
+  const mkdirs = hosts.isLocal(host) ? [] : [uploads, cwd]
+  const mcpScript = hosts.isLocal(host) ? MCP_SCRIPT : '{{MCP}}'
   const status = addMsg(s.id, { from: 'system', kind: 'status', spinning: true, text: `${emp.name} 在想…` })
   patchSession(s.id, { working: '在想…' })
-  byToken.set(token, { emp: emp.id, sid: s.id, runId })
+  byToken.set(token, { emp: emp.id, sid: s.id, runId, remote: !hosts.isLocal(host) })
   booting.set(emp.id, [])
 
   const begin = async () => {
     let proc: ChildProcess
     if (kind === 'claude') {
       const pm = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : 'acceptEdits'
-      const mcp = { mcpServers: { opero: { command: process.execPath, args: ['--disable-warning=ExperimentalWarning', MCP_SCRIPT], env: mcpEnv } } }
+      const mcp = { mcpServers: { opero: { command: hosts.nodeBin(host), args: ['--disable-warning=ExperimentalWarning', mcpScript], env: mcpEnv } } }
       const args = ['-p', '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
         '--permission-mode', pm, '--max-turns', String(cfg.maxTurns),
         '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__opero__approve', '--allowedTools', 'mcp__opero',
         '--append-system-prompt', rules(emp, cwd, ws), '--add-dir', uploads]
-      if (!cfg.aiUser) args.push('--disallowedTools', `Read(/${cfg.data}/**),Edit(/${cfg.data}/**),Write(/${cfg.data}/**)`)
+      if (!cfg.aiUser && hosts.isLocal(host)) args.push('--disallowedTools', `Read(/${cfg.data}/**),Edit(/${cfg.data}/**),Write(/${cfg.data}/**)`)
       if (MODEL_IDS[emp.model]) args.push('--model', MODEL_IDS[emp.model])
-      if (emp.effort && (await supportsEffort())) args.push('--effort', emp.effort)
+      if (emp.effort && (await supportsEffort(host))) args.push('--effort', emp.effort)
       if (emp.resumeId) args.push('--resume', emp.resumeId)
-      proc = spawnAi(cfg.claudeBin, args, env, cwd)
+      proc = hosts.spawnAiOn(host, cfg.claudeBin, args, env, cwd, mkdirs)
     } else {
       const q = (v: string) => JSON.stringify(v)
       const args = ['exec',
-        '-c', `mcp_servers.opero.command=${q(process.execPath)}`,
-        '-c', `mcp_servers.opero.args=[${q('--disable-warning=ExperimentalWarning')},${q(MCP_SCRIPT)}]`,
+        '-c', `mcp_servers.opero.command=${q(hosts.nodeBin(host))}`,
+        '-c', `mcp_servers.opero.args=[${q('--disable-warning=ExperimentalWarning')},${q(mcpScript)}]`,
         '-c', `mcp_servers.opero.env.OPERO_API=${q(mcpEnv.OPERO_API)}`,
         '-c', `mcp_servers.opero.env.OPERO_TOKEN=${q(token)}`,
         '-c', 'mcp_servers.opero.tool_timeout_sec=1800']
@@ -238,9 +271,9 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       if (emp.model && emp.model !== '执行器默认') args.push('-m', emp.model)
       if (emp.resumeId) args.push('resume', emp.resumeId)
       args.push('-')
-      proc = spawnAi(cfg.codexBin, args, env, cwd)
+      proc = hosts.spawnAiOn(host, cfg.codexBin, args, env, cwd, mkdirs)
     }
-    const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, proc, stdinOpen: kind === 'claude', pending: 0, queue: [], statusId: status.id,
+    const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
       said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets }
     live.set(emp.id, l)
     if (stopEarly.delete(emp.id)) { l.stopped = true; killTree(proc) }
@@ -255,7 +288,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
     } else {
       const first = emp.resumeId ? withFiles(text, files) : `${rules(emp, cwd, ws)}\n\n---\n\n${withFiles(text, files)}`
       proc.stdin!.end(first)
-      l.queue.push(...early)
+      for (const x of early) hooks.busy?.(emp.id, x.text, x.files)
     }
     const rl = readline.createInterface({ input: proc.stdout! })
     rl.on('line', (line) => {
@@ -384,12 +417,7 @@ function finish(l: Live, code: number | null) {
     system(l.sid, `执行器退出了（${code}）${err ? '：\n' + err : ''}${hint}`)
     push({ kind: 'info', title: emp?.name ?? '员工', body: '执行器出错了', route: `chat/${l.sid}` })
   }
-  const next = l.queue.shift()
-  if (next && emp && !l.stopped) {
-    const rest = l.queue.splice(0)
-    const text = [next, ...rest].map((x) => x.text).join('\n\n')
-    start(emp, text, [next, ...rest].flatMap((x) => x.files))
-  }
+  hooks.idle?.(l.emp, l.stopped)
 }
 
 export function stop(empId: string): boolean {
@@ -402,7 +430,6 @@ export function stop(empId: string): boolean {
     return true
   }
   l.stopped = true
-  l.queue = []
   cancelPending(l.runId, '你让员工停下了')
   killTree(l.proc)
   system(l.sid, '你让员工停下了')

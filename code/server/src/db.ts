@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS push (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGE
 
 export type Coll =
   | 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries'
-  | 'triggers' | 'kb' | 'workspaces' | 'devices'
+  | 'triggers' | 'kb' | 'workspaces' | 'devices' | 'queue'
 
 export interface Doc { id: string }
 

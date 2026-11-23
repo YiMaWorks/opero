@@ -93,6 +93,7 @@ Opero is at an **early stage** — we are open-sourcing it while we build it.
 
 - ✅ **Backend v0.1** (`code/server`, Node 22 + TypeScript + SQLite): owner login, real chat with Claude Code / Codex employees (streaming, interjections, stop), the Opero MCP agent proxy (servers over SSH, MySQL / PostgreSQL, Git sync, approval cards, knowledge base, delegation), encrypted vault, scheduled and webhook triggers, audit log, usage, Android shell pairing and push.
 - ✅ **Web UI** (`code/web`, React + Vite): the same build is the live demo (mock data) and the real app (served by the backend).
+- ✅ **Languages**: 简体中文, 繁體中文, English, 日本語, Deutsch, Français, العربية. Follows the system by default; your choice syncs to every device.
 - ✅ **Android shell** (`code/android`, Kotlin): written, not yet released.
 - 🚧 **Not yet in v0.1**: releases, message channels (mail / Slack / Telegram), saved flows, plugins, issue tracking, context compaction, voice input. In the installed app these show "coming soon"; the demo shows how they will look.
 
@@ -117,11 +118,11 @@ Opero runs on **your own server**, because employees need a machine to work on. 
 
 1. Get a Linux server with systemd (Ubuntu / Debian / RHEL family, 2 vCPU / 4 GB+). A domain is recommended.
 2. **Let your AI install it.** Open Claude Code or Codex on that server and say:
-   > Install Opero on this server by following https://github.com/wfcaven/opero/blob/main/INSTALL.md
+   > Install Opero on this server by following https://github.com/yimaworks/opero/blob/main/INSTALL.md
 
    It checks the server, runs the installer, fixes problems and tells you the address. To do it yourself, run as root:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash
+   curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash
    ```
    Or, from a clone of this repository: `sudo bash code/server/scripts/install.sh`. See [INSTALL.md](INSTALL.md) for details. Add `--cn` to download Node and npm packages from mirrors in China, and `--with-codex` to install Codex as well.
 3. Open `http://<server-ip>:7300`. Create the owner account. The setup wizard then installs Claude Code for you with one click and logs it in (open the login page, authorize, paste the code back), so you never touch a terminal again. Then create your first employees.

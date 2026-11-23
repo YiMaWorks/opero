@@ -6,6 +6,8 @@ import { APPROVALS, EFFORTS, approvalShort, effortLabel, modelsFor } from '../wo
 import { Markdown } from './Markdown'
 import { editImage, fileToDataUrl, imageSize, pickImages } from './ImageEditor'
 import { LIVE } from '../mode'
+import { call, upload } from '../live'
+import type { QAtt } from '../types'
 import { WorkSheet } from './WorkSheet'
 import { Avatar } from './Avatar'
 import { CardView } from './cards'
@@ -44,6 +46,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const [msgMenu, setMsgMenu] = useState<null | { m: Message; x: number; y: number }>(null)
   const [forward, setForward] = useState<Message | null>(null)
   const server = useStore((s) => s.servers.find((x) => x.name === emp?.host || x.id === emp?.host))
+  // 真的一套：附件先传（输入框上面一排），跟着下一句话一起发；员工在干活时可以排队（带着附件）
+  const allQueue = useStore((s) => s.queue)
+  const myQueue = allQueue.filter((q) => q.emp === session.employee).sort((a, b) => a.at - b.at)
+  const [pend, setPend] = useState<{ key: string; name: string; image: boolean; preview?: string; busy: boolean; err?: string; att?: QAtt }[]>([])
+  const [sending, setSending] = useState(false)
 
   useEffect(() => {
     // 照 KidLock：离底部 120px 以内才跟着滚到最新，往上翻着看的时候不打扰
@@ -63,18 +70,48 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   }, [rec?.start])
 
   if (!emp) return null
-  const send = () => {
+  const codex = /codex/i.test(emp.executor)
+  const readyAtts = pend.filter((p) => p.att)
+  const canSend = !!text.trim() || readyAtts.length > 0
+  /** mode = queue：员工在干活就排队；auto：能插话就插话，插不进去就排队 */
+  const send = async (mode: 'auto' | 'queue' = 'auto') => {
     const t = text.trim()
-    if (!t) return
-    sendMessage(session.id, t)
+    if (!LIVE) {
+      if (!t) return
+      sendMessage(session.id, t)
+      setText('')
+      return
+    }
+    if (pend.some((p) => p.busy)) { toast('附件还在传，等一下'); return }
+    if (!t && !readyAtts.length) return
+    setSending(true)
+    const r = await call<{ queued?: { id: string }; sent?: boolean }>('POST', `/api/sessions/${session.id}/messages`, {
+      text: t, files: readyAtts.map((p) => ({ id: p.att!.id, w: p.att!.w, h: p.att!.h })), mode,
+    })
+    setSending(false)
+    if (!r) return
     setText('')
+    setPend([])
+    if (r.queued) toast('已排队：这一轮做完按顺序发')
+  }
+  const addPending = async (blob: Blob, name: string, image: boolean, preview?: string, w?: number, h?: number) => {
+    const key = Math.random().toString(36).slice(2)
+    setPend((p) => [...p, { key, name, image, preview, busy: true }])
+    const r = await upload(session.id, blob, name, { w, h })
+    setPend((p) => p.map((x) => (x.key !== key ? x : r?.att ? { ...x, busy: false, att: r.att } : { ...x, busy: false, err: '传失败了' })))
+  }
+  const dropPending = (key: string) => {
+    const x = pend.find((p) => p.key === key)
+    if (x?.att) call('DELETE', `/api/sessions/${session.id}/files/${encodeURIComponent(x.att.id)}`)
+    setPend((p) => p.filter((y) => y.key !== key))
   }
   // 发图片：先过图片编辑器（裁剪 / 旋转 / 调色 / 压缩），一次选多张就一张张来；发文件不编辑
   const sendImages = async (files: File[]) => {
     for (const f of files) {
       const url = await fileToDataUrl(f)
       const { w, h } = await imageSize(url)
-      sendFile(session.id, f.name, true, { size: f.size, url, w, h })
+      if (LIVE) addPending(f, f.name, true, url, w, h)
+      else sendFile(session.id, f.name, true, { size: f.size, url, w, h })
     }
   }
   const attach = async (kind: string) => {
@@ -82,7 +119,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
     if (kind === '文件') {
       const input = document.createElement('input')
       input.type = 'file'
-      input.onchange = () => { const f = input.files?.[0]; if (f) sendFile(session.id, f.name, false, { size: f.size }, f) }
+      input.multiple = LIVE
+      input.onchange = () => { for (const f of Array.from(input.files ?? [])) { if (LIVE) addPending(f, f.name, f.type.startsWith('image/')); else sendFile(session.id, f.name, false, { size: f.size }, f) } }
       input.click()
       return
     }
@@ -198,7 +236,42 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         </div>
       )}
 
+      {LIVE && myQueue.length > 0 && (
+        <div className="queue-box">
+          <div className="queue-head">
+            <b>排队中 · {myQueue.length}</b>
+            <span className="sub">{session.working ? '这一轮做完按顺序自动发' : '员工闲着，点右边开始'}</span>
+            <span className="grow" />
+            {!session.working && <button className="btn primary sm" onClick={() => call('POST', `/api/sessions/${session.id}/queue/run`)}>开始处理排队</button>}
+          </div>
+          {myQueue.map((q, i) => (
+            <div key={q.id} className="queue-item">
+              <span className="queue-n">{i + 1}</span>
+              <span className="queue-text" data-no-i18n="">{q.text || '（只有附件）'}</span>
+              {q.files.length > 0 && (
+                <span className="queue-files">
+                  {q.files.slice(0, 4).map((f) => (f.image ? <img key={f.id} src={f.url} alt={f.name} /> : <span key={f.id} className="queue-file" title={f.name}>📎</span>))}
+                  {q.files.length > 4 && <em>+{q.files.length - 4}</em>}
+                </span>
+              )}
+              <button className="queue-x" aria-label="删掉这条" title="删掉这条（连它的附件）" onClick={() => call('DELETE', `/api/queue/${q.id}`)}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <footer className="chat-foot">
+        {LIVE && pend.length > 0 && (
+          <div className="pend-row">
+            {pend.map((p) => (
+              <div key={p.key} className={'pend' + (p.err ? ' err' : '') + (p.busy ? ' busy' : '')} title={p.name}>
+                {p.image && p.preview ? <img src={p.preview} alt={p.name} /> : <span className="pend-icon">📎</span>}
+                <span className="pend-name" data-no-i18n="">{p.busy ? '…' : p.err ? p.err : p.name}</span>
+                <button aria-label="撤回" onClick={() => dropPending(p.key)}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
         {mobile ? (
           <>
             {emp.menus.length > 0 && (
@@ -228,10 +301,16 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
                 </button>
               ) : (
                 <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send() }}
-                  placeholder={session.working ? '在干活，这时发 = 插话' : `跟「${emp.name}」说点什么`} enterKeyHint="send" />
+                  placeholder={session.working ? (codex ? '在干活，这时发 = 排队' : '在干活，这时发 = 插话') : `跟「${emp.name}」说点什么`} enterKeyHint="send" />
               )}
-              {!voice && text.trim()
-                ? <button className="round-btn primary" onClick={send} aria-label="发送"><IconSend /></button>
+              {!voice && (text.trim() || (LIVE && readyAtts.length > 0))
+                ? (
+                  <>
+                    {LIVE && session.working && !codex && <button className="btn ghost sm queue-btn" disabled={sending} onClick={() => send('queue')}>排队</button>}
+                    {LIVE && !session.working && <button className="round-btn" onClick={() => setSheet('attach')} aria-label="附件"><IconPlus /></button>}
+                    <button className="round-btn primary" disabled={sending} onClick={() => send()} aria-label="发送"><IconSend /></button>
+                  </>
+                )
                 : session.working
                   ? <button className="round-btn stop" onClick={() => stopWorking(session.id)} aria-label="停止"><i /></button>
                   : <button className="round-btn" onClick={() => setSheet('attach')} aria-label="附件"><IconPlus /></button>}
@@ -267,10 +346,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2}
                 onPaste={onPaste}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } }}
-                placeholder={session.working ? `「${emp.name}」在干活，这时发的话会插进去…` : `跟「${emp.name}」说点什么…`} />
-              <button className="btn primary" onClick={send} disabled={!text.trim()}><IconSend />发送</button>
+                placeholder={session.working ? (codex ? `「${emp.name}」在干活，这时发的话会排队…` : `「${emp.name}」在干活，这时发的话会插进去…`) : `跟「${emp.name}」说点什么…`} />
+              {LIVE && session.working && !codex && <button className="btn default" disabled={sending || !canSend} onClick={() => send('queue')} title="等这一轮做完再发（图片、文件一起）">排队</button>}
+              <button className="btn primary" onClick={() => send()} disabled={sending || !(LIVE ? canSend : text.trim())}><IconSend />{LIVE && session.working ? (codex ? '排队' : '插话') : '发送'}</button>
             </div>
-            <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · 截图粘贴 / 图片拖进来都会先裁剪再发{session.working ? ' · 在干活时发的话会插进去' : ''}</span>
+            <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · 截图粘贴 / 图片拖进来都会先裁剪再发{session.working ? (LIVE ? (codex ? ' · 在干活时发的话会排队，做完按顺序发' : ' · 回车 = 插话；点「排队」= 这一轮做完再发（附件一起）') : ' · 在干活时发的话会插进去') : ''}</span>
           </>
         )}
       </footer>
@@ -377,10 +457,10 @@ function MessageView({ m, owner, showTime, onCardAction, onMenu }: {
     onTouchMove: () => { if (press.current) clearTimeout(press.current) },
   }
   const body = me
-    ? (m.kind === 'file' && m.file ? <FileBubble f={m.file} /> : <div className="bubble me" {...hold}>{m.text}</div>)
+    ? (m.kind === 'file' && m.file ? <FileBubble f={m.file} /> : <div className="bubble me" data-no-i18n={LIVE ? '' : undefined} {...hold}>{m.text}</div>)
     : (
       <>
-        {m.kind === 'text' && <div className="bubble" {...hold}><Markdown text={m.text ?? ''} /></div>}
+        {m.kind === 'text' && <div className="bubble" data-no-i18n={LIVE && m.from !== 'system' ? '' : undefined} {...hold}><Markdown text={m.text ?? ''} /></div>}
         {m.kind === 'file' && m.file && <div {...hold}><FileBubble f={m.file} /></div>}
         {m.kind === 'card' && m.card && <div className="msg-card" {...hold}><CardView card={m.card} onAction={onCardAction} /></div>}
       </>

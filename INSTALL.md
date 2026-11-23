@@ -2,11 +2,11 @@
 
 > **Easiest way:** open Claude Code or Codex on the server where Opero should run, and say:
 >
-> *"Install Opero on this server by following https://github.com/wfcaven/opero/blob/main/INSTALL.md"*
+> *"Install Opero on this server by following https://github.com/yimaworks/opero/blob/main/INSTALL.md"*
 >
 > The agent reads this file and does the rest. Everything below is written so an AI agent can follow it step by step; a human can follow it too.
 >
-> 中文用户也可以直接对 AI 说：「按 https://github.com/wfcaven/opero/blob/main/INSTALL.md 帮我在这台服务器上装好 Opero」。
+> 中文用户也可以直接对 AI 说：「按 https://github.com/yimaworks/opero/blob/main/INSTALL.md 帮我在这台服务器上装好 Opero」。
 
 Opero downloads everything from GitHub, nodejs.org and the npm registry (or their mirrors in China with `--cn`). It never contacts the Opero website.
 
@@ -32,7 +32,7 @@ Requirements: Linux with systemd (Ubuntu / Debian / RHEL family), x86_64 or arm6
 ## 2. Run the installer
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash
 ```
 
 Options (append after `sudo bash -s --`):
@@ -88,6 +88,21 @@ Tell the user to open the address and:
    3. **让它回一句话** (test): it should answer within a few seconds.
 3. Create employees, then chat.
 
+## 6. More servers (Opero Agent)
+
+Employees can also work on other servers. Opero installs a small **Agent** there; it connects out to Opero (no inbound port needed) and coexists with other agents on the machine (for example KidLock's `kl-logagent`).
+
+1. In Opero: **应用 → 服务器和 Agent → 接入 → 装 Agent → 生成安装命令** (one-time token, valid 30 minutes).
+2. On the other server, run that command as root. It looks like:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash -s -- --agent https://<your-opero> <token>
+   ```
+   It installs Node 22, the `opero-ai` user, `/srv/opero/work` and the `opero-agent` service. The page shows "已接入" within seconds.
+3. Click the server → **AI 执行器**: one-click install Claude Code on it and log in (same buttons as step 5).
+4. In an employee's **编辑 → 跑在哪台服务器**, pick that server.
+
+Re-installing, or running a new command on the same machine, re-links the same server (identified by `/etc/machine-id`); no duplicates. The other server must be able to reach your Opero address (set `OPERO_URL` if Opero is behind a domain). Agent commands on that machine: `opero status`, `opero logs`, `sudo opero update`.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -99,4 +114,6 @@ Tell the user to open the address and:
 | login says "Invalid code" | the code is single-use; click 开始登录 again and paste the new code right away |
 | employee replies "执行器退出了 … login / API key" | key missing or wrong: set it in 我 → AI 执行器, or log in as the AI user |
 | forgot password | `opero reset-password` |
+| Agent shows 离线 | on that server: `systemctl status opero-agent`, `journalctl -u opero-agent -n 50`; can it reach the Opero URL? |
+| Agent install says the token is invalid / expired | generate a new command in Opero (tokens are single-use, 30 minutes) |
 | update | `sudo opero update` (pulls the latest code from the same repo and re-installs; data and config stay) |

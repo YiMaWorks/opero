@@ -12,17 +12,24 @@ import { audit } from './chat.ts'
 import { setSecret } from './vault.ts'
 import { cfg } from './config.ts'
 import * as runner from './runner.ts'
+import * as hosts from './hosts.ts'
 import type { Credential } from './types.ts'
 
 export interface Job {
   id: string
   type: 'install' | 'login'
   executor: 'claude' | 'codex'
+  /** 在哪台机器上装 / 登录（local 或装了 Agent 的服务器） */
+  host: string
+  /** 登录界面现在显示的最后几行（令牌打码），卡住时给人看 */
+  screen?: string
   state: 'running' | 'waitCode' | 'verifying' | 'ok' | 'fail'
   log: string
   url?: string
   message?: string
   started: number
+  /** 授权码交上去的时间 */
+  codeAt?: number
 }
 
 let job: Job | null = null
@@ -42,16 +49,16 @@ function done(state: 'ok' | 'fail', message: string) {
 }
 
 /** 以 AI 用户跑一段 shell，输出进 job 日志 */
-function sh(script: string, env: Record<string, string> = {}, timeoutMs = 8 * 60_000): Promise<number> {
+function sh(host: string, script: string, env: Record<string, string> = {}, timeoutMs = 8 * 60_000): Promise<number> {
   return new Promise((resolve) => {
-    const p = runner.spawnAi('bash', ['-c', script], env, cfg.work)
+    const p = hosts.spawnAiOn(host, 'bash', ['-c', script], env, hosts.workRoot(host))
     proc = p
     p.stdin!.on('error', () => {})
     p.stdin!.end()
     const add = (b: Buffer) => log(b.toString().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r(?!\n)/g, '\n'))
     p.stdout!.on('data', add)
     p.stderr!.on('data', add)
-    const t = setTimeout(() => { try { if (p.pid) process.kill(-p.pid, 'SIGKILL') } catch { /* 没了 */ } }, timeoutMs)
+    const t = setTimeout(() => hosts.killTree(p), timeoutMs)
     p.on('close', (code) => { clearTimeout(t); resolve(code ?? -1) })
     p.on('error', (e) => { log(`\n${e.message}\n`); clearTimeout(t); resolve(-1) })
   })
@@ -62,9 +69,9 @@ const CLAUDE_OFFICIAL = 'curl -fsSL https://claude.ai/install.sh | bash'
 const NPM = (pkg: string, reg = '') => `command -v npm >/dev/null || { echo "没有 npm"; exit 1; }; npm install -g ${pkg} --prefix "$HOME/.local" --no-fund --no-audit${reg ? ` --registry ${reg}` : ''}`
 const MIRROR = 'https://registry.npmmirror.com'
 
-export function startInstall(executor: 'claude' | 'codex'): Job {
+export function startInstall(executor: 'claude' | 'codex', host = hosts.LOCAL): Job {
   if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
-  job = { id: uid('j'), type: 'install', executor, state: 'running', log: '', started: Date.now() }
+  job = { id: uid('j'), type: 'install', executor, host, state: 'running', log: '', started: Date.now() }
   const steps = executor === 'claude'
     ? [['用官方安装脚本装 Claude Code', CLAUDE_OFFICIAL], ['官方脚本没成功，改用 npm 装', NPM('@anthropic-ai/claude-code')], ['再试国内镜像', NPM('@anthropic-ai/claude-code', MIRROR)]]
     : [['用 npm 装 Codex', NPM('@openai/codex')], ['再试国内镜像', NPM('@openai/codex', MIRROR)]]
@@ -72,9 +79,9 @@ export function startInstall(executor: 'claude' | 'codex'): Job {
   ;(async () => {
     for (const [title, script] of steps) {
       log(`\n▶ ${title}\n`)
-      const code = await sh(script)
+      const code = await sh(host, script, runner.egressEnv(executor, host))
       if (code === 0) {
-        const v = await runner.runAi(bin, ['--version'], { timeoutMs: 20_000 })
+        const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
         if (v.code === 0) {
           log(`\n✓ 装好了：${v.out.split('\n').pop()}\n`)
           audit({ via: '—', action: 'ai.install', target: executor === 'claude' ? 'Claude Code' : 'Codex', level: '写', result: '成功', how: '网页一键安装' })
@@ -92,27 +99,35 @@ export function startInstall(executor: 'claude' | 'codex'): Job {
 const OSC8 = /\x1b\]8;[^;\x07\x1b]*;(https:\/\/[^\x07\x1b\s]+)(?:\x07|\x1b\\)/
 const URL_RE = /https:\/\/(claude\.ai|claude\.com|console\.anthropic\.com)\/[^\s"'<>]+/
 const TOKEN_RE = /sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}/
-const ERR_RE = /(OAuth error|Login failed|Authentication failed|Invalid code)/i
+// 授权码贴回去以后屏幕上出现这些就算失败（措辞以后可能变：宽一点）
+const ERR_RE = /(OAuth error|Login failed|Authentication failed|Invalid (authorization )?code|invalid_grant|expired|Error:|failed)/i
 
-export function startLogin(): Job {
+export function startLogin(host = hosts.LOCAL): Job {
   if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
-  job = { id: uid('j'), type: 'login', executor: 'claude', state: 'running', log: '', started: Date.now() }
+  job = { id: uid('j'), type: 'login', executor: 'claude', host, state: 'running', log: '', started: Date.now() }
   const j = job
   const vt = new Screen(60, 500)
   let raw = ''
   let token = ''
+  let tokenShort = '' // 没接下一行的那个（接错了时退回它）
   let fail = ''
-  const p = runner.spawnAi('script', ['-qfec', `stty cols 500 rows 60 2>/dev/null; exec ${cfg.claudeBin} setup-token`, '/dev/null'],
-    { TERM: 'xterm-256color', NO_COLOR: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }, cfg.work)
+  const p = hosts.spawnAiOn(host, 'script', ['-qfec', `stty cols 500 rows 60 2>/dev/null; exec ${cfg.claudeBin} setup-token`, '/dev/null'],
+    { TERM: 'xterm-256color', NO_COLOR: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', ...runner.egressEnv('claude', host) }, hosts.workRoot(host))
   proc = p
   p.stdin!.on('error', () => {})
   const scan = () => {
     const lines = vt.lines()
-    for (const l of lines) {
-      const t = l.match(TOKEN_RE)?.[0]
-      if (t && t.length > token.length) token = t
-      if (j.url && ERR_RE.test(l)) fail = l.trim().replace(/^[✘✗×\s]+/, '')
-    }
+    // 令牌一般在一行里；万一被界面的框折成两行（令牌正好顶到行尾），把下一行开头的那段接上
+    const clean = (l: string) => l.replace(/[│┃║|]/g, ' ').trim()
+    lines.forEach((l, i) => {
+      const c = clean(l)
+      const t0 = c.match(TOKEN_RE)?.[0]
+      if (!t0) return
+      const t = c.endsWith(t0) && lines[i + 1] ? t0 + (clean(lines[i + 1]).match(/^[A-Za-z0-9_-]+/)?.[0] ?? '') : t0
+      if (t.length > token.length) { token = t; tokenShort = t0 }
+    })
+    if (j.codeAt) for (const l of lines.slice(-12)) if (ERR_RE.test(l) && !/https:\/\//.test(l)) fail = l.trim().replace(/^[✘✗×\s]+/, '').slice(0, 200)
+    j.screen = lines.slice(-8).join('\n').replace(TOKEN_RE, '***').replace(/https:\/\/\S+/g, '（登录网址）').slice(-800)
     if (!j.url) {
       const u = raw.match(OSC8)?.[1] ?? lines.map((l) => l.match(URL_RE)?.[0]).find((u) => u && u.includes('oauth') && u.includes('state='))
       if (u && URL_RE.test(u)) { j.url = u; j.state = 'waitCode'; raw = ''; log('登录网址已生成，等你在浏览器里批准，再把授权码贴回来\n') }
@@ -129,6 +144,11 @@ export function startLogin(): Job {
   p.stdout!.on('data', (b: Buffer) => onData(decOut.write(b)))
   p.stderr!.on('data', (b: Buffer) => onData(decErr.write(b)))
   const timer = setTimeout(() => { if (j.state === 'running' || j.state === 'waitCode') { kill(); done('fail', j.url ? '等了 15 分钟没收到授权码，重新点「开始登录」' : '没拿到登录网址') } }, 15 * 60_000)
+  // 授权码交上去 2 分钟还没结果：多半是界面换了说法认不出来，停下来把屏幕给人看
+  const stuck = setInterval(() => {
+    if (job !== j || finished) { clearInterval(stuck); return }
+    if (j.codeAt && Date.now() - j.codeAt > 120_000 && j.state === 'running') { clearInterval(stuck); finished = true; clearTimeout(timer); kill(); done('fail', `交了授权码 2 分钟没结果，登录界面最后显示：${j.screen || '（空）'}。重新点「开始登录」，拿到授权码马上贴`) }
+  }, 5000)
   let finished = false
   const finish = async () => {
     if (finished || job !== j) return
@@ -140,7 +160,9 @@ export function startLogin(): Job {
     if (!token) return done('fail', `没登录成功：${fail}（授权码只能用一次，重新点「开始登录」）`)
     j.state = 'verifying'
     log('已拿到令牌，正在验证能不能用…\n')
-    const v = await runner.runAi(cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env: { CLAUDE_CODE_OAUTH_TOKEN: token }, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+    const check = (t: string) => hosts.runAiOn(j.host, cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env: { CLAUDE_CODE_OAUTH_TOKEN: t, ...runner.egressEnv('claude', j.host) }, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+    let v = await check(token)
+    if ((v.code !== 0 || !/OK/.test(v.out)) && tokenShort && tokenShort !== token) { const v2 = await check(tokenShort); if (v2.code === 0 && /OK/.test(v2.out)) { v = v2; token = tokenShort } }
     if (v.code !== 0 || !/OK/.test(v.out)) return done('fail', `登录成功了，但用它跑 Claude Code 被拒绝：${v.out.split(token).join('••••').slice(-300)}`)
     saveClaudeToken(token)
     log('验证通过，已加密保存\n')
@@ -155,7 +177,7 @@ function kill() {
   const p = proc
   if (!p) return
   try { p.stdin?.end() } catch { /* 没了 */ }
-  try { if (p.pid) process.kill(-p.pid, 'SIGTERM') } catch { /* 没了 */ }
+  hosts.killTree(p)
 }
 
 /** 把浏览器里拿到的授权码写进正在跑的 setup-token（原始输入模式：先贴码，再单独发回车） */
@@ -167,6 +189,7 @@ export function sendCode(code: string) {
   p.stdin!.write(c)
   setTimeout(() => p.stdin?.write('\r'), 400)
   job.state = 'running'
+  job.codeAt = Date.now()
   log('收到授权码，正在向 Anthropic 确认…\n')
 }
 

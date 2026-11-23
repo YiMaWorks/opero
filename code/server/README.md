@@ -8,7 +8,7 @@
 ## 装在服务器上
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash   # 国内：… | sudo bash -s -- --cn
+curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash   # 国内：… | sudo bash -s -- --cn
 # 或者在拉下来的代码里
 sudo bash code/server/scripts/install.sh
 ```

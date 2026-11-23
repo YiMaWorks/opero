@@ -1,6 +1,7 @@
 // 登录 · 开机向导（第一次用：在聊天里一步一张卡片）
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { finishSetup, login, toast, useStore } from '../store'
+import { finishSetup, login, setSettings, toast, useStore } from '../store'
+import { LangPicker } from '../components/LangPicker'
 import { Mark, Wordmark } from '../components/brand'
 import { Field, Segmented } from '../components/ui'
 import { modelsFor } from '../work'
@@ -29,6 +30,7 @@ export function LoginPage() {
           <IconFingerprint size={20} /> 用通行密钥 / 指纹登录
         </button>
         <p className="hint center">演示：账号密码已经填好，直接点「登录」。</p>
+        <div className="auth-lang"><LangPicker onPick={(p) => setSettings({ lang: p })} /></div>
       </div>
     </div>
   )

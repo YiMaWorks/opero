@@ -16,6 +16,10 @@ import { cloneWorkspace, inspect, providerOf, workspaceDir } from './git.ts'
 import { fire, parseRule } from './triggers.ts'
 import { PRESETS } from './presets.ts'
 import * as execs from './executors.ts'
+import * as agents from './agents.ts'
+import * as hosts from './hosts.ts'
+import * as queue from './queue.ts'
+import * as keys from './keys.ts'
 import { delSecret, getSecret, hasSecret, setSecret } from './vault.ts'
 import type { Credential, DataSource, Device, Employee, KbDoc, Message, SavedQuery, Server, Session, Trigger, Workspace } from './types.ts'
 
@@ -25,7 +29,7 @@ const del1 = (coll: Parameters<typeof del>[0], id: string) => { del(coll, id); e
 
 /** 给网页看的样子：去掉内部字段 */
 function pub(coll: string, item: any): any {
-  if (coll === 'servers') { const { hostKey: _h, ...rest } = item; return rest }
+  if (coll === 'servers') return agents.pub(item)
   if (coll === 'credentials') return { ...item, hasSecret: hasSecret(item.id) }
   if (coll === 'triggers' && item.kind === 'Webhook' && item.hookToken) return { ...item, hookPath: `/hook/${item.hookToken}` }
   return item
@@ -45,8 +49,8 @@ function setCookie(c: Ctx, token: string | null) {
 // ---------- 开机 / 登录 ----------
 const defaultSettings = {
   prodProtect: true, theme: 'system', themeLight: 'amethyst', themeDark: 'slate', customTheme: { mode: 'light', bg: '#F3EEE3', ink: '#111111', accent: '#D9541E' },
-  lang: 'zh', notify: 'decide', notifyTo: ['App 推送'], budget: 0, budgetStop: false, fallback: '', aiDown: false,
-  habits: '- 回复用中文，先给结论再说原因\n- 改代码在分支上做，改完自己看一遍 diff\n- 不确定的先问我',
+  lang: 'auto', notify: 'decide', notifyTo: ['App 推送'], budget: 0, budgetStop: false, fallback: '', aiDown: false,
+  habits: '- 先给结论再说原因\n- 改代码在分支上做，改完自己看一遍 diff\n- 不确定的先问我',
 }
 export const settings = () => ({ ...defaultSettings, ...kvGet<Record<string, unknown>>('settings', {}) })
 
@@ -70,6 +74,7 @@ function bootstrap(c: Ctx) {
     triggers: all<Trigger>('triggers').map((x) => pub('triggers', x)),
     kb: all<KbDoc>('kb'),
     workspaces: all<Workspace>('workspaces'),
+    queue: all<queue.QItem>('queue'),
     audit: listAudit(),
     usage: usage(),
     settings: settings(),
@@ -154,14 +159,23 @@ route('PUT', '/api/settings', (c) => {
 route('POST', '/api/setup/done', () => { kvSet('setupDone', true); return { ok: true } })
 
 // ---------- AI 执行器 ----------
-async function executors() {
-  const [cc, cx] = await Promise.all([runner.runAi(cfg.claudeBin, ['--version'], { timeoutMs: 15_000 }), runner.runAi(cfg.codexBin, ['--version'], { timeoutMs: 15_000 })])
+/** host：在哪台机器上看（local 或装了 Agent 的服务器）；账号 / Key 是所有机器共用的 */
+const hostParam = (v: unknown) => {
+  const h = String(v ?? '') || hosts.LOCAL
+  if (hosts.isLocal(h)) return hosts.LOCAL
+  const sv = get<Server>('servers', h)
+  if (!agents.isAgent(sv)) throw bad('这台服务器没装 Agent')
+  return h
+}
+async function executors(host = hosts.LOCAL) {
+  const [cc, cx] = await Promise.all([hosts.runAiOn(host, cfg.claudeBin, ['--version'], { timeoutMs: 15_000 }), hosts.runAiOn(host, cfg.codexBin, ['--version'], { timeoutMs: 15_000 })])
   const c = runner.aiConf()
+  const remote = !hosts.isLocal(host)
   return {
-    aiUser: cfg.aiUser, isolated: !!cfg.aiUser,
+    host, aiUser: remote ? 'opero-ai' : cfg.aiUser, isolated: remote || !!cfg.aiUser,
     claude: cc.code === 0 ? cc.out.split('\n')[0] : null,
     codex: cx.code === 0 ? cx.out.split('\n').pop() : null,
-    claudeKey: !!(c.claudeCred && hasSecret(c.claudeCred)), claudeBaseUrl: c.claudeBaseUrl ?? '',
+    claudeKey: !!(c.claudeCred && hasSecret(c.claudeCred)), claudeBaseUrl: c.claudeBaseUrl ?? '', claudeEgress: c.claudeEgress ?? '', codexEgress: c.codexEgress ?? '',
     codexKey: !!(c.codexCred && hasSecret(c.codexCred)), codexBaseUrl: c.codexBaseUrl ?? '',
     install: {
       claude: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'curl -fsSL https://claude.ai/install.sh | bash'`,
@@ -170,7 +184,7 @@ async function executors() {
     },
   }
 }
-route('GET', '/api/ai', () => executors())
+route('GET', '/api/ai', (c) => executors(hostParam(c.url.searchParams.get('host'))))
 route('PUT', '/api/ai', async (c) => {
   const b = c.body ?? {}
   const conf = runner.aiConf()
@@ -187,38 +201,68 @@ route('PUT', '/api/ai', async (c) => {
   saveKey('codexCred', 'Codex 的 OpenAI API Key', b.codexKey)
   if (b.claudeBaseUrl !== undefined) conf.claudeBaseUrl = String(b.claudeBaseUrl).trim()
   if (b.codexBaseUrl !== undefined) conf.codexBaseUrl = String(b.codexBaseUrl).trim()
+  // 网络出口：空 = 直连；local = 经 Opero 这台；服务器编号 = 经那台 Agent
+  for (const k of ['claudeEgress', 'codexEgress'] as const) {
+    if (b[k] === undefined) continue
+    const v = String(b[k] ?? '')
+    if (v && v !== 'local' && !agents.isAgent(get<Server>('servers', v))) throw bad('出口要选装了 Agent 的服务器')
+    conf[k] = v || undefined
+  }
   kvSet('ai', conf)
   audit({ via: '—', action: 'ai.config', target: 'AI 执行器', level: '危险', result: '成功', how: '本人' })
-  return executors()
+  return executors(hostParam(b.host))
 })
 // 一键安装执行器、订阅登录（傻瓜式：网页点按钮，后台在服务器上做；网页每秒问一次进度）
 route('GET', '/api/ai/job', () => ({ job: execs.currentJob() }))
 route('POST', '/api/ai/install', (c) => {
-  try { return { job: execs.startInstall(/codex/i.test(String(c.body?.executor ?? '')) ? 'codex' : 'claude') } } catch (e) { throw bad((e as Error).message) }
+  const host = hostParam(c.body?.host)
+  try { return { job: execs.startInstall(/codex/i.test(String(c.body?.executor ?? '')) ? 'codex' : 'claude', host) } } catch (e) { throw bad((e as Error).message) }
 })
-route('POST', '/api/ai/login', () => {
-  try { return { job: execs.startLogin() } } catch (e) { throw bad((e as Error).message) }
+route('POST', '/api/ai/login', (c) => {
+  const host = hostParam(c.body?.host)
+  try { return { job: execs.startLogin(host) } } catch (e) { throw bad((e as Error).message) }
 })
 route('POST', '/api/ai/login/code', (c) => {
   try { execs.sendCode(String(c.body?.code ?? '')); return { job: execs.currentJob() } } catch (e) { throw bad((e as Error).message) }
 })
 route('POST', '/api/ai/job/cancel', () => { execs.cancelJob(); return { job: execs.currentJob() } })
+// 测出口：在干活那台上经选的出口访问一下 AI 接口（能拿到 HTTP 状态码就说明通了，401 / 404 也算通）
+route('POST', '/api/ai/egress-test', async (c) => {
+  const codex = /codex/i.test(String(c.body?.executor ?? ''))
+  const host = hostParam(c.body?.host)
+  const url = codex ? 'https://api.openai.com/v1/models' : 'https://api.anthropic.com/v1/models'
+  const env = runner.egressEnv(codex ? 'codex' : 'claude', host)
+  const want = (codex ? runner.aiConf().codexEgress : runner.aiConf().claudeEgress) || ''
+  if (want && want !== host && !env.HTTPS_PROXY) return { ok: false, via: 'egress', status: '', secs: 0, out: '这台的 Agent 版本太旧，没有本机出口代理：在那台上运行 sudo opero update 升级' }
+  const r = await hosts.runAiOn(host, 'bash', ['-c', `curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 20 ${url}`], { env, timeoutMs: 30_000 })
+  const m = r.out.match(/(\d{3}) ([\d.]+)\s*$/)
+  const ok = !!m && m[1] !== '000'
+  return { ok, via: env.HTTPS_PROXY ? 'egress' : 'direct', status: m?.[1] ?? '', secs: m ? Number(m[2]) : 0, out: ok ? '' : r.out.slice(-300) }
+})
 route('POST', '/api/ai/test', async (c) => {
   const codex = /codex/i.test(String(c.body?.executor ?? ''))
+  const host = hostParam(c.body?.host)
   const c2 = runner.aiConf()
   const env: Record<string, string> = {}
   const key = codex ? (c2.codexCred && getSecret(c2.codexCred)) : (c2.claudeCred && getSecret(c2.claudeCred))
   if (key) Object.assign(env, codex ? { OPENAI_API_KEY: key, CODEX_API_KEY: key } : { [key.startsWith('sk-ant-oat') ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY']: key })
   if (!codex && c2.claudeBaseUrl) env.ANTHROPIC_BASE_URL = c2.claudeBaseUrl
   if (codex && c2.codexBaseUrl) env.OPENAI_BASE_URL = c2.codexBaseUrl
+  Object.assign(env, runner.egressEnv(codex ? 'codex' : 'claude', host))
   const r = codex
-    ? await runner.runAi(cfg.codexBin, ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
-    : await runner.runAi(cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+    ? await hosts.runAiOn(host, cfg.codexBin, ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+    : await hosts.runAiOn(host, cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
   const out = key ? r.out.split(key).join('••••') : r.out
   return { ok: r.code === 0 && /OK/.test(out), ms: r.ms, out: out.slice(-600) }
 })
 
 // ---------- 员工 ----------
+/** 员工跑在哪台：本机或装了 Agent 的服务器 */
+function empHost(v: unknown) {
+  const h = String(v ?? '')
+  if (!h || hosts.isLocal(h)) return LOCAL_ID
+  return agents.isAgent(get<Server>('servers', h)) ? h : LOCAL_ID
+}
 function cleanEmp(b: any, old?: Employee): Employee {
   const name = String(b.name ?? old?.name ?? '').trim()
   if (!name) throw bad('先起个名字')
@@ -227,7 +271,7 @@ function cleanEmp(b: any, old?: Employee): Employee {
     ...(old ?? {}),
     id: old?.id ?? (String(b.id ?? '').match(/^[\w-]{2,40}$/) ? String(b.id) : uid('e')),
     name, avatar: String(pick('avatar', '') || name.slice(0, 1)), color: pick('color', '#5B4FE9'), title: pick('title', ''), prompt: pick('prompt', ''), persona: pick('persona', ''),
-    executor: /codex/i.test(String(pick('executor', 'Claude Code'))) ? 'Codex' : 'Claude Code', host: LOCAL_ID, workspace: pick('workspace', ''), menus: pick('menus', []),
+    executor: /codex/i.test(String(pick('executor', 'Claude Code'))) ? 'Codex' : 'Claude Code', host: empHost(b.host ?? old?.host), workspace: pick('workspace', ''), menus: pick('menus', []),
     model: pick('model', 'Opus 5.5'), effort: pick('effort', 'high'), approval: pick('approval', 'auto'), notify: pick('notify', 'decide'), bg: pick('bg', 'plain'),
     avatarImg: pick('avatarImg', undefined), repo: '', resumeId: old?.resumeId, contextUsed: old?.contextUsed ?? 0,
   }
@@ -248,13 +292,14 @@ route('PUT', '/api/employees/:id', (c) => {
   const old = get<Employee>('employees', c.params.id)
   if (!old) throw new HttpError(404, '没有这个员工')
   const e = cleanEmp({ ...c.body, id: old.id }, old)
-  if (old.executor !== e.executor || old.workspace !== e.workspace) e.resumeId = undefined // 换了执行器 / 目录：会话接不上了，下一句开新的
+  if (old.executor !== e.executor || old.workspace !== e.workspace || old.host !== e.host) e.resumeId = undefined // 换了执行器 / 目录：会话接不上了，下一句开新的
   return put1('employees', e)
 })
 route('DELETE', '/api/employees/:id', (c) => {
   const e = get<Employee>('employees', c.params.id)
   if (!e) return { ok: true }
   runner.stop(e.id)
+  for (const q of queue.list(e.id)) queue.remove(q.id, true)
   for (const s of all<Session>('sessions').filter((x) => x.employee === e.id)) {
     db.prepare('DELETE FROM messages WHERE sid = ?').run(s.id)
     del1('sessions', s.id)
@@ -289,48 +334,66 @@ route('GET', '/api/sessions/:id/messages', (c) => {
   return rows.reverse().map((r) => JSON.parse(r.data))
 })
 
-// 先发的图片 / 文件跟着下一句话一起交给员工；只发了文件没说话，8 秒后也交过去
-const held = new Map<string, { files: runner.Attachment[]; timer?: NodeJS.Timeout }>()
-function takeHeld(sid: string) {
-  const h = held.get(sid)
-  held.delete(sid)
-  if (h?.timer) clearTimeout(h.timer)
-  return h?.files ?? []
+// 发消息：文字 + 已经传好的图片 / 文件（附件先传、显示在输入框上面，跟着这句话一起发，不会丢）。
+//   mode = queue：员工在干活就排队（带着附件）；auto：能插话就插话，插不进去（Codex / 输入通道关了）就排队；闲着就直接派活
+const MIME: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', json: 'application/json', csv: 'text/csv', log: 'text/plain', zip: 'application/zip' }
+function attsOf(emp: Employee, list: unknown): queue.QAtt[] {
+  if (!Array.isArray(list)) return []
+  return list.slice(0, 10).map((x: any) => {
+    const id = path.basename(String(x?.id ?? ''))
+    const p = queue.uploadPath(emp, id)
+    if (!id || !fs.existsSync(p)) throw bad('有个附件找不到了，重新传一下')
+    const name = id.replace(/^[^-]+-/, '')
+    const ext = (name.split('.').pop() ?? 'file').toLowerCase()
+    const mediaType = MIME[ext] ?? 'application/octet-stream'
+    return { id, name, size: fmtSize(fs.statSync(p).size), ext: ext.toUpperCase().slice(0, 4), image: mediaType.startsWith('image/'), mediaType, url: `/api/uploads/${emp.id}/${encodeURIComponent(id)}`, w: Number(x?.w) || undefined, h: Number(x?.h) || undefined }
+  })
 }
 
 route('POST', '/api/sessions/:id/messages', (c) => {
   const s = sess(c.params.id)
+  const emp = get<Employee>('employees', s.employee)
+  if (!emp) throw new HttpError(404, '没有这个员工')
   const text = String(c.body?.text ?? '').trim()
-  if (!text) throw bad('说点什么')
-  const m = addMsg(s.id, { from: 'me', kind: 'text', text })
-  patchSession(s.id, { last: text.slice(0, 80), unread: 0 })
-  runner.send(s.employee, text, takeHeld(s.id))
-  return m
+  const files = attsOf(emp, c.body?.files)
+  if (!text && !files.length) throw bad('说点什么')
+  const working = runner.isWorking(emp.id)
+  const mode = c.body?.mode === 'queue' ? 'queue' : 'auto'
+  if (working && (mode === 'queue' || !runner.canInterject(emp.id))) {
+    try { return { queued: queue.enqueue(emp.id, text, files) } } catch (e) { throw bad((e as Error).message) }
+  }
+  queue.post(s.id, text, files)
+  runner.send(emp.id, text || queue.defaultText(files), queue.toAttachments(emp, files))
+  return { sent: true, interjected: working }
 })
 
+// 传附件：先放进员工目录的 uploads/，回给网页一个附件（还没发）；跟着下一句话一起发
 route('POST', '/api/sessions/:id/files', (c) => {
   const s = sess(c.params.id)
   const emp = get<Employee>('employees', s.employee)
   if (!emp || !c.raw?.length) throw bad('没有文件')
   const name = path.basename(String(c.url.searchParams.get('name') || 'file')).replace(/[^\w.\-一-龥]+/g, '_').slice(0, 80) || 'file'
-  const type = String(c.url.searchParams.get('type') || 'application/octet-stream')
-  const id = uid('u')
-  const fileName = `${id}-${name}`
-  const p = path.join(runner.empHome(emp), 'uploads', fileName)
-  fs.writeFileSync(p, c.raw, { mode: 0o660 })
-  const ext = (name.split('.').pop() ?? 'file').toUpperCase().slice(0, 4)
-  const image = type.startsWith('image/')
-  const w = Number(c.url.searchParams.get('w')) || undefined
-  const h = Number(c.url.searchParams.get('h')) || undefined
-  const m = addMsg(s.id, { from: 'me', kind: 'file', file: { name, size: fmtSize(c.raw.length), ext, image, url: `/api/uploads/${emp.id}/${encodeURIComponent(fileName)}`, w, h } })
-  patchSession(s.id, { last: image ? '[图片]' : `[文件] ${name}`, unread: 0 })
-  const cur = held.get(s.id) ?? { files: [] }
-  cur.files.push({ path: p, name, mediaType: type, image })
-  if (cur.timer) clearTimeout(cur.timer)
-  cur.timer = setTimeout(() => { const files = takeHeld(s.id); if (files.length) runner.send(s.employee, files.length > 1 ? '看一下这几个文件' : image ? '看一下这张图' : '看一下这个文件', files) }, 8000)
-  held.set(s.id, cur)
-  return m
+  const id = `${uid('u')}-${name}`
+  fs.writeFileSync(queue.uploadPath(emp, id), c.raw, { mode: 0o660 })
+  const [att] = attsOf(emp, [{ id, w: c.url.searchParams.get('w'), h: c.url.searchParams.get('h') }])
+  return { att }
 }, { raw: true })
+
+// 撤回一个还没发的附件
+route('DELETE', '/api/sessions/:id/files/:file', (c) => {
+  const s = sess(c.params.id)
+  const emp = get<Employee>('employees', s.employee)
+  if (emp && c.params.file && !c.params.file.includes('/')) { try { fs.unlinkSync(queue.uploadPath(emp, c.params.file)) } catch { /* 已经没了 */ } }
+  return { ok: true }
+})
+
+// 排队：删一条（连它的附件）、员工闲着时手动开始
+route('DELETE', '/api/queue/:id', (c) => { queue.remove(c.params.id, true); return { ok: true } })
+route('POST', '/api/sessions/:id/queue/run', (c) => {
+  const s = sess(c.params.id)
+  if (runner.isWorking(s.employee)) throw bad('员工正在干活，这一轮做完会自动接着发')
+  return { ok: queue.drain(s.employee) }
+})
 
 function sendFileOut(c: Ctx, p: string, name?: string) {
   let st: fs.Stats
@@ -582,7 +645,9 @@ route('POST', '/api/workspaces', async (c) => {
   const name = String(b.name || repo.replace(/\.git$/, '').split('/').pop() || '').trim()
   if (!name) throw bad('起个名字')
   if (all<Workspace>('workspaces').some((w) => w.name === name)) throw bad('已经有同名的工作空间')
-  const w: Workspace = { id: uid('w'), name, provider: providerOf(repo), repo, branch: String(b.branch ?? '').trim(), host: '本机', dir: workspaceDir(name), last: '拉取中…', employees: [], credential: b.credential || undefined, branches: [], commits: [], docs: [] }
+  const server = empHost(b.server)
+  const svName = hosts.isLocal(server) ? '本机' : (get<Server>('servers', server)?.name ?? server)
+  const w: Workspace = { id: uid('w'), name, provider: providerOf(repo), repo, branch: String(b.branch ?? '').trim(), host: svName, server, dir: workspaceDir(name, server), last: '拉取中…', employees: [], credential: b.credential || undefined, branches: [], commits: [], docs: [] }
   put1('workspaces', w)
   audit({ via: '—', action: 'workspace.add', target: `${name} · ${repo}`, level: '写', result: '成功', how: '本人' })
   cloneWorkspace(w).then(async () => put1('workspaces', { ...w, ...(await inspect(w)) }))
@@ -668,6 +733,58 @@ route('DELETE', '/api/app/list/:id', (c) => {
   audit({ via: '—', action: 'app.unpair', target: c.params.id, level: '写', result: '成功', how: '本人' })
   return { ok: true }
 })
+
+// ---------- Agent：别的服务器接进来 ----------
+const RAW_INSTALL = 'https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh'
+route('POST', '/api/agents/join', (c) => {
+  const b = c.body ?? {}
+  const env = ['开发', '测试', '生产'].includes(b.env) ? b.env : '测试'
+  const token = agents.newJoinToken(env, String(b.name ?? '').trim() || undefined)
+  const url = baseUrl(c.req, cfg.publicUrl)
+  const cmd = `curl -fsSL ${RAW_INSTALL} | sudo bash -s -- --agent ${url} ${token}`
+  audit({ via: '—', action: 'agent.token', target: `${b.name || '新服务器'}（${env}）`, level: '写', result: '成功', how: '生成 30 分钟有效的接入命令' })
+  return { token, url, cmd, cmdCn: cmd + ' --cn', expiresIn: 1800, since: Date.now() }
+})
+route('DELETE', '/api/agents/:id', (c) => {
+  needVerify(c)
+  const sv = get<Server>('servers', c.params.id)
+  agents.remove(c.params.id)
+  audit({ via: '—', action: 'agent.remove', target: sv?.name ?? c.params.id, level: '危险', result: '成功', how: '本人（已验证）' })
+  return { ok: true }
+})
+// Agent 自己调的
+route('POST', '/api/agent/register', (c) => {
+  // 带了公钥就要用它签名（证明私钥在那台上）
+  const b = c.body ?? {}
+  const signedOk = !!b.pub && keys.verify(String(b.pub), keys.agentPayload('POST', c.req.url ?? '', String(c.req.headers['x-opero-ts'] ?? ''), c.raw ?? Buffer.alloc(0)), String(c.req.headers['x-opero-sig'] ?? ''))
+  if (b.pub && !signedOk) throw new HttpError(403, '签名不对', 'SIG')
+  try { return agents.register(b, c.ip, signedOk) } catch (e) { throw new HttpError(403, (e as Error).message, 'JOIN') }
+}, { auth: 'none' })
+// 待接入的机器：核对指纹后接受 / 拒绝
+route('POST', '/api/agents/:id/accept', (c) => { needVerify(c); try { return agents.pub(agents.decide(c.params.id, true)) } catch (e) { throw bad((e as Error).message) } })
+route('POST', '/api/agents/:id/reject', (c) => { needVerify(c); try { return agents.pub(agents.decide(c.params.id, false)) } catch (e) { throw bad((e as Error).message) } })
+// Opero 换地址（迁移）：让所有在线的 Agent 改连新地址（Opero 的指纹不变，Agent 就无痕接上）
+route('POST', '/api/agents/move', (c) => {
+  needVerify(c)
+  const url = String(c.body?.url ?? '').trim().replace(/\/+$/, '')
+  if (!/^https?:\/\/[^\s/]+/.test(url)) throw bad('新地址要以 https:// 开头')
+  const list = all<Server>('servers').filter((s) => agents.agentOnline(s))
+  for (const s of list) agents.sendTask(s.id, { t: 'move', id: uid('mv'), url })
+  audit({ via: '—', action: 'agent.move', target: `${list.length} 台 → ${url}`, level: '危险', result: '成功', how: '本人（已验证）' })
+  return { sent: list.length, fingerprint: keys.SERVER_FP }
+})
+route('GET', '/api/agents/fingerprint', () => ({ fingerprint: keys.SERVER_FP }))
+route('GET', '/api/agent/poll', async (c) => {
+  const sv = get<Server>('servers', c.agent!.serverId)
+  if (sv) { sv.lastSeen = Date.now(); put('servers', sv); if (!sv.online) agents.health(sv, sv) }
+  return agents.signedTasks(await agents.poll(c.agent!.serverId))
+}, { auth: 'agent' })
+route('POST', '/api/agent/events', (c) => { agents.events(c.agent!.serverId, c.body?.events ?? []); return { ok: true } }, { auth: 'agent' })
+route('POST', '/api/agent/health', (c) => {
+  const sv = get<Server>('servers', c.agent!.serverId)
+  if (sv) agents.health(sv, c.body ?? {})
+  return { ok: true }
+}, { auth: 'agent' })
 
 // ---------- MCP（只认本机 + 这一轮的令牌） ----------
 const jobs = new Map<string, { p: Promise<ToolResult>; res?: ToolResult }>()

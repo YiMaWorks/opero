@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Opero 安装 / 升级（像以前的论坛系统：一台 Linux 服务器、一条命令）。要 root。代码从 GitHub 拉，不经过 Opero 官网：
-#   curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash
 #   或者在拉下来的代码里：sudo bash code/server/scripts/install.sh
 #   换代码来源（镜像 / 自己的 fork）：OPERO_REPO=https://…/opero.git OPERO_BRANCH=main
 # 选项：
@@ -9,6 +9,9 @@
 #   --with-codex    顺便给 AI 用户装 Codex（同上，默认在网页里装）
 #   --port N        端口（默认 7300）
 #   --cn            用国内镜像下载 Node 和 npm 包
+#   --agent URL [TOKEN]  只装 Opero Agent（让员工能在这台干活）：URL 是你那套 Opero 的地址，TOKEN 是网页「应用 → 服务器 → 接入」给的一次性令牌（带了马上接入；
+#                   不带也行：这台按自己的指纹去连，你在网页上核对指纹后点「接受」）。换 Opero 地址：sudo opero agent-url <新地址>。
+#                   重装 / 换令牌重跑都行：Opero 认得是同一台机器。可以和别的 Agent（比如 KidLock 的 kl-logagent）装在同一台，互不影响。
 # 装完的样子：
 #   /opt/opero/node      Node 22（只给 Opero 用）
 #   /opt/opero/app       程序（code/server + code/web/dist）
@@ -18,10 +21,13 @@
 #   用户 opero 跑后台；用户 opero-ai 跑 Claude Code / Codex（读不到 /var/lib/opero）
 set -euo pipefail
 
-UPDATE=0; CLAUDE=0; CODEX=0; PORT=7300; CN=0
+UPDATE=0; CLAUDE=0; CODEX=0; PORT=7300; CN=0; AGENT=0; AGENT_URL=""; AGENT_TOKEN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) UPDATE=1 ;;
+    --agent) AGENT=1; AGENT_URL="${2:-}"; shift || true
+      # 令牌可以不带（按指纹接入）：下一个不是 -- 开头的才是令牌
+      if [ -n "${2:-}" ] && [ "${2#--}" = "${2}" ]; then AGENT_TOKEN="$2"; shift; fi ;;
     --with-claude) CLAUDE=1 ;;
     --no-claude) CLAUDE=0 ;;
     --with-codex) CODEX=1 ;;
@@ -34,13 +40,129 @@ done
 
 HOME_DIR=/opt/opero; APP=$HOME_DIR/app; NODE_DIR=$HOME_DIR/node
 ETC=/etc/opero; DATA=/var/lib/opero; WORK=/srv/opero/work
-REPO=${OPERO_REPO:-https://github.com/wfcaven/opero.git}
+REPO=${OPERO_REPO:-https://github.com/yimaworks/opero.git}
 BRANCH=${OPERO_BRANCH:-main}
 SRC=$HOME_DIR/src   # 代码的 git 副本，opero update 在这里拉最新
 say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m出错：\033[0m%s\n' "$*" >&2; exit 1; }
 
+# 只装 Agent（--agent）：不装后台、不编网页，只要 code/server 里的 agent.ts + mcp.ts（只用 Node 自带的东西）
+install_agent() {
+  local NEW=$HOME_DIR/app.new
+  rm -rf $NEW && mkdir -p $NEW
+  tar -C "$CHECKOUT" --exclude=node_modules --exclude=.git --exclude=.opero-data -cf - code/server LICENSE | tar -C $NEW -xf -
+  [ -f $NEW/code/server/src/agent.ts ] || die "代码不对（没有 code/server/src/agent.ts）"
+  rm -rf $HOME_DIR/app.old
+  if [ -d $APP ]; then mv $APP $HOME_DIR/app.old; fi
+  mv $NEW $APP
+  chown -R root:root $APP && chmod -R a+rX $APP
+
+  mkdir -p $WORK $ETC /var/lib/opero-agent
+  chown opero-ai:opero-work /srv/opero $WORK && chmod 2770 $WORK && chmod 755 /srv/opero
+  chmod 700 /var/lib/opero-agent
+  if [ $UPDATE = 0 ] || [ ! -f $ETC/agent.env ]; then
+    say "写配置 $ETC/agent.env（连 $AGENT_URL）"
+    cat > $ETC/agent.env <<EOF
+# Opero Agent 配置（改完 systemctl restart opero-agent）
+OPERO_SERVER=$AGENT_URL
+# 一次性接入令牌：只在第一次接入 / 重新接入时用
+OPERO_JOIN_TOKEN=$AGENT_TOKEN
+OPERO_AI_USER=opero-ai
+OPERO_AGENT_DIR=/var/lib/opero-agent
+PATH=$NODE_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EOF
+  fi
+  chmod 600 $ETC/agent.env
+
+  cat > /etc/profile.d/opero.sh <<EOF
+case ":\$PATH:" in *":$NODE_DIR/bin:"*) ;; *) export PATH="\$PATH:$NODE_DIR/bin" ;; esac
+[ "\$(id -un)" = opero-ai ] && umask 007
+EOF
+
+  cat > /etc/systemd/system/opero-agent.service <<EOF
+[Unit]
+Description=Opero Agent (lets Opero employees work on this server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=$ETC/agent.env
+WorkingDirectory=$APP/code/server
+ExecStart=$NODE_DIR/bin/node --disable-warning=ExperimentalWarning src/agent.ts
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # 这台没装 Opero 后台（只有 Agent）：opero 命令管 Agent
+  if [ ! -f /etc/systemd/system/opero.service ]; then
+    cat > /usr/local/bin/opero <<EOF
+#!/usr/bin/env bash
+# Opero Agent 管理命令
+case "\${1:-}" in
+  status) systemctl status opero-agent --no-pager ;;
+  logs) journalctl -u opero-agent -n 200 -f ;;
+  restart) systemctl restart opero-agent ;;
+  stop) systemctl stop opero-agent ;;
+  start) systemctl start opero-agent ;;
+  update) shift; [ "\$(id -u)" = 0 ] || { echo "要 root：sudo opero update"; exit 1; }
+    [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch $BRANCH $REPO $SRC || exit 1
+    git -C $SRC remote set-url origin $REPO && git -C $SRC fetch --quiet --depth 1 origin $BRANCH && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
+    exec bash $SRC/code/server/scripts/install.sh --update "\$@" ;;
+  ai) shift; sudo -u opero-ai -H bash -l "\$@" ;;
+  fingerprint) set -a; . $ETC/agent.env; set +a; exec $NODE_DIR/bin/node --disable-warning=ExperimentalWarning $APP/code/server/src/agent.ts --fingerprint ;;
+  # 换上报地址（Opero 迁移了）：opero agent-url https://新地址 [新那套 Opero 的指纹（换成另一套时才要）]
+  agent-url) [ "\$(id -u)" = 0 ] || { echo "要 root：sudo opero agent-url <地址>"; exit 1; }
+    [ -n "\${2:-}" ] || { echo "用法：sudo opero agent-url https://新地址 [Opero 的指纹]"; exit 1; }
+    sed -i "s#^OPERO_SERVER=.*#OPERO_SERVER=\$2#" $ETC/agent.env
+    sed -i '/^OPERO_TRUST_SERVER=/d' $ETC/agent.env
+    [ -n "\${3:-}" ] && echo "OPERO_TRUST_SERVER=\$3" >> $ETC/agent.env
+    systemctl restart opero-agent && echo "已改连 \$2（按指纹接上，不用重新注册）" ;;
+  *) echo "用法：opero status | logs | restart | start | stop | update | fingerprint | agent-url | ai（这台只装了 Opero Agent）" ;;
+esac
+EOF
+    chmod 755 /usr/local/bin/opero
+  fi
+
+  systemctl daemon-reload
+  systemctl enable opero-agent >/dev/null 2>&1
+  systemctl restart opero-agent
+  say "等 Agent 连上 Opero…"
+  local ok=0
+  for _ in $(seq 1 20); do
+    sleep 1
+    if [ -f /var/lib/opero-agent/agent.json ] && systemctl is-active --quiet opero-agent; then ok=1; break; fi
+    systemctl is-active --quiet opero-agent || break
+  done
+  rm -rf $HOME_DIR/app.old
+  if [ $ok = 1 ]; then
+    cat <<EOF
+
+  Opero Agent 装好了，连的是 $(grep -E '^OPERO_SERVER=' $ETC/agent.env | cut -d= -f2) 🎉
+  $(set -a; . $ETC/agent.env; set +a; $NODE_DIR/bin/node --disable-warning=ExperimentalWarning $APP/code/server/src/agent.ts --fingerprint 2>/dev/null | head -1)
+  （没带令牌的：到 Opero 网页「应用 → 服务器和 Agent」里核对上面这个指纹，点「接受」）
+  回到 Opero 网页「应用 → 服务器」就能看到这台：
+    - 点它 →「AI 执行器」：一键安装 Claude Code、登录（都是点按钮）
+    - 员工的「编辑 → 跑在哪台服务器」选它，员工就在这台干活
+  常用：opero status · opero logs · sudo opero update
+  这台上原来的其它 Agent（比如 KidLock 的）不受影响。
+EOF
+  else
+    journalctl -u opero-agent -n 30 --no-pager || true
+    die "Agent 没连上 Opero，看上面的日志：常见原因是令牌过期（网页上重新生成命令）或这台机器访问不到 Opero 的地址"
+  fi
+}
+
 [ "$(id -u)" = 0 ] || die "要用 root 跑（前面加 sudo）"
+# 只装了 Agent 的机器上 opero update：还是按 Agent 升级
+if [ $AGENT = 0 ] && [ $UPDATE = 1 ] && [ -f $ETC/agent.env ] && [ ! -f $ETC/opero.env ]; then AGENT=1; fi
+if [ $AGENT = 1 ] && [ $UPDATE = 0 ]; then
+  [[ "$AGENT_URL" =~ ^https?:// ]] || die "用法：--agent <你那套 Opero 的地址> <令牌>，命令在网页「应用 → 服务器 → 接入」复制"
+fi
 [ "$(uname -s)" = Linux ] || die "只支持 Linux"
 command -v systemctl >/dev/null || die "要有 systemd"
 case "$(uname -m)" in x86_64|amd64) ARCH=x64 ;; aarch64|arm64) ARCH=arm64 ;; *) die "不支持的 CPU：$(uname -m)" ;; esac
@@ -61,10 +183,10 @@ if [ -n "$need" ]; then
 fi
 
 # ---------- 用户 ----------
-if ! id opero >/dev/null 2>&1; then say "建用户 opero（跑后台）"; useradd --system --home-dir $DATA --shell /usr/sbin/nologin opero; fi
+if [ $AGENT = 0 ] && ! id opero >/dev/null 2>&1; then say "建用户 opero（跑后台）"; useradd --system --home-dir $DATA --shell /usr/sbin/nologin opero; fi
 if ! id opero-ai >/dev/null 2>&1; then say "建用户 opero-ai（跑 AI 执行器）"; useradd --create-home --shell /bin/bash opero-ai; fi
 getent group opero-work >/dev/null || groupadd opero-work
-usermod -aG opero-work opero
+[ $AGENT = 0 ] && usermod -aG opero-work opero
 usermod -aG opero-work opero-ai
 
 # ---------- Node 22 ----------
@@ -97,7 +219,7 @@ if [ -z "$CHECKOUT" ] || [ "$CHECKOUT" = "$APP" ]; then
   # curl | bash 进来的：把代码拉到 $SRC（已经有就更新到最新）
   if [ -d $SRC/.git ]; then
     say "更新代码：$REPO（$BRANCH）"
-    git -C $SRC fetch --quiet --depth 1 origin "$BRANCH" && git -C $SRC reset --quiet --hard FETCH_HEAD
+    git -C $SRC remote set-url origin "$REPO" && git -C $SRC fetch --quiet --depth 1 origin "$BRANCH" && git -C $SRC reset --quiet --hard FETCH_HEAD
   else
     say "拉代码：$REPO（$BRANCH）"
     rm -rf $SRC && git clone --quiet --depth 1 --branch "$BRANCH" "$REPO" $SRC
@@ -105,6 +227,7 @@ if [ -z "$CHECKOUT" ] || [ "$CHECKOUT" = "$APP" ]; then
   CHECKOUT=$SRC
 fi
 say "用代码：$CHECKOUT（$(git -C "$CHECKOUT" log -1 --format='%h %cd' --date=short 2>/dev/null || echo '不是 git 仓库')）"
+if [ $AGENT = 1 ]; then install_agent; exit 0; fi
 NEW=$HOME_DIR/app.new
 rm -rf $NEW && mkdir -p $NEW
 # 网页每次现编（dist 不进 git；本地开发留下的旧 dist 也不要）
@@ -194,13 +317,14 @@ case "\${1:-}" in
   stop) systemctl stop opero ;;
   start) systemctl start opero ;;
   reset-password) run reset-password ;;
+  fingerprint) run fingerprint ;;
   info) run info ;;
   update) shift; [ "\$(id -u)" = 0 ] || { echo "要 root：sudo opero update"; exit 1; }
     [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch $BRANCH $REPO $SRC || exit 1
-    git -C $SRC fetch --quiet --depth 1 origin $BRANCH && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
+    git -C $SRC remote set-url origin $REPO && git -C $SRC fetch --quiet --depth 1 origin $BRANCH && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
     exec bash $SRC/code/server/scripts/install.sh --update "\$@" ;;
   ai) shift; sudo -u opero-ai -H bash -l "\$@" ;;
-  *) echo "用法：opero status | logs | restart | start | stop | info | reset-password | update | ai（切到 AI 用户的 shell，登录 claude / codex）" ;;
+  *) echo "用法：opero status | logs | restart | start | stop | info | reset-password | fingerprint | update | ai（切到 AI 用户的 shell，登录 claude / codex）" ;;
 esac
 EOF
 chmod 755 /usr/local/bin/opero

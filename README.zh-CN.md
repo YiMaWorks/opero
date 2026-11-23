@@ -93,6 +93,7 @@ Opero 还在**早期**，边做边开源。
 
 - ✅ **后台 v0.1**（`code/server`，Node 22 + TypeScript + SQLite）：主人登录；和 Claude Code / Codex 员工真聊天（流式、插话、停止）；Opero MCP 代理（SSH 连服务器、查 MySQL / PostgreSQL、Git 同步、审核卡片、知识库、转派）；加密保险箱；定时 / Webhook 触发器；操作记录；用量；安卓外壳配对和推送。
 - ✅ **网页**（`code/web`，React + Vite）：同一份打包，官网 /demo 用假数据，装好的一套由后台提供、走真接口。
+- ✅ **多语言**：简体中文、繁體中文、English、日本語、Deutsch、Français、العربية。默认跟随系统，选了就同步到所有设备。
 - ✅ **安卓外壳**（`code/android`，Kotlin）：代码写好了，还没发布。
 - 🚧 **v0.1 还没有**：发布、消息渠道（邮件 / Slack / Telegram）、流程、插件、问题清单、压缩上下文、语音输入。装好的一套里这些显示「还在做」，在线试用里能看到它们的样子。
 
@@ -115,11 +116,11 @@ Opero 要装在**你自己的服务器**上（员工要在服务器上干活）�
 
 1. 准备一台有 systemd 的 Linux 服务器（Ubuntu / Debian / RHEL 系，2 核 4G 起），最好有个域名。
 2. **让 AI 帮你装。** 在那台服务器上打开 Claude Code 或 Codex，对它说：
-   > 按 https://github.com/wfcaven/opero/blob/main/INSTALL.md 帮我在这台服务器上装好 Opero
+   > 按 https://github.com/yimaworks/opero/blob/main/INSTALL.md 帮我在这台服务器上装好 Opero
 
    它会检查服务器、运行安装脚本、遇到问题自己处理，最后告诉你地址。想自己装，用 root 运行：
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash
+   curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash
    ```
    或者在拉下来的代码里：`sudo bash code/server/scripts/install.sh`。详细说明见 [INSTALL.md](INSTALL.md)。国内服务器加 `--cn`（Node 和 npm 包走国内镜像），要 Codex 加 `--with-codex`。
 3. 打开 `http://服务器IP:7300`：设主人账号。开机向导会帮你一键装好 Claude Code、点按钮登录（打开登录页 → 授权 → 把授权码贴回来），不用再碰命令行。然后建几个员工。

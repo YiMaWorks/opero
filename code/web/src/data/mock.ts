@@ -313,7 +313,7 @@ export const seedUsage: Usage[] = [
 ]
 
 export const seedSettings: Settings = {
-  prodProtect: false, theme: 'system', themeLight: 'amethyst', themeDark: 'slate', customTheme: { mode: 'light', bg: '#F3EEE3', ink: '#111111', accent: '#D9541E' }, lang: 'zh', notify: 'decide', notifyTo: ['App 推送', 'Telegram'],
+  prodProtect: false, theme: 'system', themeLight: 'amethyst', themeDark: 'slate', customTheme: { mode: 'light', bg: '#F3EEE3', ink: '#111111', accent: '#D9541E' }, lang: 'auto', notify: 'decide', notifyTo: ['App 推送', 'Telegram'],
   budget: 800, budgetStop: true, fallback: 'Codex', aiDown: false,
   habits: '- 回复用中文，先给结论再说原因\n- 改代码在分支上，检查通过就合并，不用问我\n- 不要在共享服务器上跑测试和服务\n- 周五 18 点后不自动发生产',
 }

@@ -84,6 +84,21 @@ export interface Server {
   checked?: number
   error?: string
   hostKey?: string
+  /** 接入方式：local = Opero 自己这台；agent = 装了 Opero Agent（员工能在上面干活）；ssh = 只用 SSH 跑命令 */
+  via?: 'local' | 'agent' | 'ssh' | 'pending' | 'rejected'
+  /** Agent 自己的公钥（ed25519 原始 32 字节 base64）和指纹（SHA256:…）：Opero 按指纹认机器，换地址也认得 */
+  agentPub?: string
+  agentFp?: string
+  /** Agent：密钥的 sha256、机器编号（重装认得出是同一台）、版本、最后一次心跳、连的 Opero 地址、装了哪些执行器 */
+  agentKeyHash?: string
+  machineId?: string
+  agentVersion?: string
+  lastSeen?: number
+  agentUrl?: string
+  executors?: { claude?: string | null; codex?: string | null }
+  /** Agent 那台本机出口代理（127.0.0.1）的端口和口令 */
+  proxyPort?: number
+  proxyToken?: string
 }
 
 export interface Credential {
@@ -142,6 +157,8 @@ export interface Workspace {
   last: string
   employees: string[]
   credential?: string
+  /** 拉在哪台服务器上（local 或装了 Agent 的服务器编号） */
+  server?: string
   preview?: string
   branches: { name: string; status: string; checks?: string }[]
   commits: { sha: string; msg: string; who: string; when: string }[]

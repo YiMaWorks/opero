@@ -1,7 +1,9 @@
 // 官网（opero.yimakeji.cn 中文 / opero.yimaworks.com 英文）：介绍 + 视频 + 「在线试用」（/demo，假数据，不连任何服务器）。
 // 真正用 Opero 要装在自己的服务器上（像论坛系统那样：一台 Linux 服务器 → 一条命令安装 → 网页向导）。
 import { useEffect, useState } from 'react'
-import { AI_PROMPT, GITHUB_URL, INSTALL_CMD, INSTALL_DOC, siteLang, type Lang } from './config'
+import { AI_PROMPT, GITHUB_URL, INSTALL_CMD, INSTALL_DOC, type Lang } from './config'
+import { useLang } from '../i18n'
+import { LangPicker } from '../components/LangPicker'
 import './site.css'
 import { Hero } from './Hero'
 
@@ -67,18 +69,21 @@ const ROWS: { zh: string; en: string; v: string[] }[] = [
 const COLS = { zh: ['Opero', '手机遥控 Agent', '个人 AI 助理', 'AI SRE', 'AI 员工平台'], en: ['Opero', 'Agent remotes', 'Personal AI agents', 'AI SRE', 'AI workforce'] }
 
 export default function Landing() {
-  const [lang, setLang] = useState<Lang>(siteLang)
+  const code = useLang()
+  // 英文用英文底稿；其它语言用中文底稿，页面上再按字典换成那个语言
+  const lang: Lang = code === 'en' ? 'en' : 'zh'
+  const zhish = code.startsWith('zh')
   const [scrolled, setScrolled] = useState(false)
   const t = T[lang]
-  const m = (f: string) => `/media/${lang}/${f}`
-  useEffect(() => { document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'; document.title = `Opero — ${t.tagline}` }, [lang, t.tagline])
+  const m = (f: string) => `/media/${zhish ? 'zh' : 'en'}/${f}`
+  useEffect(() => { document.title = `Opero — ${t.tagline}` }, [t.tagline])
   return (
     <div className="site" onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 40)}>
       <header className={'site-nav' + (scrolled ? '' : ' on-dark')}>
         <a className="site-brand" href="/"><img src="/media/logo.png" alt="Opero" /></a>
         <nav>{t.nav.map((n, i) => <a key={n} href={['#why', '#screens', '#compare', '#install'][i]}>{n}</a>)}</nav>
         <span className="grow" />
-        <button className="site-lang" onClick={() => setLang(lang === 'zh' ? 'en' : 'zh')}>{lang === 'zh' ? 'English' : '中文'}</button>
+        <LangPicker className="site-lang" />
         {GITHUB_URL && <a className="site-btn ghost" href={GITHUB_URL} target="_blank" rel="noreferrer">{t.github}</a>}
         <a className="site-btn" href="/demo">{t.demo}</a>
       </header>
@@ -125,7 +130,7 @@ export default function Landing() {
         <p className="site-lead">{t.manual}</p>
         <pre className="site-code"><code>{INSTALL_CMD}</code></pre>
         <p className="site-lead">{t.aiLabel}</p>
-        <pre className="site-code"><code>{AI_PROMPT[lang]}</code></pre>
+        <pre className="site-code"><code>{AI_PROMPT[zhish ? 'zh' : 'en']}</code></pre>
         <p className="site-note"><a href={INSTALL_DOC} target="_blank" rel="noreferrer">{t.doc} →</a></p>
         <p className="site-note">{t.soon}</p>
       </section>

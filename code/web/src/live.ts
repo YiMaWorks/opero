@@ -1,6 +1,7 @@
 // 接真的后台（code/server）：调接口、开机拉一次全部数据、开着 SSE 收变化。只在 LIVE（装好的一套）里用。
 import type { Card, CardAction, Message } from './types'
-import { getState, requireVerify, set, toast, type State } from './store'
+import { getState, requireVerify, set, setSettings, toast, type State } from './store'
+import { loadPref, normPref, resolve, setPref } from './i18n'
 
 export class ApiError extends Error {
   status: number
@@ -52,13 +53,23 @@ export async function boot() {
       instance: b.instance,
       me: { ...s.me, ...b.me },
       employees: b.employees, sessions: b.sessions, messages: b.messages, servers: b.servers, credentials: b.credentials,
-      dataSources: b.dataSources, savedQueries: b.savedQueries, triggers: b.triggers, kb: b.kb, workspaces: b.workspaces,
+      dataSources: b.dataSources, savedQueries: b.savedQueries, triggers: b.triggers, kb: b.kb, workspaces: b.workspaces, queue: b.queue ?? [],
       audit: b.audit, usage: b.usage, settings: { ...s.settings, ...b.settings },
     }))
+    syncLang(b.settings?.lang)
     connect()
   } catch (e) {
     set((s) => ({ auth: { ...s.auth, booting: false, error: (e as Error).message } }))
   }
+}
+
+/** 语言：后台存过（在别的设备上选过）就用后台的；后台还是「跟随系统」而这台选过，就把这台的存上去 */
+function syncLang(server: unknown) {
+  const local = loadPref()
+  const sp = server === undefined ? 'auto' : normPref(server)
+  if (sp !== 'auto' && sp !== local) setPref(sp)
+  else if (sp === 'auto' && local !== 'auto') setSettings({ lang: local })
+  else if (getState().settings.langResolved !== resolve(local)) setSettings({ lang: local })
 }
 
 // ---------- SSE：后台推过来的变化 ----------
@@ -74,8 +85,8 @@ function connect() {
   }
 }
 
-type Coll = 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries' | 'triggers' | 'kb' | 'workspaces'
-const COLLS: Coll[] = ['employees', 'sessions', 'servers', 'credentials', 'dataSources', 'savedQueries', 'triggers', 'kb', 'workspaces']
+type Coll = 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries' | 'triggers' | 'kb' | 'workspaces' | 'queue'
+const COLLS: Coll[] = ['employees', 'sessions', 'servers', 'credentials', 'dataSources', 'savedQueries', 'triggers', 'kb', 'workspaces', 'queue']
 
 function apply(ev: any) {
   switch (ev.t) {
@@ -106,7 +117,10 @@ function apply(ev: any) {
       set((s) => ({ messages: { ...s.messages, [ev.sid]: (s.messages[ev.sid] ?? []).filter((m: Message) => m.id !== ev.id) } }))
       return
     case 'audit': set((s) => ({ audit: [ev.item, ...s.audit].slice(0, 500) })); return
-    case 'settings': set((s) => ({ settings: { ...s.settings, ...ev.settings } })); return
+    case 'settings':
+      set((s) => ({ settings: { ...s.settings, ...ev.settings } }))
+      if (ev.settings?.lang && normPref(ev.settings.lang) !== loadPref()) setPref(normPref(ev.settings.lang)) // 别的设备上换了语言
+      return
     case 'me': set((s) => ({ me: { ...s.me, ...ev.me } })); return
     case 'usage': set({ usage: ev.usage }); return
     case 'toast': toast(ev.text); return
@@ -122,10 +136,10 @@ export function cardAction(card: Card, action: CardAction, extra?: Record<string
   else go()
 }
 
-// ---------- 发文件：先传到员工的目录，跟着下一句话交给它 ----------
+// ---------- 发文件：先传到员工的目录（还没发），显示在输入框上面，跟着下一句话一起发 / 一起排队 ----------
 export async function upload(sid: string, file: Blob, name: string, meta: { w?: number; h?: number } = {}) {
   const q = new URLSearchParams({ name, type: file.type || 'application/octet-stream', ...(meta.w ? { w: String(meta.w), h: String(meta.h ?? 0) } : {}) })
-  return call('POST', `/api/sessions/${sid}/files?${q}`, file)
+  return call<{ att: import('./types').QAtt }>('POST', `/api/sessions/${sid}/files?${q}`, file)
 }
 
 // 改设置 / 个人资料：本地先改，停手 600ms 再存到后台

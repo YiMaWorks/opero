@@ -12,6 +12,7 @@ import { Markdown } from '../components/Markdown'
 import { WorkSheet } from '../components/WorkSheet'
 import { approvalLabel, effortLabel, modelsFor } from '../work'
 import { ExecutorSetup, type AiInfo } from '../components/ExecutorSetup'
+import { LangPicker } from '../components/LangPicker'
 import { CUR } from '../mode'
 import { headNav, type PageProps } from './nav'
 
@@ -55,16 +56,17 @@ export function LiveLogin() {
         {first && <Field label="再输一次"><input type="password" value={pwd2} onChange={(e) => setPwd2(e.target.value)} autoComplete="new-password" onKeyDown={(e) => e.key === 'Enter' && go()} /></Field>}
         <button className="btn primary block lg" onClick={go} disabled={busy}>{busy ? '稍等…' : first ? '创建并进入' : '登录'}</button>
         {!first && <p className="hint center">忘了密码：在服务器上运行 <span className="mono">opero reset-password</span></p>}
+        <div className="auth-lang"><LangPicker /></div>
       </div>
     </div>
   )
 }
 
 // ======================= AI 执行器 =======================
-function useAi() {
+function useAi(host = 'local') {
   const [info, setInfo] = useState<AiInfo | null>(null)
-  const load = () => call<AiInfo>('GET', '/api/ai').then((r) => { if (r) setInfo(r) })
-  useEffect(() => { load() }, [])
+  const load = () => call<AiInfo>('GET', `/api/ai?host=${encodeURIComponent(host)}`).then((r) => { if (r) setInfo(r) })
+  useEffect(() => { setInfo(null); load() }, [host]) // eslint-disable-line react-hooks/exhaustive-deps
   return { info, load }
 }
 
@@ -74,18 +76,35 @@ function IsolationNote({ info }: { info: AiInfo }) {
     : <div className="banner b-warn">AI 和 Opero 是同一个系统用户（开发模式）：理论上 AI 能读到保险箱文件。正式用请用安装脚本装（会建 opero-ai 用户）。</div>
 }
 
-export function ExecutorsPage({ nav }: PageProps) {
-  const { info, load } = useAi()
+/** 能让员工干活的机器：Opero 这台 + 装了 Agent 的 */
+export function useWorkHosts() {
+  const servers = useStore((s) => s.servers)
+  return servers.filter((x) => x.id === 'local' || x.via === 'agent')
+}
+const hostLabel = (x: { id: string; name: string; online: boolean; via?: string }) => (x.id === 'local' ? 'Opero 这台' : `${x.name}${x.online ? '' : '（离线）'}`)
+
+export function ExecutorsPage({ params, nav }: PageProps) {
+  const workHosts = useWorkHosts()
+  const [host, setHost] = useState<string>(params.host ?? 'local')
+  const { info, load } = useAi(host)
+  const cur = workHosts.find((x) => x.id === host)
   return (
     <div className="page">
-      <PageHeader title="AI 执行器" sub="员工用哪个 AI 干活：Claude Code / Codex" {...headNav(nav)} />
+      <PageHeader title="AI 执行器" sub="员工用哪个 AI 干活：每台干活的服务器各装一份，账号共用" {...headNav(nav)} />
       <div className="page-body">
-        {!info ? <Empty>在查服务器上装了什么…</Empty> : (
+        {workHosts.length > 1 && (
+          <div className="pad">
+            <Field label="在哪台服务器上"><select value={host} onChange={(e) => setHost(e.target.value)}>{workHosts.map((x) => <option key={x.id} value={x.id}>{hostLabel(x)}</option>)}</select></Field>
+          </div>
+        )}
+        {cur && cur.via === 'agent' && !cur.online && <div className="pad"><div className="banner b-warn">这台的 Agent 现在不在线，装不了也登录不了：先看那台机器上的 opero-agent 服务</div></div>}
+        {!info ? <Empty>Agent 在查服务器上装了什么…</Empty> : (
           <>
             <div className="pad"><IsolationNote info={info} /></div>
-            <div className="pad"><ExecutorSetup info={info} reload={load} /></div>
+            <div className="pad"><ExecutorSetup key={host} info={info} reload={load} host={host} /></div>
           </>
         )}
+        <p className="hint">没看到要装的那台？先在「应用 → 服务器 → 接入」给它装 Agent。</p>
       </div>
     </div>
   )
@@ -102,16 +121,20 @@ const PRESETS: { key: string; name: string; desc: string }[] = [
 export function LiveSetup() {
   const me = useStore((s) => s.me)
   const emps = useStore((s) => s.employees)
+  const local = useStore((s) => s.servers.find((x) => x.id === 'local'))
+  const instance = useStore((s) => s.instance)
   const { info, load } = useAi()
+  // 顺序：① 账号 → ② Agent（这台服务器）→ ③ 让 Agent 装好、登录 AI 执行器 → ④ 建员工
   const [step, setStep] = useState(1)
   const [exec, setExec] = useState('Claude Code')
   const [picked, setPicked] = useState<string[]>(['butler', 'dev', 'ops'])
   const [busy, setBusy] = useState(false)
+  const ready = !!info && (exec === 'Codex' ? !!info.codex && info.codexKey : !!info.claude && info.claudeKey)
   const make = async () => {
     setBusy(true)
     const r = await call('POST', '/api/setup/employees', { presets: picked.filter((k) => !emps.some((e) => e.id === k)), executor: exec, model: modelsFor(exec)[0] })
     setBusy(false)
-    if (r) setStep(3)
+    if (r) setStep(4)
   }
   const finish = async () => { await call('POST', '/api/setup/done'); await boot() }
   return (
@@ -121,27 +144,49 @@ export function LiveSetup() {
         <button className="btn ghost sm" onClick={finish}>跳过</button>
       </header>
       <div className="onboard-steps">
-        {['你的账号', '接 AI 执行器', '建员工'].map((s, i) => (
+        {['你的账号', '服务器 Agent', '接 AI 执行器', '建员工'].map((s, i) => (
           <span key={s} className={'ostep' + (i < step ? ' done' : i === step ? ' on' : '')}>{i < step ? '✓' : i + 1} {s}</span>
         ))}
       </div>
       <div className="onboard-body">
-        <Bot>欢迎！Opero 装好了。两步就能和你的 AI 员工聊天：接上 AI 执行器、建几个员工。</Bot>
+        <Bot>欢迎！跟着点三步就能和 AI 员工聊天：确认服务器上的 Agent → 让 Agent 装好并登录 Claude Code → 建几个员工。全程点按钮，不用敲命令。</Bot>
         <Done title="① 你的账号" text={`${me.name || '主人'} · ${me.email}。这套 Opero 只有你一个人用。`} />
+
         {step === 1 && (
-          <StepCard title="② 接 AI 执行器" desc="员工用它干活。Key 加密存在这台服务器上。">
-            {!info ? <p className="sub">在查服务器上装了什么…</p> : (
+          <StepCard title="② 服务器 Agent" desc="Agent 是装在服务器上、替员工干活的那部分：装 AI 执行器、跑命令、连服务器和数据库都由它来做。">
+            <div className={'banner ' + (local?.online !== false ? 'b-ok' : 'b-warn')}>
+              <IconCheck size={14} /> Agent 已经在这台服务器上运行（装 Opero 时一起装好的）
+            </div>
+            <div className="sheet-list">
+              <Row title="服务器" right={local ? `${local.os || '本机'}` : '本机'} />
+              {local && local.online && <Row title="负载" right={`CPU ${local.cpu}% · 内存 ${local.mem}% · 磁盘 ${local.disk}%`} />}
+              <Row title="Agent 版本" right={instance?.version ?? '—'} />
+            </div>
+            {info && <IsolationNote info={info} />}
+            <p className="field-hint">员工就在这台服务器上干活；要它们连别的服务器跑命令，进 Opero 后在「应用 → 服务器」里用 SSH 接进来。</p>
+            <div className="row-actions"><button className="btn primary" onClick={() => setStep(2)}>下一步：让 Agent 装 AI 执行器</button></div>
+          </StepCard>
+        )}
+        {step > 1 && <Done title="② 服务器 Agent" text={`在线 · ${local?.os || '本机'} · Agent ${instance?.version ?? ''}`} />}
+
+        {step === 2 && (
+          <StepCard title="③ 接 AI 执行器" desc="员工靠它干活。下面三步都是点按钮：Agent 在服务器上替你装好、带你登录。">
+            {!info ? <p className="sub">Agent 在查服务器上装了什么…</p> : (
               <>
-                <IsolationNote info={info} />
                 <ExecutorSetup info={info} reload={load} onReady={setExec} />
-                <div className="row-actions"><button className="btn primary" onClick={() => setStep(2)}>下一步</button></div>
+                <div className="row-actions">
+                  {!ready && <button className="btn ghost" onClick={() => setStep(3)}>先跳过</button>}
+                  <button className="btn primary" disabled={!ready} onClick={() => setStep(3)}>下一步</button>
+                </div>
+                {!ready && <p className="field-hint">装好并登录之后才能点「下一步」；也可以先跳过，以后在「我 → AI 执行器」里弄。</p>}
               </>
             )}
           </StepCard>
         )}
-        {step > 1 && <Done title="② 接 AI 执行器" text={`默认用 ${exec}（以后在「我 → AI 执行器」改）`} />}
-        {step === 2 && (
-          <StepCard title="③ 建几个员工" desc="每个员工是一个会话，有自己的角色；名字、职责以后都能改。">
+        {step > 2 && <Done title="③ 接 AI 执行器" text={ready ? `${exec} 已装好、已登录（以后在「我 → AI 执行器」改）` : '先跳过了：员工要干活前，去「我 → AI 执行器」装好并登录'} />}
+
+        {step === 3 && (
+          <StepCard title="④ 建几个员工" desc="每个员工是一个会话，有自己的角色；名字、职责以后都能改。">
             <Field label="它们用哪个执行器"><Segmented value={exec} onChange={setExec} options={[{ value: 'Claude Code', label: 'Claude Code' }, { value: 'Codex', label: 'Codex' }]} /></Field>
             <div className="sheet-list">
               {PRESETS.map((p) => (
@@ -153,9 +198,9 @@ export function LiveSetup() {
             <div className="row-actions"><button className="btn primary" disabled={busy || !picked.length} onClick={make}>{busy ? '建中…' : `建好这 ${picked.length} 个`}</button></div>
           </StepCard>
         )}
-        {step >= 3 && (
+        {step >= 4 && (
           <>
-            <Done title="③ 建员工" text={`建好了：${emps.map((e) => e.name).join('、')}`} />
+            <Done title="④ 建员工" text={`建好了：${emps.map((e) => e.name).join('、')}`} />
             <Bot>都好了 🎉 接下来可以在「应用」里接服务器、数据库、代码仓库，员工就能替你去查、去做。</Bot>
             <div className="row-actions center"><button className="btn primary lg" onClick={finish}>进入 Opero</button></div>
           </>
@@ -198,7 +243,7 @@ export function ComingSoonPage({ params, nav }: PageProps) {
 
 // ======================= 应用首页 =======================
 export const LIVE_APPS: { page: any; name: string; desc: string; letter: string }[] = [
-  { page: 'servers', name: '服务器', desc: 'SSH 接入、CPU / 内存、跑命令', letter: '服' },
+  { page: 'servers', name: '服务器和 Agent', desc: '装 Agent 让员工在上面干活；或 SSH 跑命令', letter: '服' },
   { page: 'credentials', name: '权限和凭证', desc: '账号加密存着，AI 拿不到', letter: '权' },
   { page: 'data', name: '数据', desc: 'MySQL / PostgreSQL，默认只读', letter: '数' },
   { page: 'triggers', name: '触发器', desc: '定时 / Webhook → 员工', letter: '触' },
@@ -230,8 +275,146 @@ export function LiveAppsPage({ nav }: PageProps) {
   )
 }
 
-// ======================= 服务器 =======================
+// ======================= 服务器和 Agent =======================
+const ago = (ts?: number) => {
+  if (!ts) return '从没连上过'
+  const s = Math.round((Date.now() - ts) / 1000)
+  return s < 60 ? '刚刚' : s < 3600 ? `${Math.round(s / 60)} 分钟前` : s < 86400 ? `${Math.round(s / 3600)} 小时前` : `${Math.round(s / 86400)} 天前`
+}
+
+export function LiveServersPage({ nav }: PageProps) {
+  const list = useStore((s) => s.servers)
+  const work = list.filter((x) => x.id === 'local' || x.via === 'agent')
+  const pending = list.filter((x) => x.via === 'pending')
+  const ssh = list.filter((x) => x.id !== 'local' && x.via !== 'agent' && x.via !== 'pending' && x.via !== 'rejected')
+  const [fp, setFp] = useState('')
+  const [moving, setMoving] = useState(false)
+  const [newUrl, setNewUrl] = useState('')
+  useEffect(() => { call<{ fingerprint: string }>('GET', '/api/agents/fingerprint').then((r) => r && setFp(r.fingerprint)) }, [])
+  const decide = (id: string, ok: boolean) => call('POST', `/api/agents/${id}/${ok ? 'accept' : 'reject'}`, undefined, ok ? '已接受，这台马上连上' : '已拒绝')
+  const move = async () => {
+    const r = await call<{ sent: number }>('POST', '/api/agents/move', { url: newUrl.trim() })
+    if (r) { toast(`已通知 ${r.sent} 台 Agent 改连新地址`); setMoving(false) }
+  }
+  const row = (s: (typeof list)[number]) => (
+    <Row key={s.id} chevron onClick={() => nav.push({ page: 'server', params: { id: s.id } })}
+      icon={<span className="ws-icon">{s.name.slice(0, 1)}</span>}
+      title={<><StatusDot tone={s.online ? 'ok' : 'danger'} /> {s.id === 'local' ? 'Opero 这台' : s.name} <Tag tone={envTone(s.env)}>{s.env}</Tag>{s.via === 'agent' && <Tag tone="primary">Agent {s.agentVersion}</Tag>}</>}
+      sub={s.online
+        ? `CPU ${s.cpu}% · 内存 ${s.mem}% · 磁盘 ${s.disk}%${s.via === 'agent' || s.id === 'local' ? ` · Claude Code ${s.executors?.claude ? '已装' : s.id === 'local' ? '看「AI 执行器」' : '没装'}` : ''}`
+        : s.via === 'agent' ? `离线 · 最后心跳 ${ago(s.lastSeen)}` : '连不上'} />
+  )
+  return (
+    <div className="page">
+      <PageHeader title="服务器和 Agent" sub="装了 Agent 的服务器，员工能在上面干活；只用 SSH 的只能跑命令" {...headNav(nav)}
+        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'serverAdd' })}><IconPlus /> 接入</button>} />
+      <div className="page-body">
+        {pending.length > 0 && (
+          <Section title={`等你接受 · ${pending.length}`} right={<span className="sub">没带令牌、按指纹来接入的机器</span>}>
+            {pending.map((s) => (
+              <div key={s.id} className="lrow col">
+                <span className="row-main">
+                  <span className="row-title">{s.name} <span className="sub">{s.ip}{s.os ? ` · ${s.os}` : ''}</span></span>
+                  <span className="row-sub mono small" data-no-i18n="">{s.agentFp}</span>
+                  <span className="row-sub">在那台上运行 opero fingerprint，指纹一样再接受</span>
+                </span>
+                <div className="row-actions">
+                  <button className="btn ghost sm" onClick={() => decide(s.id, false)}>拒绝</button>
+                  <button className="btn primary sm" onClick={() => decide(s.id, true)}>接受</button>
+                </div>
+              </div>
+            ))}
+          </Section>
+        )}
+        <Section title={`员工能在上面干活 · ${work.length}`}>{work.map(row)}</Section>
+        {ssh.length > 0 && <Section title={`只用 SSH 连 · ${ssh.length}`}>{ssh.map(row)}</Section>}
+        <p className="hint">接入别的服务器：点右上角「接入」→ 复制一条命令到那台机器用 root 跑 → 几秒后这里就出现。那台机器不用开端口；原来装的别的 Agent（比如 KidLock 的）不受影响。</p>
+        <Section title="指纹和迁移">
+          <Row title="这套 Opero 的指纹" sub="Agent 只执行这个指纹签过名的活；别人冒充这个地址也指挥不了你的机器" right={<span className="mono small" data-no-i18n="">{fp}</span>} />
+          <Row title="换地址（迁移）" sub="Opero 搬到新域名 / 新服务器（数据目录带过去，指纹不变）：让所有在线的 Agent 改连新地址，不用重新接入" chevron onClick={() => setMoving(!moving)} />
+          {moving && (
+            <div className="pad form">
+              <Field label="新地址" hint="先确认新地址能打开、是同一套（指纹一样），再点；Agent 会改配置并重启自己"><input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://opero.example.com" /></Field>
+              <button className="btn primary" disabled={!/^https?:\/\//.test(newUrl.trim())} onClick={move}>让 Agent 改连新地址</button>
+              <p className="field-hint">也可以在每台上自己改：sudo opero agent-url https://新地址</p>
+            </div>
+          )}
+        </Section>
+      </div>
+    </div>
+  )
+}
+
 export function LiveServerAddPage({ nav }: PageProps) {
+  const [mode, setMode] = useState<'agent' | 'ssh'>('agent')
+  return (
+    <div className="page">
+      <PageHeader title="接入服务器" {...headNav(nav)} />
+      <div className="page-body form">
+        <Segmented value={mode} onChange={setMode} options={[{ value: 'agent', label: '装 Agent（推荐：员工能在上面干活）' }, { value: 'ssh', label: '只用 SSH（只跑命令）' }]} />
+        {mode === 'agent' ? <AgentJoin nav={nav} /> : <SshAdd nav={nav} />}
+      </div>
+    </div>
+  )
+}
+
+function AgentJoin({ nav, again }: { nav: PageProps['nav']; again?: { name: string; env: EnvTag } }) {
+  const servers = useStore((s) => s.servers)
+  const [name, setName] = useState(again?.name ?? '')
+  const [env, setEnv] = useState<EnvTag>(again?.env ?? '测试')
+  const [cn, setCn] = useState(false)
+  const [join, setJoin] = useState<{ cmd: string; cmdCn: string; since: number; url: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const make = async () => {
+    setBusy(true)
+    const r = await call<{ cmd: string; cmdCn: string; since: number; url: string }>('POST', '/api/agents/join', { name: name.trim(), env })
+    setBusy(false)
+    if (r) setJoin(r)
+  }
+  // 命令生成之后才接进来（或重新接入）的那台
+  const joined = join ? servers.find((x) => x.via === 'agent' && (x.lastSeen ?? 0) >= join.since && x.online) : undefined
+  const cmd = join ? (cn ? join.cmdCn : join.cmd) : ''
+  return (
+    <>
+      {!join ? (
+        <>
+          <ol className="exec-howto">
+            <li>点「生成安装命令」</li>
+            <li>登录那台服务器，用 root（或有 sudo 权限的账号）把命令粘贴进去回车</li>
+            <li>等几秒，这里会显示「已接入」</li>
+          </ol>
+          <Field label="叫什么（可选）" hint="不填就用那台机器的主机名"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="比如：prod-web-1" /></Field>
+          <Field label="环境" hint="生产服务器：员工改东西都先出确认卡片"><Segmented value={env} onChange={setEnv} options={ENVS} /></Field>
+          <button className="btn primary block" disabled={busy} onClick={make}>{busy ? '生成中…' : '生成安装命令'}</button>
+        </>
+      ) : joined ? (
+        <>
+          <div className="banner b-ok"><IconCheck size={14} /> 已接入：{joined.name}（{joined.os || joined.ip}）</div>
+          <ol className="exec-howto">
+            <li>下一步：在这台上装 AI 执行器（一键安装、点按钮登录）</li>
+            <li>然后在员工的「编辑 → 跑在哪台服务器」选它</li>
+          </ol>
+          <div className="row-actions">
+            <button className="btn default" onClick={() => nav.push({ page: 'server', params: { id: joined.id } })}>看这台</button>
+            <button className="btn primary" onClick={() => nav.push({ page: 'executors', params: { host: joined.id } })}>去装 AI 执行器</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <Field label="在那台服务器上用 root 跑（30 分钟内有效，用一次就作废）">
+            <div className="cmd-box mono">{cmd}<button className="btn ghost sm" onClick={() => copy(cmd)}>复制</button></div>
+          </Field>
+          <label className="lrow"><span className="row-main"><span className="row-title">服务器在国内</span><span className="row-sub">Node 和 npm 包走国内镜像，装得快</span></span><Toggle on={cn} onChange={setCn} /></label>
+          <div className="banner b-info"><i className="spinner" /> 等它连上来…（命令跑完几秒内这里会变成「已接入」）</div>
+          <p className="field-hint">那台机器要能访问 {join.url}。重装、或者换一条新命令再跑一次都可以：Opero 认得是同一台机器，不会多出一台。原来装的 KidLock 等别的 Agent 不受影响。</p>
+          <button className="btn ghost sm" onClick={() => setJoin(null)}>重新生成</button>
+        </>
+      )}
+    </>
+  )
+}
+
+function SshAdd({ nav }: { nav: PageProps['nav'] }) {
   const creds = useStore((s) => s.credentials.filter((c) => c.group === '服务器'))
   const [f, setF] = useState({ name: '', ip: '', port: '22', user: 'root', env: '测试' as EnvTag, authKind: 'password' as 'password' | 'key' | 'cred', secret: '', credential: '' })
   const [busy, setBusy] = useState(false)
@@ -244,34 +427,37 @@ export function LiveServerAddPage({ nav }: PageProps) {
     if (r) { toast(r.online ? `已连上 ${r.name}` : `已加上，但还连不上：${(r.error ?? '').slice(0, 60)}`); nav.back() }
   }
   return (
-    <div className="page">
-      <PageHeader title="接入服务器" {...headNav(nav)} right={<button className="btn primary sm" disabled={busy} onClick={save}>{busy ? '连接中…' : '接入'}</button>} />
-      <div className="page-body form">
-        <Field label="名字"><input value={f.name} onChange={(e) => up({ name: e.target.value })} placeholder="比如：prod-web-1" /></Field>
-        <Field label="地址（IP 或域名）"><input value={f.ip} onChange={(e) => up({ ip: e.target.value })} placeholder="203.0.113.10" /></Field>
-        <div className="inline-form">
-          <Field label="SSH 端口"><input value={f.port} onChange={(e) => up({ port: e.target.value })} inputMode="numeric" /></Field>
-          <Field label="用户"><input value={f.user} onChange={(e) => up({ user: e.target.value })} /></Field>
-        </div>
-        <Field label="环境" hint="生产服务器：员工改东西都先出确认卡片（设置里的「生产保护」）"><Segmented value={f.env} onChange={(v) => up({ env: v })} options={ENVS} /></Field>
-        <Field label="登录方式"><Segmented value={f.authKind} onChange={(v) => up({ authKind: v })} options={[{ value: 'password', label: '密码' }, { value: 'key', label: '私钥' }, ...(creds.length ? [{ value: 'cred' as const, label: '已带进来的' }] : [])]} /></Field>
-        {f.authKind === 'password' && <Field label="密码"><input type="password" value={f.secret} onChange={(e) => up({ secret: e.target.value })} autoComplete="new-password" /></Field>}
-        {f.authKind === 'key' && <Field label="私钥（整段粘贴）"><textarea className="mono code-edit" rows={6} value={f.secret} onChange={(e) => up({ secret: e.target.value })} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></Field>}
-        {f.authKind === 'cred' && (
-          <Field label="用哪个账号"><select value={f.credential} onChange={(e) => up({ credential: e.target.value })}><option value="">选一个</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
-        )}
-        <p className="field-hint">密码 / 私钥加密存进「权限和凭证」；员工要在这台机器上跑命令，由 Opero 代它连上去，它只看到输出。第一次连上会记下主机指纹，之后对不上就拒绝。</p>
+    <>
+      <p className="field-hint">只用 SSH 的服务器，员工能经 Opero 在上面跑命令（server_exec），但不能在上面干活（跑 Claude Code）。要在上面干活就装 Agent。</p>
+      <Field label="名字"><input value={f.name} onChange={(e) => up({ name: e.target.value })} placeholder="比如：prod-db-1" /></Field>
+      <Field label="地址（IP 或域名）"><input value={f.ip} onChange={(e) => up({ ip: e.target.value })} placeholder="203.0.113.10" /></Field>
+      <div className="inline-form">
+        <Field label="SSH 端口"><input value={f.port} onChange={(e) => up({ port: e.target.value })} inputMode="numeric" /></Field>
+        <Field label="用户"><input value={f.user} onChange={(e) => up({ user: e.target.value })} /></Field>
       </div>
-    </div>
+      <Field label="环境"><Segmented value={f.env} onChange={(v) => up({ env: v })} options={ENVS} /></Field>
+      <Field label="登录方式"><Segmented value={f.authKind} onChange={(v) => up({ authKind: v })} options={[{ value: 'password', label: '密码' }, { value: 'key', label: '私钥' }, ...(creds.length ? [{ value: 'cred' as const, label: '已带进来的' }] : [])]} /></Field>
+      {f.authKind === 'password' && <Field label="密码"><input type="password" value={f.secret} onChange={(e) => up({ secret: e.target.value })} autoComplete="new-password" /></Field>}
+      {f.authKind === 'key' && <Field label="私钥（整段粘贴）"><textarea className="mono code-edit" rows={6} value={f.secret} onChange={(e) => up({ secret: e.target.value })} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></Field>}
+      {f.authKind === 'cred' && (
+        <Field label="用哪个账号"><select value={f.credential} onChange={(e) => up({ credential: e.target.value })}><option value="">选一个</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
+      )}
+      <button className="btn primary block" disabled={busy} onClick={save}>{busy ? '连接中…' : '接入'}</button>
+      <p className="field-hint">密码 / 私钥加密存进「权限和凭证」；第一次连上会记下主机指纹，之后对不上就拒绝。</p>
+    </>
   )
 }
 
 export function LiveServerPage({ params, nav }: PageProps) {
   const s = useStore((x) => x.servers.find((v) => v.id === params.id))
+  const emps = useStore((x) => x.employees)
   const [cmd, setCmd] = useState('df -h / && free -m && uptime')
   const [out, setOut] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [rejoin, setRejoin] = useState(false)
   if (!s) return <div className="page"><PageHeader title="服务器" {...headNav(nav)} /><Empty>找不到</Empty></div>
+  const agent = s.via === 'agent'
+  const work = agent || s.id === 'local'
   const run = async () => {
     setBusy(true)
     setOut('…')
@@ -280,19 +466,33 @@ export function LiveServerPage({ params, nav }: PageProps) {
     setOut(r ? `$ ${cmd}\n${r.out}\n[退出码 ${r.code} · ${r.ms} ms]` : null)
   }
   const remove = () => { if (confirm(`从 Opero 里去掉「${s.name}」？（服务器本身不受影响）`)) call('DELETE', `/api/servers/${s.id}`, undefined, '已去掉').then(() => nav.back()) }
-  const ext = s as typeof s & { error?: string; port?: number; user?: string }
+  const removeAgent = () => { if (confirm(`移除「${s.name}」的 Agent？那台的 Agent 会被拒绝连接，跑在上面的员工会停；以后可以重新接入`)) call('DELETE', `/api/agents/${s.id}`, undefined, '已移除 Agent') }
+  const onIt = emps.filter((e) => e.host === s.id)
   return (
     <div className="page">
-      <PageHeader title={s.name} sub={`${s.ip}${s.os ? ' · ' + s.os : ''}`} {...headNav(nav)}
-        right={<button className="btn default sm" onClick={() => call('POST', `/api/servers/${s.id}/check`, undefined, '已刷新')}>刷新</button>} />
+      <PageHeader title={s.id === 'local' ? 'Opero 这台' : s.name} sub={`${s.ip}${s.os ? ' · ' + s.os : ''}`} {...headNav(nav)}
+        right={!agent ? <button className="btn default sm" onClick={() => call('POST', `/api/servers/${s.id}/check`, undefined, '已刷新')}>刷新</button> : undefined} />
       <div className="page-body">
         <div className="pad meters"><Meter label="CPU" value={s.cpu} /><Meter label="内存" value={s.mem} /><Meter label="磁盘" value={s.disk} /></div>
-        {!s.online && ext.error && <div className="pad"><div className="banner b-warn">连不上：{ext.error}</div></div>}
+        {!s.online && s.error && <div className="pad"><div className="banner b-warn">{agent ? s.error : `连不上：${s.error}`}</div></div>}
         <Section title="基本">
           <Row title="状态" right={<><StatusDot tone={s.online ? 'ok' : 'danger'} /> {s.online ? '在线' : '离线'}</>} />
           <Row title="环境" right={<Tag tone={envTone(s.env)}>{s.env}</Tag>} />
-          <Row title="连接" right={s.id === 'local' ? 'Opero 所在的这台' : `SSH ${ext.user ?? 'root'}@${s.ip}:${ext.port ?? 22}`} />
+          <Row title="接入方式" right={s.id === 'local' ? 'Opero 所在的这台（自带 Agent）' : agent ? `Opero Agent ${s.agentVersion ?? ''} · 最后心跳 ${ago(s.lastSeen)}` : `SSH ${s.user ?? 'root'}@${s.ip}:${s.port ?? 22}`} />
+          {s.agentFp && <Row title="Agent 指纹" sub="在那台上运行 opero fingerprint 能看到；Opero 按它认这台机器，换了上报地址也认得" right={<span className="mono small" data-no-i18n="">{s.agentFp}</span>} />}
         </Section>
+        {work && (
+          <Section title="AI 执行器（这台）" right={<button className="btn ghost sm" onClick={() => nav.push({ page: 'executors', params: { host: s.id } })}>装 / 登录</button>}>
+            <Row title="Claude Code" right={s.executors?.claude ?? (s.id === 'local' ? '点右上角看' : '没装')} />
+            <Row title="Codex" right={s.executors?.codex ?? (s.id === 'local' ? '点右上角看' : '没装')} />
+          </Section>
+        )}
+        {work && (
+          <Section title={`跑在这台的员工 · ${onIt.length}`} right={<span className="sub">在员工「编辑 → 跑在哪台服务器」里选</span>}>
+            {onIt.length === 0 && <Empty>还没有</Empty>}
+            {onIt.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={32} />} title={e.name} chevron onClick={() => nav.openChat(e.id)} />)}
+          </Section>
+        )}
         <Section title="跑命令" right={<span className="sub">只读命令直接跑；会改东西的要先验证本人</span>}>
           <div className="pad">
             <div className="inline-form">
@@ -302,8 +502,11 @@ export function LiveServerPage({ params, nav }: PageProps) {
             {out && <pre className="console">{out}</pre>}
           </div>
         </Section>
+        {agent && rejoin && <div className="pad form"><AgentJoin nav={nav} again={{ name: s.name, env: s.env }} /></div>}
         <div className="pad row-actions wrap">
           <button className="btn default" onClick={() => nav.openChat(getState().employees.find((e) => e.id === 'ops')?.id ?? getState().employees[0]?.id ?? '')}>让员工看看</button>
+          {agent && !rejoin && <button className="btn ghost" onClick={() => setRejoin(true)}>重新接入（重装 / 换机器后用）</button>}
+          {agent && <button className="btn ghost" onClick={removeAgent}>移除 Agent</button>}
           {s.id !== 'local' && <button className="btn ghost" onClick={remove}>去掉这台</button>}
         </div>
       </div>
@@ -511,6 +714,46 @@ export function LiveTriggersPage({ nav }: PageProps) {
   )
 }
 
+/** 定时规则：点选，不用手写（存的格式后台认得：每 30 分钟 / 每 2 小时 / 每天 09:00 / 工作日 09:30 / 每周一 10:00） */
+// 每一种都写成完整的模板，翻译时按整句对（「每周一 {0}」）
+const WEEKLY: Record<string, (hm: string) => string> = {
+  周一: (hm) => `每周一 ${hm}`, 周二: (hm) => `每周二 ${hm}`, 周三: (hm) => `每周三 ${hm}`, 周四: (hm) => `每周四 ${hm}`,
+  周五: (hm) => `每周五 ${hm}`, 周六: (hm) => `每周六 ${hm}`, 周日: (hm) => `每周日 ${hm}`,
+}
+function RulePicker({ rule, onChange }: { rule: string; onChange: (r: string) => void }) {
+  const m = rule.replace(/\s+/g, '')
+  const init = (() => {
+    let x = m.match(/^每(\d+)分钟$/); if (x) return { kind: 'min', n: x[1], hm: '09:00', day: '周一' }
+    x = m.match(/^每(\d+)(个)?小时$/); if (x) return { kind: 'hour', n: x[1], hm: '09:00', day: '周一' }
+    x = m.match(/^每天(\d{1,2}[:：]\d{2})$/); if (x) return { kind: 'day', n: '30', hm: x[1].replace('：', ':'), day: '周一' }
+    x = m.match(/^工作日(\d{1,2}[:：]\d{2})$/); if (x) return { kind: 'workday', n: '30', hm: x[1].replace('：', ':'), day: '周一' }
+    x = m.match(/^每周([一二三四五六日天])(\d{1,2}[:：]\d{2})$/); if (x) return { kind: 'week', n: '30', hm: x[2].replace('：', ':'), day: '周' + (x[1] === '天' ? '日' : x[1]) }
+    return { kind: 'min', n: '30', hm: '09:00', day: '周一' }
+  })()
+  const [v, setV] = useState(init)
+  const emit = (p: Partial<typeof v>) => {
+    const x = { ...v, ...p }
+    setV(x)
+    const n = String(Math.max(1, Number(x.n) || 1))
+    onChange(x.kind === 'min' ? `每 ${n} 分钟` : x.kind === 'hour' ? `每 ${n} 小时` : x.kind === 'day' ? `每天 ${x.hm}` : x.kind === 'workday' ? `工作日 ${x.hm}` : WEEKLY[x.day](x.hm))
+  }
+  useEffect(() => { emit({}) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className="inline-form wrap">
+      <select value={v.kind} onChange={(e) => emit({ kind: e.target.value })}>
+        <option value="min">每隔几分钟</option>
+        <option value="hour">每隔几小时</option>
+        <option value="day">每天</option>
+        <option value="workday">工作日（周一到周五）</option>
+        <option value="week">每周</option>
+      </select>
+      {(v.kind === 'min' || v.kind === 'hour') && <input type="number" min={v.kind === 'min' ? 5 : 1} value={v.n} onChange={(e) => emit({ n: e.target.value })} style={{ width: 90 }} />}
+      {v.kind === 'week' && <select value={v.day} onChange={(e) => emit({ day: e.target.value })}>{Object.keys(WEEKLY).map((d) => <option key={d} value={d}>{d}</option>)}</select>}
+      {v.kind !== 'min' && v.kind !== 'hour' && <input type="time" value={v.hm} onChange={(e) => emit({ hm: e.target.value })} style={{ width: 130 }} />}
+    </div>
+  )
+}
+
 export function LiveTriggerEditPage({ params, nav }: PageProps) {
   const existing = useStore((s) => s.triggers.find((x) => x.id === params.id)) as (Trigger & { prompt?: string; hookPath?: string }) | undefined
   const employees = useStore((s) => s.employees)
@@ -527,7 +770,7 @@ export function LiveTriggerEditPage({ params, nav }: PageProps) {
         <Field label="名字"><input value={t.name} onChange={(e) => setT({ ...t, name: e.target.value })} placeholder="比如：生产日志巡检" /></Field>
         <Field label="什么时候"><Segmented value={t.kind as '定时' | 'Webhook'} onChange={(v) => setT({ ...t, kind: v })} options={[{ value: '定时', label: '定时' }, { value: 'Webhook', label: 'Webhook' }]} /></Field>
         {t.kind === '定时'
-          ? <Field label="规则" hint="每 30 分钟 · 每 2 小时 · 每天 09:00 · 工作日 09:30 · 每周一 10:00"><input value={t.rule} onChange={(e) => setT({ ...t, rule: e.target.value })} /></Field>
+          ? <Field label="规则"><RulePicker rule={t.rule} onChange={(rule) => setT({ ...t, rule })} /></Field>
           : <Field label="地址" hint="别的系统（报警、CI、表单）POST 到这个地址，收到的内容会一起交给员工">
               {hook ? <div className="cmd-box mono">{hook}<button className="btn ghost sm" onClick={() => copy(hook)}>复制</button></div> : <p className="sub">保存后生成（地址里带密钥，别外传）</p>}
             </Field>}
@@ -626,9 +869,11 @@ export function LiveWorkspaceAddPage({ nav }: PageProps) {
   const [branch, setBranch] = useState('')
   const [name, setName] = useState('')
   const [credential, setCredential] = useState(creds[0]?.id ?? '')
+  const workHosts = useWorkHosts()
+  const [server, setServer] = useState('local')
   const auto = repo.replace(/\.git$/, '').split('/').filter(Boolean).pop() ?? ''
   const save = async () => {
-    const r = await call('POST', '/api/workspaces', { repo: repo.trim(), branch: branch.trim(), name: name.trim() || auto, credential }, '在拉代码，好了会显示分支和提交')
+    const r = await call('POST', '/api/workspaces', { repo: repo.trim(), branch: branch.trim(), name: name.trim() || auto, credential, server }, '在拉代码，好了会显示分支和提交')
     if (r) nav.back()
   }
   return (
@@ -638,6 +883,11 @@ export function LiveWorkspaceAddPage({ nav }: PageProps) {
         <Field label="仓库地址（HTTPS）"><input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/you/app.git" /></Field>
         <Field label="名字" hint="留空用仓库名"><input value={name} onChange={(e) => setName(e.target.value)} placeholder={auto} /></Field>
         <Field label="分支" hint="留空用默认分支"><input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" /></Field>
+        {workHosts.length > 1 && (
+          <Field label="拉到哪台服务器" hint="要和用它的员工在同一台">
+            <select value={server} onChange={(e) => setServer(e.target.value)}>{workHosts.map((x) => <option key={x.id} value={x.id}>{hostLabel(x)}</option>)}</select>
+          </Field>
+        )}
         <Field label="用哪个令牌" hint="公开仓库可以不选；私有仓库先在「权限和凭证 → 代码仓库」带进来">
           <select value={credential} onChange={(e) => setCredential(e.target.value)}>
             <option value="">不用（公开仓库）</option>
@@ -692,10 +942,13 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
   const usage = useStore((s) => s.usage)
   const triggers = useStore((s) => s.triggers)
   const ws = useStore((s) => s.workspaces.find((w) => w.id === e?.workspace))
+  const servers = useStore((s) => s.servers)
   const [work, setWork] = useState(false)
   if (!e) return <div className="page"><PageHeader title="员工" {...headNav(nav)} /><Empty>找不到这个员工</Empty></div>
   const u = usage.find((x) => x.employee === e.id)
   const mine = triggers.filter((t) => t.employee === e.id)
+  const sv = servers.find((x) => x.id === e.host)
+  const hostName = !sv || sv.id === 'local' ? 'Opero 这台' : `${sv.name}${sv.online ? '' : '（离线）'}`
   const remove = async () => {
     if (!confirm(`删掉「${e.name}」？它的聊天记录也会删掉（工作空间里的代码不受影响）`)) return
     if (await call('DELETE', `/api/employees/${e.id}`, undefined, '已删除')) nav.back()
@@ -724,6 +977,7 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
           <Row title="上下文" right={`${e.contextUsed ?? 0}%`} />
         </Section>
         <Section title="在哪干活">
+          <Row title="服务器" right={hostName} />
           <Row title="工作空间" right={ws ? ws.name : '它自己的目录'} chevron={!!ws} onClick={ws ? () => nav.push({ page: 'workspace', params: { id: ws.id } }) : undefined} />
         </Section>
         {e.prompt && <Section title="职责"><p className="prose">{e.prompt}</p></Section>}

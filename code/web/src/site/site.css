@@ -6,7 +6,9 @@
 .site-brand img { height: 30px; display: block; }
 .site-nav nav { display: flex; gap: 22px; font-size: 14.5px; color: #4E5465; }
 .site-nav nav a:hover { color: #5B4FE9; }
-.site-lang { font-size: 13.5px; color: #4E5465; }
+.site-lang { font-size: 13.5px; color: #4E5465; background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 4px 6px; width: auto; cursor: pointer; }
+.site-lang:hover { border-color: rgba(127,127,127,.35); }
+.site-lang option { color: #111; }
 .site-btn { display: inline-flex; align-items: center; height: 36px; padding: 0 16px; border-radius: 10px; font-size: 14px; font-weight: 600; color: #fff !important; background: linear-gradient(135deg, #5B4FE9, #8B5CF6); }
 .site-btn.ghost { background: #fff; color: #14161F !important; border: 1px solid #E4E6EC; }
 .site-btn.big { height: 48px; padding: 0 24px; font-size: 16px; border-radius: 12px; }
@@ -46,7 +48,7 @@
   .site-sec { padding-top: 48px; }
   .site-sec h2 { font-size: 26px; }
 }
-@media (max-width: 520px) { .site-grid4 { grid-template-columns: 1fr; } .site-lang { display: none; } }
+@media (max-width: 520px) { .site-grid4 { grid-template-columns: 1fr; } .site-lang { max-width: 96px; } }
 
 /* ================= 首屏（深色、会动） ================= */
 .hero2 { position: relative; overflow: hidden; background: #0B0B14; color: #fff; margin-top: -61px; padding: 120px 32px 96px; }

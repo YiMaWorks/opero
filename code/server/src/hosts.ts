@@ -1,0 +1,57 @@
+// 在哪台机器上跑 AI 执行器：local = Opero 自己这台（经 sudo 切到 AI 用户），其它 = 那台服务器上的 Opero Agent（agents.ts）。
+// 远程进程用起来和本机子进程一样（stdin / stdout / stderr / close），runner 和 executors 不用分两套写。
+import { spawn, type ChildProcess } from 'node:child_process'
+import path from 'node:path'
+import { cfg } from './config.ts'
+import * as agents from './agents.ts'
+
+export const LOCAL = 'local'
+export const isLocal = (host?: string) => !host || host === LOCAL
+
+/** 本机：以 AI 用户跑一个命令（登录 shell，PATH 里有它自己装的 claude / codex） */
+export function spawnAi(bin: string, args: string[], env: Record<string, string>, cwd: string): ChildProcess {
+  // 一键安装的 Claude Code / Codex 在 AI 用户的 ~/.local/bin；npm 用 Opero 自己的 Node。登录 shell 的 PATH 不一定带这两个，补上
+  const wrapper = `export PATH="$HOME/.local/bin:$PATH:${path.dirname(process.execPath)}"; umask 007; exec "$0" "$@"`
+  const fullEnv = { ...process.env, ...env } as Record<string, string>
+  if (cfg.aiUser) {
+    const keep = Object.keys(env)
+    return spawn('sudo', ['-n', '-u', cfg.aiUser, '-H', ...(keep.length ? [`--preserve-env=${keep.join(',')}`] : []), '--', 'bash', '-lc', wrapper, bin, ...args],
+      { cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+  }
+  return spawn('bash', ['-lc', wrapper, bin, ...args], { cwd, env: fullEnv, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
+}
+
+/** 在某台机器上以 AI 用户起进程；远程时 mkdirs 里的目录 Agent 会先建好（属 AI 用户） */
+export function spawnAiOn(host: string | undefined, bin: string, args: string[], env: Record<string, string>, cwd: string, mkdirs: string[] = []): ChildProcess {
+  if (isLocal(host)) return spawnAi(bin, args, env, cwd)
+  return agents.spawnRemote(host!, { as: 'ai', bin, args, env, cwd, mkdirs })
+}
+
+export function killTree(p: ChildProcess) {
+  if ((p as unknown as { remote?: boolean }).remote) { p.kill(); return }
+  try { if (p.pid) process.kill(-p.pid, 'SIGTERM') } catch { try { p.kill('SIGTERM') } catch { /* 已经没了 */ } }
+  setTimeout(() => { try { if (p.pid) process.kill(-p.pid, 'SIGKILL') } catch { /* 已经没了 */ } }, 5000).unref()
+}
+
+/** 跑一下拿输出（看版本、测试执行器） */
+export function runAiOn(host: string | undefined, bin: string, args: string[], opts: { env?: Record<string, string>; cwd?: string; input?: string; timeoutMs?: number } = {}): Promise<{ code: number; out: string; ms: number }> {
+  const t0 = Date.now()
+  return new Promise((resolve) => {
+    const p = spawnAiOn(host, bin, args, opts.env ?? {}, opts.cwd ?? workRoot(host))
+    p.stdin!.on('error', () => {})
+    let out = ''
+    p.stdout!.on('data', (b) => { out += b })
+    p.stderr!.on('data', (b) => { out += b })
+    p.stdin!.end(opts.input ?? '')
+    const t = setTimeout(() => killTree(p), opts.timeoutMs ?? 30_000)
+    p.on('close', (code) => { clearTimeout(t); resolve({ code: code ?? -1, out: out.trim(), ms: Date.now() - t0 }) })
+    p.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: String(e), ms: Date.now() - t0 }) })
+  })
+}
+
+/** 员工干活的根目录：本机按配置，远程固定 /srv/opero/work（Agent 安装脚本建的） */
+export const workRoot = (host?: string) => (isLocal(host) ? cfg.work : agents.REMOTE_WORK)
+
+/** MCP 用的 node 和脚本、以及连回 Opero 的地址：远程时写占位符，Agent 换成它那台上的路径和它连的地址 */
+export const nodeBin = (host?: string) => (isLocal(host) ? process.execPath : '{{NODE}}')
+export const apiBase = (host?: string) => (isLocal(host) ? `http://127.0.0.1:${cfg.port}` : '{{API}}')

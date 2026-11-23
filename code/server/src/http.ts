@@ -22,9 +22,11 @@ export interface Ctx {
   device?: { id: string }
   /** MCP 调用的那一轮（auth = mcp 时有） */
   run?: { emp: string; sid: string; runId: string }
+  /** Agent 来的请求（auth = agent 时有）：是哪台服务器 */
+  agent?: { serverId: string }
 }
 
-export type Auth = 'none' | 'owner' | 'device' | 'mcp'
+export type Auth = 'none' | 'owner' | 'device' | 'mcp' | 'agent'
 type Handler = (c: Ctx) => unknown
 interface Route { method: string; re: RegExp; keys: string[]; h: Handler; auth: Auth; raw?: boolean }
 const routes: Route[] = []

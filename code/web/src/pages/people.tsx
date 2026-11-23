@@ -192,7 +192,7 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
   const workspaces = useStore((s) => s.workspaces)
   const [e, setE] = useState<Employee>(() => existing ?? {
     id: '', name: '', avatar: '', color: COLORS[(Math.random() * COLORS.length) | 0], title: '', prompt: '',
-    executor: 'Claude Code', host: servers[0]?.name ?? '', workspace: '', menus: [],
+    executor: 'Claude Code', host: LIVE ? 'local' : servers[0]?.name ?? '', workspace: '', menus: [],
     model: 'Opus 5.5', effort: 'high', approval: 'auto', notify: 'decide', bg: 'plain', repo: '',
   })
   const up = (p: Partial<Employee>) => setE((x) => ({ ...x, ...p }))
@@ -241,6 +241,15 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
             {servers.map((s) => <option key={s.id} value={s.name}>{s.name}（{s.env}）</option>)}
           </select>
         </Field>}
+        {LIVE && (
+          <Field label="跑在哪台服务器" hint="只能选 Opero 这台或装了 Agent 的；那台要先装好 AI 执行器（应用 → 服务器 → 点它 → AI 执行器）">
+            <select value={servers.some((s) => s.id === e.host) ? e.host : 'local'} onChange={(v) => up({ host: v.target.value })}>
+              {servers.filter((s) => s.id === 'local' || s.via === 'agent').map((s) => (
+                <option key={s.id} value={s.id}>{s.id === 'local' ? 'Opero 这台' : `${s.name}（${s.env}${s.online ? '' : ' · 离线'}）`}</option>
+              ))}
+            </select>
+          </Field>
+        )}
         <Field label="工作空间（它干活的项目）" hint={LIVE ? '留空 = 在它自己的目录里干活；要改代码先在「工作空间」接入仓库' : '留空 = 只在自己的记忆仓库里干活（适合消息助理、总调度这类）'}>
           <select value={e.workspace} onChange={(v) => up({ workspace: v.target.value })}>
             <option value="">{LIVE ? '它自己的目录' : '新建员工仓库'}</option>

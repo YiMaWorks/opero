@@ -9,8 +9,10 @@ import { clientIp, HttpError, json, match, parseCookies, readBody, type Ctx } fr
 import * as auth from './auth.ts'
 import { expireStaleCards } from './api.ts'
 import * as runner from './runner.ts'
+import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
 import { startTriggerLoop } from './triggers.ts'
+import { startLocalProxy } from './tunnel.ts'
 import type { Device } from './types.ts'
 
 const TYPES: Record<string, string> = {
@@ -70,6 +72,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const c: Ctx = { req, res, url, params: m.params, body: undefined, ip: clientIp(req) }
   try {
     const bearer = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
+    // Agent 的请求要验签名（签的是请求体）：先把请求体读出来
+    let pre: Buffer | null = null
+    if ((m.r.auth === 'agent' || p === '/api/agent/register') && req.method !== 'GET' && req.method !== 'HEAD') pre = await readBody(req, 4 * 1024 * 1024)
     if (m.r.auth === 'owner' || m.r.auth === 'none') c.sess = auth.findSession(parseCookies(req.headers.cookie)[auth.COOKIE]) ?? undefined
     if (m.r.auth === 'owner') {
       if (!c.sess) throw new HttpError(401, '要先登录', 'AUTH')
@@ -82,12 +87,28 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       c.device = { id: d.id }
     } else if (m.r.auth === 'mcp') {
       // MCP 只从本机来（Claude Code / Codex 在这台机器上拉起 mcp.ts）
+      // 远程员工（跑在别的服务器的 Agent 上）的 MCP 从外面来：只认这一轮的令牌
       const local = isLoopback(req.socket.remoteAddress ?? '') && !req.headers['x-forwarded-for'] && !req.headers['x-real-ip']
-      const run = local ? runner.runOf(bearer) : undefined
+      const r0 = runner.runOf(bearer)
+      const run = r0 && (local || r0.remote) ? r0 : undefined
       if (!run) throw new HttpError(401, '这一轮已经结束', 'RUN')
       c.run = run
+    } else if (m.r.auth === 'agent') {
+      if (req.headers['x-opero-agent-pub']) {
+        // 新的：按指纹认（每个请求带公钥 + 签名），换了上报地址也认得
+        const r = agents.authSigned(req.headers, req.method ?? 'GET', req.url ?? '', pre ?? Buffer.alloc(0), c.ip)
+        if (!r.ok) throw new HttpError(r.status, r.msg, r.code)
+        c.agent = { serverId: r.serverId }
+      } else {
+        const sv = agents.byKey(bearer)
+        if (!sv || !agents.isAgent(sv)) throw new HttpError(401, '这台的 Agent 已被移除或密钥不对：在 Opero 网页「应用 → 服务器 → 接入」重新生成命令再跑一次', 'AGENT')
+        c.agent = { serverId: sv.id }
+      }
     }
-    if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
+    if (pre) {
+      c.raw = pre
+      if (pre.length) { try { c.body = JSON.parse(pre.toString('utf8')) } catch { throw new HttpError(400, '不是 JSON') } }
+    } else if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
       const buf = await readBody(req, m.r.raw ? 30 * 1024 * 1024 : 4 * 1024 * 1024)
       if (m.r.raw) c.raw = buf
       else if (buf.length) { try { c.body = JSON.parse(buf.toString('utf8')) } catch { throw new HttpError(400, '不是 JSON') } }
@@ -110,6 +131,7 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`Opero ${cfg.version} 在 http://${cfg.host}:${cfg.port}（数据 ${cfg.data} · 工作目录 ${cfg.work} · AI 用户 ${cfg.aiUser || '（和 Opero 同一个用户）'}）`)
   if (!cfg.aiUser) console.warn('注意：没设 OPERO_AI_USER，AI 执行器和 Opero 是同一个系统用户，理论上能读到保险箱文件。正式用请用安装脚本装（会建 opero-ai 用户）。')
   startHealthLoop()
+  startLocalProxy()
   startTriggerLoop()
 })
 
