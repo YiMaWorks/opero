@@ -72,7 +72,8 @@ function aiEnv(kind: 'claude' | 'codex'): { env: Record<string, string>; secrets
 
 /** 以 AI 用户跑一个命令（登录 shell，PATH 里有它自己装的 claude / codex） */
 export function spawnAi(bin: string, args: string[], env: Record<string, string>, cwd: string): ChildProcess {
-  const wrapper = 'umask 007; exec "$0" "$@"'
+  // 一键安装的 Claude Code / Codex 在 AI 用户的 ~/.local/bin；npm 用 Opero 自己的 Node。登录 shell 的 PATH 不一定带这两个，补上
+  const wrapper = `export PATH="$HOME/.local/bin:$PATH:${path.dirname(process.execPath)}"; umask 007; exec "$0" "$@"`
   const fullEnv = { ...process.env, ...env } as Record<string, string>
   if (cfg.aiUser) {
     const keep = Object.keys(env)

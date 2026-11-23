@@ -122,7 +122,7 @@ Opero 要装在**你自己的服务器**上（员工要在服务器上干活）�
    curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash
    ```
    或者在拉下来的代码里：`sudo bash code/server/scripts/install.sh`。详细说明见 [INSTALL.md](INSTALL.md)。国内服务器加 `--cn`（Node 和 npm 包走国内镜像），要 Codex 加 `--with-codex`。
-3. 打开 `http://服务器IP:7300`：设主人账号，接上 AI 执行器（填 API Key，或者在服务器上 `opero ai -c 'claude setup-token'` 登录），建几个员工。
+3. 打开 `http://服务器IP:7300`：设主人账号。开机向导会帮你一键装好 Claude Code、点按钮登录（打开登录页 → 授权 → 把授权码贴回来），不用再碰命令行。然后建几个员工。
 
 装完的样子：
 

@@ -5,8 +5,8 @@
 #   换代码来源（镜像 / 自己的 fork）：OPERO_REPO=https://…/opero.git OPERO_BRANCH=main
 # 选项：
 #   --update        只升级程序（数据、配置不动）；opero update 就是它
-#   --no-claude     不给 AI 用户装 Claude Code
-#   --with-codex    顺便给 AI 用户装 Codex
+#   --with-claude   顺便给 AI 用户装 Claude Code（默认不装：装好后在网页开机向导里点「一键安装」，有进度、会登录）
+#   --with-codex    顺便给 AI 用户装 Codex（同上，默认在网页里装）
 #   --port N        端口（默认 7300）
 #   --cn            用国内镜像下载 Node 和 npm 包
 # 装完的样子：
@@ -18,10 +18,11 @@
 #   用户 opero 跑后台；用户 opero-ai 跑 Claude Code / Codex（读不到 /var/lib/opero）
 set -euo pipefail
 
-UPDATE=0; CLAUDE=1; CODEX=0; PORT=7300; CN=0
+UPDATE=0; CLAUDE=0; CODEX=0; PORT=7300; CN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --update) UPDATE=1 ;;
+    --with-claude) CLAUDE=1 ;;
     --no-claude) CLAUDE=0 ;;
     --with-codex) CODEX=1 ;;
     --port) PORT="$2"; shift ;;
@@ -47,6 +48,10 @@ case "$(uname -m)" in x86_64|amd64) ARCH=x64 ;; aarch64|arm64) ARCH=arm64 ;; *) 
 # ---------- 基础工具 ----------
 need=""
 for c in curl tar git sudo; do command -v $c >/dev/null || need="$need $c"; done
+# script（util-linux）：网页里登录 Claude 账号要靠它给登录界面一个伪终端
+if ! command -v script >/dev/null; then
+  if command -v apt-get >/dev/null; then need="$need bsdutils"; else need="$need util-linux"; fi
+fi
 if [ -n "$need" ]; then
   say "装基础工具：$need"
   if command -v apt-get >/dev/null; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $need
@@ -225,12 +230,13 @@ else
   cat <<EOF
 
   Opero 装好了 🎉
-  打开 http://${IP:-服务器IP}:${PORT_NOW}，设主人账号、接上 AI 执行器。
+  下一步（都在网页上点，不用再敲命令）：
+    1. 打开 http://${IP:-服务器IP}:${PORT_NOW}，设主人账号
+    2. 开机向导「接 AI 执行器」：点「一键安装 Claude Code」→ 点「开始登录」→ 浏览器里授权 → 贴回授权码
+    3. 建员工，开始聊
 
-  正式用建议：
-    - 配一个域名 + HTTPS（nginx 反代到 127.0.0.1:${PORT_NOW}，例子见 code/server/scripts/nginx.conf），
-      然后把 $ETC/opero.env 里的 OPERO_HOST 改成 127.0.0.1、OPERO_URL 填上域名，opero restart
-    - Claude Code 用订阅登录：opero ai -c 'claude setup-token'，或者在网页「我 → AI 执行器」填 API Key
+  正式用建议：配一个域名 + HTTPS（nginx 反代到 127.0.0.1:${PORT_NOW}，例子见 code/server/scripts/nginx.conf），
+  然后把 $ETC/opero.env 里的 OPERO_HOST 改成 127.0.0.1、OPERO_URL 填上域名，opero restart
   常用：opero status · opero logs · opero update · opero reset-password
 EOF
 fi

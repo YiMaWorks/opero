@@ -124,7 +124,7 @@ Opero runs on **your own server**, because employees need a machine to work on. 
    curl -fsSL https://raw.githubusercontent.com/wfcaven/opero/main/code/server/scripts/install.sh | sudo bash
    ```
    Or, from a clone of this repository: `sudo bash code/server/scripts/install.sh`. See [INSTALL.md](INSTALL.md) for details. Add `--cn` to download Node and npm packages from mirrors in China, and `--with-codex` to install Codex as well.
-3. Open `http://<server-ip>:7300`. Create the owner account, then connect an AI executor (paste an API key, or log in on the server with `opero ai -c 'claude setup-token'`) and create your first employees.
+3. Open `http://<server-ip>:7300`. Create the owner account. The setup wizard then installs Claude Code for you with one click and logs it in (open the login page, authorize, paste the code back), so you never touch a terminal again. Then create your first employees.
 
 What the installer sets up:
 

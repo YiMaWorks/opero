@@ -15,6 +15,7 @@ import { isReadSql, loadSchema, runQuery } from './dbconn.ts'
 import { cloneWorkspace, inspect, providerOf, workspaceDir } from './git.ts'
 import { fire, parseRule } from './triggers.ts'
 import { PRESETS } from './presets.ts'
+import * as execs from './executors.ts'
 import { delSecret, getSecret, hasSecret, setSecret } from './vault.ts'
 import type { Credential, DataSource, Device, Employee, KbDoc, Message, SavedQuery, Server, Session, Trigger, Workspace } from './types.ts'
 
@@ -190,6 +191,18 @@ route('PUT', '/api/ai', async (c) => {
   audit({ via: '—', action: 'ai.config', target: 'AI 执行器', level: '危险', result: '成功', how: '本人' })
   return executors()
 })
+// 一键安装执行器、订阅登录（傻瓜式：网页点按钮，后台在服务器上做；网页每秒问一次进度）
+route('GET', '/api/ai/job', () => ({ job: execs.currentJob() }))
+route('POST', '/api/ai/install', (c) => {
+  try { return { job: execs.startInstall(/codex/i.test(String(c.body?.executor ?? '')) ? 'codex' : 'claude') } } catch (e) { throw bad((e as Error).message) }
+})
+route('POST', '/api/ai/login', () => {
+  try { return { job: execs.startLogin() } } catch (e) { throw bad((e as Error).message) }
+})
+route('POST', '/api/ai/login/code', (c) => {
+  try { execs.sendCode(String(c.body?.code ?? '')); return { job: execs.currentJob() } } catch (e) { throw bad((e as Error).message) }
+})
+route('POST', '/api/ai/job/cancel', () => { execs.cancelJob(); return { job: execs.currentJob() } })
 route('POST', '/api/ai/test', async (c) => {
   const codex = /codex/i.test(String(c.body?.executor ?? ''))
   const c2 = runner.aiConf()

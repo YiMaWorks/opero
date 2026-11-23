@@ -40,11 +40,12 @@ Options (append after `sudo bash -s --`):
 | Option | Use when |
 |---|---|
 | `--cn` | Node and npm packages from mirrors in China |
-| `--with-codex` | also install the Codex CLI for the AI user |
-| `--no-claude` | do not install Claude Code |
+| `--with-claude` / `--with-codex` | also install the CLI now (normally the web wizard does it, with progress and login) |
 | `--port 8080` | port 7300 is taken |
 
-Example: `curl -fsSL …/install.sh | sudo bash -s -- --cn --with-codex`.
+Example: `curl -fsSL …/install.sh | sudo bash -s -- --cn`.
+
+The installer only installs Opero itself. **Do not install or log in to Claude Code / Codex by hand**: the web setup wizard does it with buttons (step 5).
 
 If GitHub cannot be reached, clone from any mirror or a fork and run the installer from the clone:
 
@@ -67,7 +68,6 @@ It takes a few minutes (Node download, npm install, web build). It creates:
 
 ```bash
 systemctl is-active opero && curl -s http://127.0.0.1:7300/api/health
-sudo -u opero-ai -H bash -lc 'claude --version'     # or codex --version
 ```
 
 Expected: `active` and `{"ok":true,"version":"…"}`. If not, run `journalctl -u opero -n 80 --no-pager` and fix what it says, then re-run the installer.
@@ -82,7 +82,10 @@ Expected: `active` and `{"ok":true,"version":"…"}`. If not, run `journalctl -u
 Tell the user to open the address and:
 
 1. Create the owner account (first visit only).
-2. Connect an AI executor in the setup wizard: paste an Anthropic / OpenAI API key, **or** log in on the server as the AI user (`sudo opero ai`, then `claude setup-token` or `codex login`) and paste the token. Press "测试一下 / Test"; it should answer OK.
+2. In the setup wizard step "接 AI 执行器" (connect an AI executor), everything is a button:
+   1. **一键安装 Claude Code** (install): Opero installs it on the server for the AI user (1–3 minutes, progress shown).
+   2. **开始登录** (log in): click "打开登录页", sign in to the Claude account in the browser, click **Authorize**, copy the code shown, paste it back and click "提交". Opero verifies it and stores the token encrypted. (Or choose "API Key" and paste a key from console.anthropic.com.)
+   3. **让它回一句话** (test): it should answer within a few seconds.
 3. Create employees, then chat.
 
 ## Troubleshooting
@@ -92,7 +95,8 @@ Tell the user to open the address and:
 | `Node 安装包校验不对` / download fails | network to nodejs.org; re-run with `--cn` |
 | `npm ci` hangs or fails | re-run with `--cn`; check free memory (`free -h`) |
 | service not active | `journalctl -u opero -n 80`; port in use → `--port`; then re-run the installer |
-| executor shows "not installed" in the wizard | `sudo opero ai -c 'curl -fsSL https://claude.ai/install.sh \| bash'` |
+| "一键安装" fails | usually no internet access to claude.ai / npm; check the log shown in the wizard, re-run with `--cn` mirrors, or `sudo opero ai -c 'curl -fsSL https://claude.ai/install.sh \| bash'` |
+| login says "Invalid code" | the code is single-use; click 开始登录 again and paste the new code right away |
 | employee replies "执行器退出了 … login / API key" | key missing or wrong: set it in 我 → AI 执行器, or log in as the AI user |
 | forgot password | `opero reset-password` |
 | update | `sudo opero update` (pulls the latest code from the same repo and re-installs; data and config stay) |

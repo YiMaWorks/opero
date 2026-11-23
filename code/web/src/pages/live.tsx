@@ -11,6 +11,7 @@ import { IconCheck, IconPlus } from '../components/icons'
 import { Markdown } from '../components/Markdown'
 import { WorkSheet } from '../components/WorkSheet'
 import { approvalLabel, effortLabel, modelsFor } from '../work'
+import { ExecutorSetup, type AiInfo } from '../components/ExecutorSetup'
 import { CUR } from '../mode'
 import { headNav, type PageProps } from './nav'
 
@@ -60,62 +61,11 @@ export function LiveLogin() {
 }
 
 // ======================= AI 执行器 =======================
-interface AiInfo {
-  aiUser: string; isolated: boolean; claude: string | null; codex: string | null
-  claudeKey: boolean; claudeBaseUrl: string; codexKey: boolean; codexBaseUrl: string
-  install: { claude: string; codex: string; login: string }
-}
-
 function useAi() {
   const [info, setInfo] = useState<AiInfo | null>(null)
-  const load = () => call<AiInfo>('GET', '/api/ai').then((r) => r && setInfo(r))
+  const load = () => call<AiInfo>('GET', '/api/ai').then((r) => { if (r) setInfo(r) })
   useEffect(() => { load() }, [])
-  return { info, setInfo, load }
-}
-
-function ExecutorForm({ info, setInfo, onTested }: { info: AiInfo; setInfo: (i: AiInfo) => void; onTested?: (exec: string) => void }) {
-  const [exec, setExec] = useState<'Claude Code' | 'Codex'>(info.claude || !info.codex ? 'Claude Code' : 'Codex')
-  const [key, setKey] = useState('')
-  const [base, setBase] = useState(exec === 'Codex' ? info.codexBaseUrl : info.claudeBaseUrl)
-  const [busy, setBusy] = useState<'' | 'save' | 'test'>('')
-  const [test, setTest] = useState<{ ok: boolean; ms: number; out: string } | null>(null)
-  const codex = exec === 'Codex'
-  const found = codex ? info.codex : info.claude
-  const hasKey = codex ? info.codexKey : info.claudeKey
-  const save = async () => {
-    setBusy('save')
-    const r = await call<AiInfo>('PUT', '/api/ai', codex ? { codexKey: key || undefined, codexBaseUrl: base } : { claudeKey: key || undefined, claudeBaseUrl: base }, '已加密保存')
-    if (r) { setInfo(r); setKey('') }
-    setBusy('')
-  }
-  const runTest = async () => {
-    setBusy('test')
-    setTest(null)
-    const r = await call<{ ok: boolean; ms: number; out: string }>('POST', '/api/ai/test', { executor: exec })
-    setBusy('')
-    if (r) { setTest(r); if (r.ok) onTested?.(exec) }
-  }
-  return (
-    <div className="form">
-      <Field label="执行器"><Segmented value={exec} onChange={(v) => { setExec(v); setBase(v === 'Codex' ? info.codexBaseUrl : info.claudeBaseUrl); setTest(null) }} options={[{ value: 'Claude Code', label: 'Claude Code' }, { value: 'Codex', label: 'Codex' }]} /></Field>
-      <div className={'banner ' + (found ? 'b-ok' : 'b-warn')}>
-        {found ? <><IconCheck size={14} /> 服务器上装了 {exec}：{found}</> : <>服务器上还没装 {exec}。在服务器上运行：</>}
-      </div>
-      {!found && <div className="cmd-box mono">{codex ? info.install.codex : info.install.claude}<button className="btn ghost sm" onClick={() => copy(codex ? info.install.codex : info.install.claude)}>复制</button></div>}
-      <Field label={hasKey ? 'API Key（已存，填新的会替换）' : 'API Key'} hint={codex ? 'OpenAI 的 API Key；也可以不填，在服务器上用 AI 用户运行 codex login' : 'Anthropic 的 API Key（sk-ant-…），或 claude setup-token 拿到的令牌；也可以不填，在服务器上用 AI 用户登录'}>
-        <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={hasKey ? '••••••••（已存）' : codex ? 'sk-…' : 'sk-ant-…'} autoComplete="new-password" />
-      </Field>
-      {!codex && !hasKey && <div className="cmd-box mono">{info.install.login}<button className="btn ghost sm" onClick={() => copy(info.install.login)}>复制</button></div>}
-      <Field label="接口地址（可选）" hint="用代理 / 中转时填；不填用官方的"><input value={base} onChange={(e) => setBase(e.target.value)} placeholder={codex ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'} /></Field>
-      <div className="row-actions">
-        <button className="btn default" disabled={!!busy} onClick={save}>{busy === 'save' ? '保存中…' : '保存'}</button>
-        <button className="btn primary" disabled={!!busy || !found} onClick={runTest}>{busy === 'test' ? '测试中（最多 2 分钟）…' : '测试一下'}</button>
-      </div>
-      {test && <div className={'banner ' + (test.ok ? 'b-ok' : 'b-warn')}>{test.ok ? `能用：回复「OK」用了 ${(test.ms / 1000).toFixed(1)} 秒` : '没成功，执行器说：'}</div>}
-      {test && !test.ok && <pre className="console">{test.out || '（没有输出）'}</pre>}
-      <p className="field-hint">Key 加密存在这台服务器的保险箱里，只在员工干活时交给执行器进程；AI 员工连服务器、数据库用的账号它都拿不到。</p>
-    </div>
-  )
+  return { info, load }
 }
 
 function IsolationNote({ info }: { info: AiInfo }) {
@@ -125,7 +75,7 @@ function IsolationNote({ info }: { info: AiInfo }) {
 }
 
 export function ExecutorsPage({ nav }: PageProps) {
-  const { info, setInfo } = useAi()
+  const { info, load } = useAi()
   return (
     <div className="page">
       <PageHeader title="AI 执行器" sub="员工用哪个 AI 干活：Claude Code / Codex" {...headNav(nav)} />
@@ -133,7 +83,7 @@ export function ExecutorsPage({ nav }: PageProps) {
         {!info ? <Empty>在查服务器上装了什么…</Empty> : (
           <>
             <div className="pad"><IsolationNote info={info} /></div>
-            <div className="pad"><ExecutorForm info={info} setInfo={setInfo} /></div>
+            <div className="pad"><ExecutorSetup info={info} reload={load} /></div>
           </>
         )}
       </div>
@@ -152,7 +102,7 @@ const PRESETS: { key: string; name: string; desc: string }[] = [
 export function LiveSetup() {
   const me = useStore((s) => s.me)
   const emps = useStore((s) => s.employees)
-  const { info, setInfo } = useAi()
+  const { info, load } = useAi()
   const [step, setStep] = useState(1)
   const [exec, setExec] = useState('Claude Code')
   const [picked, setPicked] = useState<string[]>(['butler', 'dev', 'ops'])
@@ -183,7 +133,7 @@ export function LiveSetup() {
             {!info ? <p className="sub">在查服务器上装了什么…</p> : (
               <>
                 <IsolationNote info={info} />
-                <ExecutorForm info={info} setInfo={setInfo} onTested={setExec} />
+                <ExecutorSetup info={info} reload={load} onReady={setExec} />
                 <div className="row-actions"><button className="btn primary" onClick={() => setStep(2)}>下一步</button></div>
               </>
             )}

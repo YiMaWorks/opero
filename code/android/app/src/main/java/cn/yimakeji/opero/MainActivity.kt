@@ -326,12 +326,19 @@ class MainActivity : FragmentActivity(), Bridge.Host {
         if (PushService.canRun()) PushService.start(this) else PushService.stop(this)
     }
 
-    /** 连接页：有配对码就配对（拿设备令牌，能收推送）；没有就只记地址、直接打开 */
+    /**
+     * 连接页：App 不带任何默认服务器（Opero 没有公共服务器，官网只是介绍和试用），只连用户自己填的那套。
+     * 先问一下 /api/health 确认真是 Opero 后台（填成官网、别的网站会被拦下）；有配对码就配对（拿设备令牌，能收推送），没有就只记地址、直接打开。
+     */
     override fun pair(server: String, code: String) = runOnUiThread {
         val base = server.trim().trimEnd('/').let { if (it.startsWith("http")) it else "https://$it" }
         if (Uri.parse(base).host.isNullOrBlank()) { pairResult(false, "地址不对"); return@runOnUiThread }
         lifecycleScope.launch {
             try {
+                val health = try { Api.call("GET", "/api/health", server = base, auth = false) } catch (e: ApiError) {
+                    throw ApiError(e.status, "NOT_OPERO", if (e.status == 0) "连不上 ${Uri.parse(base).host}：${e.message}" else "这个地址不是 Opero 后台（HTTP ${e.status}）")
+                }
+                if (!health.optBoolean("ok")) throw ApiError(0, "NOT_OPERO", "这个地址不是 Opero 后台：填你自己服务器上装好的 Opero 的地址（官网和在线试用不能连）")
                 if (code.isNotBlank()) {
                     val r = Api.call("POST", "/api/app/pair", JSONObject().apply {
                         put("code", code.trim())
@@ -352,7 +359,7 @@ class MainActivity : FragmentActivity(), Bridge.Host {
                     web.loadUrl(base)
                 }
             } catch (e: ApiError) {
-                pairResult(false, if (e.status == 404) "这套 Opero 还不支持配对（界面原型），先不填配对码直接连" else e.message ?: "连不上")
+                pairResult(false, if (e.status == 404 && e.code != "NOT_OPERO") "这套 Opero 版本太旧，还不支持配对，先不填配对码直接连" else e.message ?: "连不上")
             }
         }
     }

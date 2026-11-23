@@ -24,8 +24,8 @@ const T = {
     compare: '和同类项目比',
     install: '安装',
     installSub: 'Opero 一定要装在服务器上（员工要在服务器上干活），装法像以前的论坛系统：',
-    steps: ['准备一台 Linux 服务器（2 核 4G 起，有 systemd），装好 Claude Code 或 Codex', '把下面这句话发给它，它会照着 GitHub 上的安装说明装好', '打开它给的地址，跟着开机向导：接上 AI 执行器、建员工，再接服务器、数据库和代码仓库'],
-    aiLabel: '发给服务器上的 AI：', manual: '想自己装：用 root 运行', doc: '完整安装说明',
+    steps: ['准备一台 Linux 服务器（2 核 4G 起，有 systemd）', '用 root 运行下面这一条命令，装好 Opero', '打开它给的地址：设账号 → 点「一键安装 Claude Code」→ 点「开始登录」在浏览器里授权 → 建员工。全程点按钮，不用再敲命令'],
+    aiLabel: '服务器上已经有 Claude Code / Codex？也可以把这句话发给它：', manual: '用 root 运行：', doc: '完整安装说明',
     soon: '代码和安装都从 GitHub 来，不经过我们的服务器。国内服务器手动装时在命令最后加 -s -- --cn。v0.1：聊天、员工、服务器、数据库、凭证、触发器、知识库都是真的；发布、消息渠道、流程还在做。',
     github: 'GitHub',
     footer: '开源 · Apache-2.0',
@@ -48,8 +48,8 @@ const T = {
     compare: 'How Opero compares',
     install: 'Install',
     installSub: 'Opero runs on your own server (employees work there). Installing feels like the forum software of old:',
-    steps: ['Get a Linux server with systemd (2 vCPU / 4 GB+) and Claude Code or Codex on it', 'Send it the sentence below; it follows the install guide on GitHub', 'Open the address it gives you: connect an AI executor, add employees, then bring in servers, databases and repos'],
-    aiLabel: 'Tell the AI on your server:', manual: 'Prefer to do it yourself? As root:', doc: 'Full install guide',
+    steps: ['Get a Linux server with systemd (2 vCPU / 4 GB+)', 'Run the one command below as root to install Opero', 'Open the address it prints: create your account → click "Install Claude Code" → click "Log in" and authorize in the browser → add employees. Buttons only, no more terminal'],
+    aiLabel: 'Already have Claude Code / Codex on the server? You can also just tell it:', manual: 'As root:', doc: 'Full install guide',
     soon: 'Code and installer come straight from GitHub; nothing goes through our servers. v0.1 has real chat, employees, servers, databases, vault, triggers and knowledge base; releases, message channels and flows are next.',
     github: 'GitHub',
     footer: 'Open source · Apache-2.0',
@@ -122,10 +122,10 @@ export default function Landing() {
         <h2>{t.install}</h2>
         <p className="site-lead">{t.installSub}</p>
         <ol className="site-steps">{t.steps.map((s) => <li key={s}>{s}</li>)}</ol>
-        <p className="site-lead">{t.aiLabel}</p>
-        <pre className="site-code"><code>{AI_PROMPT[lang]}</code></pre>
         <p className="site-lead">{t.manual}</p>
         <pre className="site-code"><code>{INSTALL_CMD}</code></pre>
+        <p className="site-lead">{t.aiLabel}</p>
+        <pre className="site-code"><code>{AI_PROMPT[lang]}</code></pre>
         <p className="site-note"><a href={INSTALL_DOC} target="_blank" rel="noreferrer">{t.doc} →</a></p>
         <p className="site-note">{t.soon}</p>
       </section>
