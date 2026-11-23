@@ -1,0 +1,128 @@
+// 会话列表：像微信。置顶的在最上面（底色稍深，多了能折叠），其余按最近时间排；
+// 要你处理的不单列一块，只在预览前面加红字「[要你确认]」+ 未读。长按（电脑右键）：置顶 / 免打扰。
+import { useRef, useState } from 'react'
+import type { Session } from '../types'
+import { badgeOf, empName, useStore } from '../store'
+import { Avatar } from './Avatar'
+import { Wordmark } from './brand'
+import { IconBellOff, IconChevron, IconPalette, IconPlus, IconSearch } from './icons'
+
+interface Props {
+  sessions: Session[]
+  current: string | null
+  mobile: boolean
+  onOpen: (id: string) => void
+  onPin: (id: string) => void
+  onMute: (id: string) => void
+  onSearch: () => void
+  onNew: () => void
+  onTheme: () => void
+}
+
+const FOLD_AT = 4 // 置顶超过这么多个就可以折叠
+
+export function SessionList({ sessions, current, mobile, onOpen, onPin, onMute, onSearch, onNew, onTheme }: Props) {
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [folded, setFolded] = useState(false)
+  const sorted = [...sessions].sort((a, b) => b.ts - a.ts)
+  const pinned = sorted.filter((s) => s.pinned)
+  const rest = sorted.filter((s) => !s.pinned)
+  const canFold = pinned.length >= FOLD_AT
+
+  const openMenu = (id: string, x: number, y: number) => setMenu({ id, x, y })
+  const menuSession = menu ? sessions.find((s) => s.id === menu.id) : null
+  const employees = useStore((st) => st.employees)
+  const menuMuted = menuSession ? employees.find((x) => x.id === menuSession.employee)?.notify === 'none' : false
+
+  return (
+    <section className="slist">
+      {mobile ? (
+        <header className="slist-head m">
+          <span className="head-side"><button className="icon-btn" aria-label="换风格" onClick={onTheme}><IconPalette /></button></span>
+          <span className="head-title"><Wordmark size={22} /></span>
+          <span className="head-side right">
+            <button className="icon-btn" aria-label="搜索" onClick={onSearch}><IconSearch /></button>
+            <button className="icon-btn" aria-label="找员工聊" onClick={onNew}><IconPlus /></button>
+          </span>
+        </header>
+      ) : (
+        <header className="slist-head">
+          <button className="search" onClick={onSearch}><IconSearch /><span>搜索员工、聊天记录、项目</span></button>
+          <button className="icon-btn boxed" aria-label="找员工聊" onClick={onNew}><IconPlus /></button>
+        </header>
+      )}
+
+      <div className="slist-body">
+        {canFold && (
+          <button className="fold-row" onClick={() => setFolded(!folded)}>
+            <span>{pinned.length} 个置顶聊天</span>
+            <span className={'fold-arrow' + (folded ? '' : ' open')}><IconChevron /></span>
+          </button>
+        )}
+        {!(canFold && folded) && pinned.map((s) => (
+          <Item key={s.id} s={s} mobile={mobile} active={s.id === current} onOpen={onOpen} onMenu={openMenu} />
+        ))}
+        {rest.map((s) => <Item key={s.id} s={s} mobile={mobile} active={s.id === current} onOpen={onOpen} onMenu={openMenu} />)}
+      </div>
+
+      {menu && menuSession && (
+        <div className="ctx-mask" onClick={() => setMenu(null)} onContextMenu={(e) => { e.preventDefault(); setMenu(null) }}>
+          <div className={'ctx' + (mobile ? ' sheet-like' : '')} style={mobile ? undefined : { left: menu.x, top: menu.y }}
+            onClick={(e) => e.stopPropagation()}>
+            {mobile && <div className="ctx-title">{empName(menuSession.employee)}</div>}
+            <button onClick={() => { onPin(menu.id); setMenu(null) }}>{menuSession.pinned ? '取消置顶' : '置顶聊天'}</button>
+            <button onClick={() => { onMute(menu.id); setMenu(null) }}>{menuMuted ? '取消免打扰' : '消息免打扰'}</button>
+            {mobile && <button className="ctx-cancel" onClick={() => setMenu(null)}>取消</button>}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function Item({ s, mobile, active, onOpen, onMenu }: {
+  s: Session; mobile: boolean; active: boolean; onOpen: (id: string) => void; onMenu: (id: string, x: number, y: number) => void
+}) {
+  const e = useStore((st) => st.employees.find((x) => x.id === s.employee))
+  const press = useRef<number | null>(null)
+  const long = useRef(false)
+
+  // 长按 0.5 秒 = 打开菜单（手机）；右键同理（电脑）
+  const start = (x: number, y: number) => {
+    long.current = false
+    press.current = window.setTimeout(() => { long.current = true; onMenu(s.id, x, y) }, 500)
+  }
+  const cancel = () => { if (press.current) { clearTimeout(press.current); press.current = null } }
+
+  if (!e) return null
+  const badge = badgeOf(s, e)
+  return (
+    <button
+      className={'sitem' + (s.pinned ? ' pinned' : '') + (active ? ' active' : '')}
+      onClick={() => { if (!long.current) onOpen(s.id) }}
+      onContextMenu={(ev) => { ev.preventDefault(); cancel(); onMenu(s.id, ev.clientX, ev.clientY) }}
+      onTouchStart={(ev) => start(ev.touches[0].clientX, ev.touches[0].clientY)}
+      onTouchEnd={cancel}
+      onTouchMove={cancel}
+    >
+      <span className="sitem-av">
+        <Avatar id={e.id} size={mobile ? 48 : 44} />
+        {badge === 'red' && <i className="badge">{Math.max(1, s.unread ?? 0) > 99 ? '99+' : Math.max(1, s.unread ?? 0)}</i>}
+        {badge === 'grey' && !s.working && <i className="grey-dot" />}
+        {s.working && <i className="s-dot run" />}
+      </span>
+      <span className="sitem-main">
+        <span className="sitem-top">
+          <b>{e.name}</b>
+          <time>{s.time}</time>
+        </span>
+        <span className="sitem-bottom">
+          <span className={'sitem-last' + (s.working ? ' run' : '')}>
+            {s.working ? <><i className="pulse" />{s.working}</> : <>{s.waiting && <em className="pfx-warn">[{s.waiting}]</em>}{s.last}</>}
+          </span>
+          {e.notify === 'none' && <span className="muted-icon"><IconBellOff /></span>}
+        </span>
+      </span>
+    </button>
+  )
+}

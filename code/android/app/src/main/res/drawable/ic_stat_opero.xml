@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标 / 主题图标（单色）：标志的轮廓 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:translateX="23" android:translateY="23" android:scaleX="0.62" android:scaleY="0.62">
+        <path android:strokeColor="#FFFFFFFF" android:strokeWidth="13" android:strokeLineJoin="round" android:strokeLineCap="round" android:fillColor="#00000000"
+            android:pathData="M24.02,65.00 A30,30 0 1 1 35.92,76.49 L19.0,83.0 Z" />
+        <path android:fillColor="#FFFFFFFF" android:pathData="M50,50m-8.5,0a8.5,8.5 0,1 1,17 0a8.5,8.5 0,1 1,-17 0" />
+    </group>
+</vector>

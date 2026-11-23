@@ -1,0 +1,342 @@
+// 数据结构。消息 / 卡片和 docs/规范/表单与卡片.md 一致；其它实体对应以后的后台接口。
+
+// ---------- 人和员工 ----------
+export interface User {
+  id: string
+  name: string
+  email: string
+  lastActive: string
+  passkey?: boolean
+  // ---- 个人页顶部（一人一套，按自己喜好来；存本机，接后台后存个人偏好） ----
+  /** 头像图片（裁好的 data URL）；没有就用 avatar 字 */
+  avatarImg?: string
+  avatar?: string
+  /** 一句签名 */
+  signature?: string
+  /** 封面：预设的 key（aurora / dusk / ocean / forest / paper / night）或裁好的图片 data URL */
+  cover?: string
+  /** 顶部显示什么：问候语、今日概况（在干活 / 等你决定 / 本月花了） */
+  showGreeting?: boolean
+  showToday?: boolean
+}
+
+export interface Employee {
+  id: string
+  name: string
+  avatar: string // 头像上的字
+  color: string
+  title: string // 职责一句话
+  prompt: string // 职责提示词（写进它 git 的 CLAUDE.md「我的角色」）
+  executor: string
+  host: string
+  workspace: string
+  menus: string[] // 底部菜单（菜单项在 src/menus.ts 注册，二开见 docs/规范/底部菜单.md）
+  persona?: string
+  // 每个员工都是一个 work：这三项选了就记住（按员工存）
+  model: string
+  effort: Effort
+  approval: Approval
+  contextUsed?: number // 上下文用了多少（%）
+  // 聊天设置（像微信给每个联系人设）：头像、名字、背景、提醒
+  avatarImg?: string // 上传的头像（data URL），有就优先用；没有用 avatar 字 / 表情 + color
+  bg?: ChatBg
+  notify: Notify
+  // 记忆：每个员工一个 git 仓库，换 work / 换服务器都从这里接手
+  repo: string
+  repoSynced?: string
+  works?: WorkRun[] // work 历史（最新在前）
+}
+
+/** 提醒：all 每条都提醒（红点数字）· decide 只提醒要你决定的（默认，其它只给灰点）· none 不提醒 */
+export type Notify = 'all' | 'decide' | 'none'
+export type ChatBg = 'plain' | 'soft' | 'grid' | 'dusk' | 'mint'
+export interface WorkRun {
+  no: number
+  from: string
+  to?: string
+  reason: string // 为什么换：上下文满了 / 卡住了 / 换服务器 / 你让换的
+  host: string
+}
+
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+/** 审核方式：auto 自动（信任 AI）· edits 改文件自动、跑命令要问 · ask 每一步都问 · plan 只看不改 */
+export type Approval = 'auto' | 'edits' | 'ask' | 'plan'
+
+// ---------- 会话和消息 ----------
+export type CardType = 'issue' | 'change' | 'release' | 'query' | 'confirm' | 'ask' | 'generic'
+export type Level = 'info' | 'warn' | 'danger'
+export type ButtonStyle = 'primary' | 'danger' | 'default' | 'ghost'
+
+export interface CardAction {
+  id: string
+  label: string
+  style?: ButtonStyle
+  tool?: string // 点了走网关调这个工具
+  panel?: PanelKind // 或者只打开面板
+  args?: Record<string, unknown>
+}
+
+export interface Card {
+  id: string
+  type: CardType
+  v: 1
+  state: 'open' | 'done'
+  level: Level
+  data: Record<string, any>
+  actions: CardAction[]
+  result?: string | null
+}
+
+export type MessageKind = 'text' | 'status' | 'system' | 'file' | 'card'
+
+export interface Message {
+  id: string
+  ts?: number
+  from: 'me' | 'system' | string // string = 员工 id
+  kind: MessageKind
+  at: string
+  text?: string
+  spinning?: boolean
+  file?: { name: string; size: string; ext: string; image?: boolean; /** 图片缩略图（data URL） */ url?: string; w?: number; h?: number }
+  card?: Card
+}
+
+export interface Session {
+  id: string
+  employee: string
+  last: string
+  time: string
+  ts: number // 排序用：最近一条的时间
+  unread?: number
+  pinned?: boolean // 置顶（用户自己设）
+  working?: string // 在干活时的一句话（绿色）
+  waiting?: string // 要你处理（预览前红字）
+}
+
+// ---------- 工作空间 / 问题 ----------
+export interface Workspace {
+  id: string
+  name: string
+  provider: 'Codeup' | 'GitHub' | 'Gitea' | 'Gitee' | 'GitLab' | 'Git'
+  credential?: string
+  error?: string
+  repo: string
+  branch: string
+  host: string
+  dir: string
+  last: string
+  employees: string[]
+  preview?: string
+  branches: { name: string; status: string; checks?: string }[]
+  commits: { sha: string; msg: string; who: string; when: string }[]
+  docs: { name: string; updated: string }[]
+}
+
+export type IssueStatus = 'new' | 'watching' | 'fixing' | 'fixed' | 'ignored'
+export interface Issue {
+  id: number
+  title: string
+  project: string
+  status: IssueStatus
+  severity: '严重' | '一般'
+  count: number
+  first: string
+  last: string
+  owner: string // 员工 id
+  cause?: string
+}
+
+// ---------- 应用（插件）：服务器、发布、凭证、数据、触发器 ----------
+export type EnvTag = '开发' | '测试' | '生产'
+
+export interface Server {
+  id: string
+  name: string
+  ip: string
+  env: EnvTag
+  os: string
+  agent: string
+  online: boolean
+  cpu: number
+  mem: number
+  disk: number
+  services: { name: string; status: '运行中' | '已停止' | '异常' }[]
+  logs: string[]
+}
+
+export interface ReleaseApp {
+  id: string
+  name: string
+  components: { code: string; name: string; kind: string; version: string }[]
+  envs: { name: EnvTag; server: string; dir: string; aiRelease: 'auto' | 'ask' | 'off' }[]
+}
+
+export interface ReleaseRecord {
+  id: number
+  app: string
+  env: EnvTag
+  version: string
+  status: '成功' | '失败' | '进行中' | '已回滚'
+  by: string
+  when: string
+  duration: string
+  steps: { name: string; ok: boolean; note?: string }[]
+}
+
+/** 权限 = 你在公司本来就有的账号，带进来就有；没有的这里也没有 */
+export type CredGroup = '服务器' | '数据库' | '代码仓库' | '云账号' | 'AI' | '消息渠道' | '其它'
+export interface Credential {
+  id: string
+  /** 用户名（账号密码 / Codeup 令牌要配用户名时） */
+  user?: string
+  /** 真的一套：值已经存进保险箱 */
+  hasSecret?: boolean
+  name: string
+  group: CredGroup
+  kind: '账号密码' | '密钥' | 'Token' | '证书' | '数据库'
+  env: EnvTag
+  scope: string // 这个账号在公司那边能做什么（只读 / 读写 / 部署…），员工能做的不会超过它
+  usedBy: string[]
+  updated: string
+  aiAllowed: boolean
+}
+
+/** 我的定制：这套 Opero 是官方底座的 fork，按自己的习惯二开 */
+export interface Customization {
+  fork: string
+  base: string
+  mine: { what: string; kind: '插件' | '菜单' | '员工模板' | '卡片' | '规则'; status: '已上线' | '预览中' }[]
+  update?: { version: string; notes: string[] }
+}
+
+export interface DataSource {
+  id: string
+  name: string
+  kind: 'MySQL' | 'PostgreSQL'
+  env: EnvTag
+  host: string
+  db: string
+  writable: boolean
+  tables: { name: string; rows: string; cols: string[] }[]
+}
+
+export interface SavedQuery {
+  id: string
+  source: string
+  name: string
+  sql: string
+}
+
+/** 消息渠道：邮件 / IM 进来的消息交给「消息助理」；Opero 的通知也能发到这里 */
+export interface Channel {
+  id: string
+  kind: '邮件' | 'Slack' | 'Telegram' | '飞书' | '企业微信' | '钉钉'
+  account: string
+  inbound: boolean // 收进来交给消息助理
+  notifyMe: boolean // Opero 的通知也发到这里
+  allowSend: boolean // 允许消息助理以你的名义代发（默认关：AI 会弄错，商业场景要严谨）
+  status: '已连接' | '要重新登录'
+  today: number // 今天收到多少
+}
+
+/** 知识库：所有员工共用的资料，放在一个 git 仓库（opero-kb），员工按需查 */
+export interface KbDoc {
+  id: string
+  name: string
+  kind: '产品说明' | '接口文档' | '客户信息' | '规范' | '其它'
+  updated: string
+  by: string
+  summary: string
+}
+
+/** 流程：做过的事存成固定步骤，下次直接跑，不经过 AI（快、省钱、结果一样） */
+export interface Flow {
+  id: string
+  name: string
+  employee: string
+  steps: string[]
+  runs: number
+  last: string
+}
+
+export interface Trigger {
+  id: string
+  /** 每次触发交给员工的话（真的一套） */
+  prompt?: string
+  /** Webhook 地址的路径（真的一套，后台生成） */
+  hookPath?: string
+  name: string
+  kind: '定时' | 'Webhook' | '监控' | '邮件'
+  rule: string
+  employee: string
+  enabled: boolean
+  last: string
+}
+
+export interface Plugin {
+  id: string
+  name: string
+  desc: string
+  enabled: boolean
+  builtin: boolean
+  tools: number
+  version: string
+}
+
+// ---------- 操作记录 / 设置（单用户：没有账号、角色、授权、申请） ----------
+export interface AuditEntry {
+  id: string
+  when: string
+  who: string
+  via: string
+  action: string
+  target: string
+  level: '读' | '写' | '危险'
+  result: '成功' | '失败' | '拒绝'
+  how: string
+}
+
+export interface Usage {
+  employee: string
+  tasks: number
+  success: number
+  tokens: string
+  cost: number // 元
+}
+
+export interface Settings {
+  prodProtect: boolean
+  habits: string // 我的习惯：所有员工都遵守的个人规矩（每次派活都带上）
+  /** 风格：'system' = 跟随系统（浅色用 themeLight、深色用 themeDark）；'custom' = 自己挑的三个颜色；其它 = themes.ts 里某一套的 key */
+  theme: string
+  themeLight: string
+  themeDark: string
+  customTheme: { mode: 'light' | 'dark'; bg: string; ink: string; accent: string }
+  lang: 'zh' | 'en'
+  notify: 'decide' | 'errors' | 'all'
+  notifyTo: string[] // 通知发到哪：App 推送 / Telegram / Slack / 邮件
+  budget: number // 每月预算（元），0 = 不限
+  budgetStop: boolean // 用满了员工先停下来问你
+  fallback: string // AI 不可用时的备用执行器（'' = 不用备用）
+  aiDown: boolean // 演示：模拟 AI 不可用
+}
+
+// ---------- 界面 ----------
+export type PanelKind = 'diff' | 'query' | 'menu' | 'profile'
+
+export type Tab = 'chat' | 'people' | 'workspace' | 'apps' | 'me'
+
+export type PageName =
+  | 'employees' | 'employee' | 'employeeEdit' | 'memory'
+  | 'workspaces' | 'workspace' | 'workspaceAdd' | 'issues' | 'issue'
+  | 'apps' | 'servers' | 'server' | 'serverAdd' | 'releases' | 'release' | 'credentials' | 'credentialEdit'
+  | 'data' | 'query' | 'triggers' | 'triggerEdit' | 'plugins' | 'audit'
+  | 'me' | 'meEdit' | 'settings' | 'usage' | 'security' | 'about' | 'habits' | 'customize'
+  | 'chatSettings' | 'channels' | 'inbox' | 'knowledge' | 'flows'
+  | 'diff' | 'queryResult' | 'profile' | 'placeholder'
+  | 'executors' | 'dataSourceAdd' | 'comingSoon'
+
+export interface Route {
+  page: PageName
+  params?: Record<string, any>
+}

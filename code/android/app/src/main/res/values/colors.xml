@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 和网页 code/web/src/styles.css 一致：浅色底、品牌紫 -->
+    <color name="opero_bg">#F3F5F8</color>
+    <color name="opero_panel">#FFFFFF</color>
+    <color name="opero_text">#101826</color>
+    <color name="opero_sub">#667286</color>
+    <color name="opero_primary">#5B4FE9</color>
+    <color name="opero_icon_bg">#14152A</color>
+</resources>

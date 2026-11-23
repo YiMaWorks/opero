@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="opero_bg">#0D0E10</color>
+    <color name="opero_panel">#141518</color>
+    <color name="opero_text">#F2F3F4</color>
+    <color name="opero_sub">#8A9098</color>
+    <color name="opero_primary">#7C6CFF</color>
+    <color name="opero_icon_bg">#14152A</color>
+</resources>

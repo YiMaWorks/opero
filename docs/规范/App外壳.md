@@ -1,0 +1,88 @@
+# App 外壳规范（安卓，v0.1，2026-11-22）
+
+> 已定：App 外壳、网页风格参考 KidLock（那边做了很多）。代码在 `code/android/`，网页那边是 `code/web/src/native.ts`。
+> 从 KidLock 安卓借来的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 30 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
+> **没照搬的**：KidLock 的聊天、卡片、表单全是原生 Compose，每种卡片网页和 App 各写一遍、加一种卡片就要发 App（它的痛点 #2）。Opero 的界面**全在网页里**，外壳只做网页做不了的事；加功能只发网页，不用发 App。
+
+## 1. 外壳管什么、不管什么
+
+| 外壳管（原生） | 网页管 |
+|---|---|
+| 连接你的 Opero（地址 + 配对码，`assets/pair.html`） | 所有页面、聊天、卡片、表单 |
+| 常驻推送、通知渠道、严重告警一直响 | 推什么（按员工的「提醒」设置，后台定） |
+| 指纹：解锁 App、验证本人 | 什么时候要验证本人（`requireVerify`） |
+| 点通知打开某个会话 | 打开以后显示什么 |
+| 选文件 / 拍照、麦克风权限、下载交给系统 | 发图片、按住说话的界面 |
+| 返回键 = 网页后退（网页每打开一层记一步历史，返回只关最上面一层；到底了退到桌面） | 层级（`App.tsx` 的 history 深度） |
+| 状态栏 / 导航栏颜色跟网页的深浅色 | 主题 |
+| App 内更新（只有外壳本身要更新时） | 网页随 Opero 一起发版 |
+
+**一人一套带来的不同（和 KidLock 比）**：
+- 没有固定服务器：第一次打开填自己那套的地址；一台手机连一套。
+- **没有厂商推送**（华为 / 荣耀 / 小米…）：厂商推送要 App 发行方的密钥在服务端发，不能发给每一套自建的 Opero。只靠常驻连接 + 每 15 分钟的看门狗补取（后台存 24 小时）。要在 App 被杀后也收到，用「通知发到哪」里的 Telegram / Slack / 邮件兜底。以后要做可以加一个官方中转（待确认）。
+- 没有账号密码：手机配对拿一个**设备令牌**（系统密钥库加密存），网页「我 → 账号安全 → 接手机」能看到、能断开。
+
+## 2. 网页 ↔ 外壳（JS 桥）
+
+外壳 WebView 的 User-Agent 末尾加 `OperoApp/<版本> light|dark`，并注入 `window.OperoNative`。网页用 `src/native.ts` 包好的函数，不要直接调 `window.OperoNative`；不在 App 里时这些函数什么都不做 / 走网页的做法。
+
+| 网页调外壳 `OperoNative.*` | 做什么 |
+|---|---|
+| `version()` | 外壳版本 |
+| `verify(id, title, subtitle)` | 弹系统指纹 / 面容 / 锁屏密码；30 分钟内验过直接过。验过后外壳调后台 `POST /api/app/verified`，结果回 `window.__operoNative.onVerify(id, ok, err)` |
+| `setTheme(dark)` | 状态栏、导航栏、底色跟着网页 |
+| `setBadge(n)` | 红点数（只算要你决定的） |
+| `setRoute(route)` | 正在看的会话 `chat/<编号>`：推的就是它时不弹通知 |
+| `openExternal(url)` | 交给系统打开（邮件 / Slack / Telegram 原消息、文档链接；只认 http / mailto / tg / slack） |
+| `haptic()` | 轻震（长按、按住说话） |
+| `relogin()` | 网页登录过期（接口 401）：外壳用设备令牌重新要票再打开 |
+| `unpair()` | 断开这台手机，回到连接页 |
+| `getShell()` / `setShell(json)` | 「这台手机」的设置：`lockOn`、`lockAfter`（秒，0 = 每次）、`pushEnabled`、`insistent`；网页设置页在 App 里多一组「这台手机」 |
+| `pair(server, code)` | 只给外壳自带的连接页用 |
+
+| 外壳调网页 | 做什么 |
+|---|---|
+| `window.__operoNative.open(route)` | 点通知打开：`chat/<会话编号>` → 打开那个会话（`App.tsx` 的 `onNativeOpen`） |
+| `window.__operoNative.onVerify(id, ok, err)` | 验证本人的结果 |
+
+**安全**：桥只在自己那套 Opero 的页面（同协议 + 主机 + 端口）和 `file:///android_asset/` 里起作用；别的网站的链接一律交给系统浏览器，进不了这个 WebView。
+
+## 3. 外壳用的后台接口（后台要实现，都带 `Authorization: Bearer <设备令牌>`、`X-Opero-Client: app`）
+
+| 接口 | 用途 | 返回 |
+|---|---|---|
+| `POST /api/app/pair` `{code, deviceId, name, platform, appVersion}`（不带令牌） | 用网页给的 6 位配对码（10 分钟有效、用一次作废）换设备令牌 | `{deviceToken}` |
+| `POST /api/app/ticket` `{route}` | 要一张一次性的票（1 分钟有效） | `{url}`：打开它，后台种好登录 cookie 再跳到首页（带 route 就跳到那里） |
+| `POST /api/app/verified` | 这台手机刚验过本人：后台按「这次登录」记 30 分钟（同 KidLock `lib/reauth.js` 的 grace） | `{}` |
+| `POST /api/app/devices` `{deviceId, platform, brand, model, osVersion, appVersion, enabled}` | 登记这台手机 | `{}` |
+| `GET /api/app/push?device=&after=&wait=25` | 长轮询：没新的就等最多 25 秒；后台存 24 小时 | `{items: [PushItem], last}`；没这台手机回 `404 {code: "DEVICE_NOT_FOUND"}` |
+| `DELETE /api/app/devices/<deviceId>` | 断开 | `{}` |
+| `POST /api/app/alarms/<编号>/ack` | 通知上点「我知道了」：不再响 | `{}` |
+| `GET /api/app/update?platform=android&build=` | 有没有新外壳 | `{versionCode, versionName, url, sha256, must, notes}` |
+
+设备令牌被作废（网页里断开了）→ 任何接口回 401 → 外壳清掉令牌，回连接页。
+后台还没有这些接口（现在的界面原型）→ 回 404 → 外壳不配对，直接打开地址（收不到推送，验证本人只在手机上验）。
+
+**PushItem**：`{id, kind, title, body?, route?, alarm?}`
+- `kind`：`decide` 要你决定（高优先级、横幅）/ `alarm` 严重告警（闹钟铃声、长震、一直响到点「我知道了」）/ `info` 知道就行 / `clear` 收掉 `alarm` 那条（别处已处理 / 已恢复）。
+- 推什么由后台按员工的「提醒」设置定：只提醒要我决定的（默认）→ 只推 `decide`；每条都提醒 → 也推 `info`；不提醒 → 不推。设置里「推送什么」是总开关。
+
+## 4. 打开流程
+
+1. 没连过 → 连接页：填地址（默认 `https://opero.yimakeji.cn`）+ 配对码（可不填）。
+2. 配对过 → `POST /api/app/ticket` → 打开票地址；同时起常驻连接。
+3. 点通知 → 带 `route` 打开：网页开着就直接 `__operoNative.open(route)`，没开就等网页加载完再交。
+4. 开了「指纹解锁 App」→ 冷启动、离开超过设定时间回来先盖锁屏；打开系统的选文件、相机、安装界面回来不锁。
+
+## 5. 构建和发版
+
+- 版本号：`code/android/app/build.gradle.kts` 的 `versionName`（每次发改它，`versionCode` 也 +1）。
+- 流水线：组件 `android`（模板：装 JDK 21 + SDK，`assembleRelease`，取没签名的包）；依赖版本和 KidLock 安卓一致（那边在云效上编过）。
+- 签名：在超级后台的服务器上签（证书不进仓库、不进流水线）。**还缺 Opero 自己的签名证书**，需要在「签名证书」里建一个（`cn.yimakeji.opero`）。
+
+## 6. 还没做 / 以后
+
+- 扫码配对（网页显示二维码，App 扫）：要相机页，先用 6 位配对码。
+- iOS 外壳。
+- 官方推送中转（App 被杀后也能收到）。
+- 「分享到 Opero」（别的 App 分享文字 / 截图给某个员工）。

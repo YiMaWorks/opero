@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider：App 内更新给系统安装器读安装包；网页「拍照」给相机写照片 -->
+<paths>
+    <files-path name="update" path="update/" />
+    <cache-path name="camera" path="camera/" />
+</paths>

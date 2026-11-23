@@ -1,0 +1,62 @@
+<!doctype html>
+<!-- Opero 启动页（动画版，由 code/design-mockups/splash.py 生成，别手改）。网页 / 桌面 / App WebView 通用，和 opero-splash.gif 同一套动画。
+     用法：加载完成后给 #splash 加 class="done"，0.3 秒淡出。系统开了「减少动态效果」时直接显示最终画面。 -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opero</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  /* 默认深色；系统是浅色模式时用浅色。标志永远是品牌紫 + 薄荷绿点，字和标志不同色 */
+  #splash { --bg1: #1D1F33; --bg2: #0D0E17; --glow: rgba(124,108,255,.30); --m1: #A496FF; --m2: #6B5BF6;
+    --text: #FFFFFF; --slogan: .72; }
+  @media (prefers-color-scheme: light) {
+    #splash { --bg1: #FFFFFF; --bg2: #F1EFFF; --glow: rgba(124,108,255,.10); --m1: #7C6CFF; --m2: #4F3FE0;
+      --text: #171A26; --slogan: .62; }
+  }
+  #splash { position: fixed; inset: 0; transition: opacity .3s ease;
+    background: radial-gradient(55% 40% at 50% 44%, var(--glow), transparent),
+                linear-gradient(170deg, var(--bg1), var(--bg2)); }
+  .m1 { stop-color: var(--m1); } .m2 { stop-color: var(--m2); }
+  #splash.done { opacity: 0; pointer-events: none; }
+  svg { width: 100%; height: 100%; display: block; }
+  text { font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; fill: var(--text); }
+  .mark { transform: translate(180.0px, 268px) scale(1.5);
+    animation: settle .6s cubic-bezier(.65,0,.35,1) 1.25s forwards; }
+  .ring { fill: none; stroke: url(#mg); stroke-width: 13; stroke-linejoin: round; stroke-linecap: round;
+    stroke-dasharray: 100 100; stroke-dashoffset: 100; animation: draw .8s cubic-bezier(.33,1,.68,1) .1s forwards; }
+  .dot { fill: #2EE6B0; transform: scale(0); animation: pop .3s cubic-bezier(.34,1.9,.64,1) .85s forwards; }
+  .wave { fill: none; stroke: #2EE6B0; stroke-width: 2.4; opacity: 0; animation: wave 1s cubic-bezier(.33,1,.68,1) 2.6s infinite; }
+  .word { font-size: 72px; font-weight: 700; }
+  .ch { fill-opacity: 0; animation: rise .3s cubic-bezier(.33,1,.68,1) forwards; }
+  .slogan { font-size: 15px; opacity: 0; transform: translateY(6px); animation: slogan .4s cubic-bezier(.33,1,.68,1) 2.15s forwards; }
+  @keyframes settle { to { transform: translate(96.30px, 273.00px) scale(0.7488); } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @keyframes pop { to { transform: scale(1); } }
+  @keyframes wave { 0% { transform: scale(1); opacity: .6; } 100% { transform: scale(2.35); opacity: 0; } }
+  @keyframes rise { to { fill-opacity: 1; } }
+  @keyframes slogan { to { opacity: var(--slogan); transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .mark { animation: none; transform: translate(96.30px, 273.00px) scale(0.7488); }
+    .ring, .dot, .slogan { animation: none; stroke-dashoffset: 0; transform: none; opacity: 1; }
+    .ch { animation: none; fill-opacity: 1; }
+    .slogan { opacity: var(--slogan); } .wave { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="splash">
+  <svg viewBox="0 0 360 640" preserveAspectRatio="xMidYMid meet" aria-label="Opero">
+    <defs><linearGradient id="mg" x1="0" y1="0" x2="1" y2="1"><stop class="m1" offset="0"/><stop class="m2" offset="1"/></linearGradient></defs>
+    <g class="mark"><g transform="translate(-50 -50)">
+      <path class="ring" pathLength="100" d="M24.02,65.00 A30,30 0 1 1 35.92,76.49 L19.0,83.0 Z"/>
+      <circle class="wave" cx="50" cy="50" r="8.5" style="transform-box: fill-box; transform-origin: center"/>
+      <circle class="dot" cx="50" cy="50" r="8.5" style="transform-box: fill-box; transform-origin: center"/>
+    </g></g>
+    <text class="word" x="128.73" y="300"><tspan class="ch" style="animation-delay: 1.70s">p</tspan><tspan class="ch" style="animation-delay: 1.77s">e</tspan><tspan class="ch" style="animation-delay: 1.84s">r</tspan><tspan class="ch" style="animation-delay: 1.91s">o</tspan></text>
+    <text class="slogan" x="180.0" y="352" text-anchor="middle">和 AI 团队聊天，搞定开发</text>
+  </svg>
+</div>
+</body>
+</html>

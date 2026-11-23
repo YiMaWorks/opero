@@ -1,0 +1,16 @@
+# Files NOT copied to the public GitHub mirror (paths are relative to the repo root).
+# Internal notes, internal release pipeline, and agent instructions for our own build system.
+/docs/KidLock现状.md
+/docs/KidLock对照.md
+/docs/KidLock问题清单.md
+/docs/交接.md
+/docs/开源发布.md
+/docs/项目总纲.md
+/docs/Git管理.md
+/deploy/
+/CLAUDE.md
+/AGENTS.md
+__pycache__/
+node_modules/
+dist/
+out/

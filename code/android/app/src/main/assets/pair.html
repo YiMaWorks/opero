@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- 外壳自带的「连接你的 Opero」页：一人一套，第一次打开填自己那套的地址（+ 网页「我 → 账号安全 → 接手机」给的配对码）。
+     样式和网页 code/web/src/styles.css 一致；调外壳用 window.OperoNative.pair(地址, 配对码)，结果回 window.__operoPair(ok, 说明) -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>连接你的 Opero</title>
+<style>
+  :root { --bg: #F3F5F8; --panel: #FFFFFF; --text: #101826; --sub: #4B5668; --faint: #667286; --line: #E2E7EE;
+    --primary: #5B4FE9; --primary-soft: #EEECFE; --violet: #8B5CF6; --danger: #D92D20; --danger-soft: #FEECEB; --m1: #7C6CFF; --m2: #4F3FE0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0D0E10; --panel: #141518; --text: #F2F3F4; --sub: #A3A8AF; --faint: #8A9098; --line: #26292E;
+      --primary: #7C6CFF; --primary-soft: rgba(124,108,255,.14); --danger: #FF6B6B; --danger-soft: rgba(255,107,107,.12); --m1: #A496FF; --m2: #6B5BF6; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body { font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif; font-size: 14px; color: var(--text);
+    background: radial-gradient(60% 40% at 50% 22%, var(--primary-soft), transparent), var(--bg); -webkit-tap-highlight-color: transparent; }
+  main { max-width: 380px; margin: 0 auto; padding: 56px 24px 32px; display: flex; flex-direction: column; gap: 16px; }
+  .logo { display: flex; justify-content: center; }
+  h1 { margin: 4px 0 0; font-size: 22px; text-align: center; }
+  p { margin: 0; color: var(--sub); line-height: 1.7; text-align: center; }
+  label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--sub); font-weight: 500; }
+  input { height: 46px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 0 14px; font-size: 16px; outline: 0; }
+  input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+  .hint { font-size: 12px; color: var(--faint); font-weight: 400; line-height: 1.6; }
+  button { height: 46px; border: 0; border-radius: 10px; font-size: 16px; font-weight: 600; color: #fff;
+    background: linear-gradient(135deg, var(--primary), var(--violet)); }
+  button:disabled { opacity: .6; }
+  .err { display: none; background: var(--danger-soft); color: var(--danger); border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height: 1.6; }
+  .err.on { display: block; }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo">
+    <svg width="72" height="72" viewBox="0 0 100 100" aria-label="Opero">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" style="stop-color: var(--m1)"/><stop offset="1" style="stop-color: var(--m2)"/></linearGradient></defs>
+      <path d="M24.02,65.00 A30,30 0 1 1 35.92,76.49 L19.0,83.0 Z" fill="none" stroke="url(#g)" stroke-width="13" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="50" cy="50" r="8.5" fill="#2EE6B0"/>
+    </svg>
+  </div>
+  <h1>连接你的 Opero</h1>
+  <p>Opero 是一人一套：填你自己部署的那套的地址。</p>
+  <div class="err" id="err"></div>
+  <label>地址
+    <input id="server" inputmode="url" autocomplete="url" placeholder="https://opero.你的域名" />
+  </label>
+  <label>配对码
+    <input id="code" inputmode="numeric" maxlength="8" placeholder="6 位数字" />
+    <span class="hint">在电脑上打开 Opero →「我 → 账号安全 → 接手机」拿。配对后这台手机才能收提醒、用指纹验证本人；不填也能先打开看。</span>
+  </label>
+  <button id="go">连接</button>
+</main>
+<script>
+  const q = new URLSearchParams(location.search)
+  const $ = (id) => document.getElementById(id)
+  $('server').value = q.get('server') || ''
+  const showErr = (msg) => { $('err').textContent = msg; $('err').classList.toggle('on', !!msg) }
+  showErr(q.get('error') || '')
+  window.__operoPair = (ok, msg) => { $('go').disabled = false; $('go').textContent = '连接'; if (!ok) showErr(msg) }
+  $('go').onclick = () => {
+    const server = $('server').value.trim()
+    if (!server) { showErr('先填地址'); return }
+    showErr('')
+    $('go').disabled = true; $('go').textContent = '连接中…'
+    if (window.OperoNative) window.OperoNative.pair(server, $('code').value.trim())
+    else location.href = server
+  }
+</script>
+</body>
+</html>
