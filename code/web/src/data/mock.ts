@@ -119,7 +119,7 @@ export const seedMessages: Record<string, Message[]> = {
     { id: 'l2', from: 'lead', kind: 'text', at: '昨天', text: '已派给「发布」和「运维」，做完他们会把结果交回来，你不用盯。' },
   ],
   's-admin': [
-    { id: 'm1', from: 'admin', kind: 'text', at: '昨天', text: '新员工「crm 开发」建好了：执行器 Qwen Code，跑在 dev-1，工作空间 crm。' },
+    { id: 'm1', from: 'admin', kind: 'text', at: '昨天', text: '新员工「crm 开发」建好了：执行器 Qwen Code，跑在 dev-1，项目 crm。' },
   ],
   's-inbox': [
     { id: 'i1', from: 'inbox', kind: 'card', at: '09:30', card: {
@@ -262,7 +262,7 @@ export const seedChannels: Channel[] = [
 
 export const seedKb: KbDoc[] = [
   { id: 'kb1', name: 'shop 产品说明', kind: '产品说明', updated: '上周', by: '主人', summary: 'shop-api / shop-admin / short 是干什么的、用户是谁、主要流程' },
-  { id: 'kb2', name: '支付接口文档（微信 / 支付宝）', kind: '接口文档', updated: '11-18', by: 'shop 开发', summary: '下单、回调、退款、签名规则；商户密钥在「权限和凭证」' },
+  { id: 'kb2', name: '支付接口文档（微信 / 支付宝）', kind: '接口文档', updated: '11-18', by: 'shop 开发', summary: '下单、回调、退款、签名规则；商户密钥在「凭证」' },
   { id: 'kb3', name: '大客户名单和联系人', kind: '客户信息', updated: '11-10', by: '主人', summary: 'Lily（导出报表）、张总（评审）…… 消息助理判断「为什么给你看」时会查' },
   { id: 'kb4', name: '发版规范', kind: '规范', updated: '11-02', by: '发布', summary: '冻结窗口、版本号规则、回滚条件' },
   { id: 'kb5', name: 'crm 首页改版需求', kind: '其它', updated: '11-17', by: 'crm 开发', summary: '两个方案的截图和取舍' },

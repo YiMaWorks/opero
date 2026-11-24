@@ -5,7 +5,10 @@ import type { Approval, Effort } from './types'
 const MODELS: Record<string, string[]> = {
   'Claude Code': ['Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1'],
 }
-export const modelsFor = (executor: string) => MODELS[executor] ?? ['执行器默认']
+/** 真的一套：后台从 Anthropic / OpenAI 读到的完整列表（GET /api/ai/models），读到了就用它 */
+let liveModels: { claude: string[]; codex: string[] } | null = null
+export const setLiveModels = (m: { claude: string[]; codex: string[] }) => { liveModels = m }
+export const modelsFor = (executor: string) => (liveModels ? (/codex/i.test(executor) ? liveModels.codex : liveModels.claude) : null) ?? MODELS[executor] ?? ['执行器默认']
 
 export const EFFORTS: { value: Effort; label: string; desc: string }[] = [
   { value: 'low', label: '低', desc: '最快，简单问答' },

@@ -132,6 +132,19 @@ export function Sheet({ title, onClose, children, size }: { title?: string; onCl
   )
 }
 
+/** 右边侧滑出来的面板（电脑）/ 底部弹层（手机）：选东西、看详情用，列表再长也放得下 */
+export function Drawer({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
+  return (
+    <div className="modal-mask drawer-mask" onClick={onClose}>
+      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-head"><b>{title}</b><button className="icon-btn" onClick={onClose} aria-label="关闭"><IconClose /></button></div>
+        <div className="drawer-body">{children}</div>
+        {footer && <div className="drawer-foot">{footer}</div>}
+      </aside>
+    </div>
+  )
+}
+
 export function StatusDot({ tone }: { tone: 'ok' | 'warn' | 'danger' | 'mute' }) {
   return <i className={'sdot s-' + tone} />
 }

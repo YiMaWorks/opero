@@ -1,5 +1,5 @@
-// 合并请求：员工在自己的分支上改（员工设置「在自己的分支上改」），干完用 pr_create 提到工作空间的主分支。
-// 支持 GitHub / GitLab（含自建）/ Gitee / Codeup，用工作空间的仓库令牌（保险箱里的，员工拿不到）。状态不在后台轮询，看的时候现查。
+// 合并请求：员工在自己的分支上改（员工设置「在自己的分支上改」），干完用 pr_create 提到项目的主分支。
+// 支持 GitHub / GitLab（含自建）/ Gitee / Codeup，用项目的仓库令牌（保险箱里的，员工拿不到）。状态不在后台轮询，看的时候现查。
 import { get } from './db.ts'
 import { getSecret } from './vault.ts'
 import type { Credential, Workspace } from './types.ts'
@@ -19,7 +19,7 @@ export function parseRepo(url: string): { provider: 'github' | 'gitlab' | 'gitee
 
 function token(w: Workspace): string {
   const t = w.credential ? getSecret(w.credential) : undefined
-  if (!t) throw new Error('这个工作空间没配仓库令牌：在工作空间页选一个「代码仓库」凭证（要有建合并请求的权限）')
+  if (!t) throw new Error('这个项目没配仓库令牌：在项目页选一个「代码仓库」凭证（要有建合并请求的权限）')
   return t
 }
 

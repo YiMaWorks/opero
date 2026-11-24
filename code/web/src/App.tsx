@@ -22,6 +22,7 @@ import { applyTheme, resolveTheme, themeVars } from './themes'
 import { LIVE } from './mode'
 import { cardAction } from './live'
 import { LiveLogin, LiveSetup } from './pages/live'
+import { fromHash, toHash } from './router'
 
 function useMobile() {
   const q = '(max-width: 860px)'
@@ -38,7 +39,7 @@ function useMobile() {
 const TABS: { tab: Tab; label: string; desktopOnly?: boolean }[] = [
   { tab: 'chat', label: '会话' },
   { tab: 'people', label: '员工' },
-  { tab: 'workspace', label: '工作空间' },
+  { tab: 'workspace', label: '项目' },
   { tab: 'apps', label: '应用', desktopOnly: true },
   { tab: 'me', label: '我' },
 ]
@@ -59,10 +60,18 @@ export default function App() {
   const verify = useStore((s) => s.verify)
   const [splash, setSplash] = useState(true)
   const hideSplash = useCallback(() => setSplash(false), [])
-  const [tab, setTab] = useState<Tab>('chat')
-  const [stacks, setStacks] = useState<Record<Tab, Route[]>>(ROOTS)
-  const [current, setCurrent] = useState<string | null>(null)
-  const [panel, setPanel] = useState<Route[] | null>(null)
+  // 刷新 / 重载后回到网址里记的那页（router.ts）
+  const [start] = useState(() => fromHash(location.hash))
+  const [tab, setTab] = useState<Tab>(start?.tab ?? 'chat')
+  const [stacks, setStacks] = useState<Record<Tab, Route[]>>(() => {
+    if (!start || start.tab === 'chat' || !start.stack.length) return ROOTS
+    const root = ROOTS[start.tab][0]
+    // 手机上每个页签最底下是根页（返回回到它）；电脑上左边菜单选的那页就是底
+    const st = mobile && start.stack[0].page !== root.page ? [root, ...start.stack] : start.stack
+    return { ...ROOTS, [start.tab]: st }
+  })
+  const [current, setCurrent] = useState<string | null>(start?.session ?? null)
+  const [panel, setPanel] = useState<Route[] | null>(start?.panel ?? null)
   const [search, setSearch] = useState(false)
   const [newChat, setNewChat] = useState(false)
   const [themeSheet, setThemeSheet] = useState(false)
@@ -95,6 +104,7 @@ export default function App() {
     if (s) { curEmp.current = s.employee; return }
     const n = current && curEmp.current ? sessions.find((x) => x.employee === curEmp.current) : undefined
     if (n) setCurrent(n.id)
+    else if (current && !curEmp.current && sessions.length) setCurrent(null) // 网址里的会话已经没了
   }, [current, sessions])
 
   const stack = stacks[tab]
@@ -238,8 +248,19 @@ export default function App() {
       histDepth.current = depth
     }
   }, [depth])
+  // 界面变了就改网址（替换当前这一条，不多记历史；返回键那套照旧）。没登录时不动，登录完还回到原来那页
+  const hash = toHash({ tab, session: current, stack, panel })
+  const hashRef = useRef(hash)
+  hashRef.current = hash
+  const ready = authState.loggedIn && authState.setupDone
+  const syncUrl = useCallback(() => {
+    if (location.hash !== hashRef.current) history.replaceState(history.state, '', location.pathname + location.search + hashRef.current)
+  }, [])
+  useEffect(() => { if (ready) syncUrl() }, [hash, ready, syncUrl])
   useEffect(() => {
     const onPop = () => {
+      // 退回到的那条历史带着旧网址：等这一层关完再写成现在的
+      window.setTimeout(() => { if (getState().auth.loggedIn) syncUrl() }, 0)
       if (ignorePop.current) { ignorePop.current = false; return }
       if (histDepth.current > 0) histDepth.current -= 1
       closeTop.current()

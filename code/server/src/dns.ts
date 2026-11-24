@@ -22,6 +22,21 @@ export function check(r: { rr: string; type: string; value: string; ttl?: number
   return ''
 }
 
+/** 阿里云 AccessKey ID：新的凭证放在 meta.akId，以前的放在用户名 */
+const keyIdOf = (c: Credential) => c.meta?.akId ?? c.user ?? ''
+
+/** 这个云账号下有哪些域名（登记域名时点一个就行） */
+export async function zonesOf(c: Credential): Promise<{ provider: Domain['provider']; domains: string[] }> {
+  const secret = getSecret(c.id)
+  if (!secret) throw new Error('这个凭证没有存值')
+  if (/cloudflare/i.test(c.kind) || (!c.meta?.akId && !c.user)) {
+    const z = await cf(secret, 'GET', '/zones?per_page=50')
+    return { provider: 'cloudflare', domains: (z ?? []).map((x: any) => String(x.name)) }
+  }
+  const j = await ali(keyIdOf(c), secret, 'DescribeDomains', { PageSize: 100 })
+  return { provider: 'aliyun', domains: (j?.Domains?.Domain ?? []).map((x: any) => String(x.DomainName)) }
+}
+
 function creds(d: Domain): { c: Credential; secret: string } {
   const c = get<Credential>('credentials', d.cred)
   const secret = getSecret(d.cred)
@@ -70,7 +85,7 @@ export async function list(d: Domain): Promise<DnsRecord[]> {
     const rs = await cf(secret, 'GET', `/zones/${z}/dns_records?per_page=500`)
     return (rs ?? []).map((x: any) => ({ id: x.id, rr: rrOf(x.name, d.domain), type: x.type, value: x.content, ttl: x.ttl, priority: x.priority, proxied: x.proxied }))
   }
-  const j = await ali(c.user ?? '', secret, 'DescribeDomainRecords', { DomainName: d.domain, PageSize: 500 })
+  const j = await ali(keyIdOf(c), secret, 'DescribeDomainRecords', { DomainName: d.domain, PageSize: 500 })
   return (j.DomainRecords?.Record ?? []).map((x: any) => ({ id: x.RecordId, rr: x.RR, type: x.Type, value: x.Value, ttl: x.TTL, priority: x.Priority }))
 }
 
@@ -89,7 +104,7 @@ export async function set(d: Domain, r: { rr: string; type: string; value: strin
   }
   const ttl = [600, 1800, 3600, 43200, 86400].includes(Number(r.ttl)) ? Number(r.ttl) : 600
   const base = { RR: r.rr, Type: r.type, Value: r.value, TTL: ttl, ...(r.type === 'MX' ? { Priority: r.priority ?? 10 } : {}) }
-  const j = old ? await ali(c.user ?? '', secret, 'UpdateDomainRecord', { RecordId: old.id, ...base }) : await ali(c.user ?? '', secret, 'AddDomainRecord', { DomainName: d.domain, ...base })
+  const j = old ? await ali(keyIdOf(c), secret, 'UpdateDomainRecord', { RecordId: old.id, ...base }) : await ali(keyIdOf(c), secret, 'AddDomainRecord', { DomainName: d.domain, ...base })
   return { before: old, after: { id: j.RecordId ?? old?.id, rr: r.rr, type: r.type, value: r.value, ttl } }
 }
 
@@ -98,6 +113,6 @@ export async function remove(d: Domain, id: string): Promise<DnsRecord | undefin
   const old = (await list(d)).find((x) => x.id === id)
   if (!old) throw new Error('没有这条记录（dns_list 看 id）')
   if (d.provider === 'cloudflare') await cf(secret, 'DELETE', `/zones/${await zone(secret, d.domain)}/dns_records/${id}`)
-  else await ali(c.user ?? '', secret, 'DeleteDomainRecord', { RecordId: id })
+  else await ali(keyIdOf(c), secret, 'DeleteDomainRecord', { RecordId: id })
   return old
 }

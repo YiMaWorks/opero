@@ -180,4 +180,23 @@ export function isReadOnly(cmd: string): boolean {
 }
 
 /** 明显危险：不管审核方式，都要你本人确认 */
-export const DANGER = /\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\*)|\bmkfs\b|\bdd\s+if=|\bshutdown\b|\breboot\b|\bpoweroff\b|\binit\s+0\b|:\(\)\s*\{|\bchmod\s+-R\s+777\s+\/|\bdrop\s+(database|table)\b|\btruncate\s+table\b|\bgit\s+push\s+.*--force\b|\biptables\s+-F\b/i
+const DANGER_OTHER = /\bmkfs\b|\bdd\s+if=|\bshutdown\b|\breboot\b|\bpoweroff\b|\binit\s+0\b|:\(\)\s*\{|\bchmod\s+-R\s+777\s+\/|\bdrop\s+(database|table)\b|\btruncate\s+table\b|\bgit\s+push\s+.*--force\b|\biptables\s+-F\b/i
+/** 删的东西危险不危险：根、家目录、系统目录、只有一两层的路径（/home、/srv/app）、带变量 / 通配根的才算；/tmp 下面、更深的子目录、相对路径不算 */
+function dangerousRm(raw: string): boolean {
+  // 先把命令里的简单赋值（D=/tmp/x、export D="/srv/a/b"）代进去：rm -rf $D 删的其实是 /tmp/x
+  const vars = new Map<string, string>()
+  for (const m of raw.matchAll(/(?:^|[;&|\s])(?:export\s+)?([A-Za-z_]\w*)=(["']?)([^\s;&|"'$`]+)\2(?=[\s;&|]|$)/g)) vars.set(m[1], m[3])
+  const cmd = raw.replace(/"?\$\{?([A-Za-z_]\w*)\}?"?/g, (all, n) => vars.get(n) ?? all)
+  for (const m of cmd.matchAll(/\brm\s+((?:-[a-zA-Z]+\s+)*)([^;&|]*)/g)) {
+    if (!/r/i.test(m[1])) continue
+    for (const t of m[2].trim().split(/\s+/).filter(Boolean)) {
+      if (/^(\/|~|~\/|\*|\/\*|\.|\.\.|\.\/\*?)$/.test(t) || /\$|`/.test(t)) return true
+      if (/^\/(tmp|var\/tmp)\/./.test(t)) continue
+      if (t.startsWith('/') && t.replace(/\/+$/, '').split('/').filter(Boolean).length <= 2) return true
+      if (/^\/(etc|usr|bin|sbin|lib|lib64|boot|proc|sys|dev|root)(\/|$)/.test(t)) return true
+    }
+  }
+  return false
+}
+/** 危险命令（要主人确认）：删根 / 系统目录、格式化、关机、删库、强推…… */
+export const DANGER = { test: (cmd: string) => DANGER_OTHER.test(cmd) || dangerousRm(cmd) }

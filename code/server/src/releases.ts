@@ -1,4 +1,4 @@
-// 发布：工作空间的发布环境（Workspace.deploys）一次一次地发，每次一条记录（coll releases），网页「发布」能看、能回滚。
+// 发布：项目的发布环境（Workspace.deploys）一次一次地发，每次一条记录（coll releases），网页「发布」能看、能回滚。
 //   编译（build.ts：云效 / GitHub Actions / 自己的服务器，产物约定 out/ + SHA256SUMS / VERSION / COMMIT）→ 拿到 Opero 这台、核对 SHA256
 //   → 发到环境的每台服务器（Agent 从 Opero 拿，带 sha256；派活本身有 Opero 的签名，Agent 只认它）→ 解开 → 签名（apk / aab，可选）
 //   → 部署：包里有部署脚本就 bash <脚本> <包目录> <发布编号>（OPERO_DIR = KL_DIR = 部署目录），没有就跑环境的部署命令，都没有就把产物复制进部署目录

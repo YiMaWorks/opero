@@ -2,7 +2,7 @@
 // 和会话页一样的三栏：左边窄栏 · 目录 340 · 内容。手机不用它（手机还是一页一页进）。
 import { useState, type ReactNode } from 'react'
 import type { Route, Tab } from '../types'
-import { logout, useStore } from '../store'
+import { logout, togglePin, useStore } from '../store'
 import { Avatar } from './Avatar'
 import { IconPlus, IconSearch, TabIcon } from './icons'
 import { LIVE } from '../mode'
@@ -41,12 +41,18 @@ export function SideNav({ tab, active, onPick }: Props) {
       <>
         {item({ page: 'employees' }, '全部员工', <TabIcon tab="people" />, <em>{s.employees.length}</em>)}
         <div className="side-sep" />
-        {s.employees.filter((e) => match(e.name + e.title)).map((e) =>
-          item({ page: 'employee', params: { id: e.id } }, e.name, <Avatar id={e.id} size={32} />, undefined, e.title))}
+        {s.employees.filter((e) => match(e.name + e.title))
+          // 置顶的（和会话列表同一个置顶）排前面
+          .map((e) => ({ e, ss: s.sessions.find((x) => x.employee === e.id) }))
+          .sort((a, b) => Number(!!b.ss?.pinned) - Number(!!a.ss?.pinned))
+          .map(({ e, ss }) => item({ page: 'employee', params: { id: e.id } }, e.name, <Avatar id={e.id} size={32} />,
+            ss ? <span role="button" tabIndex={0} className={'side-pin' + (ss.pinned ? ' on' : '')} title={ss.pinned ? '取消置顶' : '置顶'} onClick={(ev) => { ev.stopPropagation(); togglePin(ss.id) }}>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill={ss.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 17v5M9 3h6l-1 6 4 3v2H6v-2l4-3z" /></svg>
+            </span> : undefined, e.title))}
       </>
     )
   } else if (tab === 'workspace') {
-    title = '工作空间'
+    title = '项目'
     action = { label: '接入仓库', route: { page: 'workspaceAdd' } }
     const open = LIVE ? s.liveIssues.filter((i) => i.status === 'new' || i.status === 'fixing').length : s.issues.filter((i) => i.status === 'new' || i.status === 'watching' || i.status === 'fixing').length
     body = (
@@ -63,7 +69,7 @@ export function SideNav({ tab, active, onPick }: Props) {
     action = LIVE ? null : { label: '定制和二开', route: { page: 'customize' } }
     const list: [Route['page'], string, string, string][] = LIVE ? [
       ['servers', '服务器和 Agent', '服', `${s.servers.length}`],
-      ['credentials', '权限和凭证', '权', `${s.credentials.length}`],
+      ['credentials', '凭证', '凭', `${s.credentials.length}`],
       ['data', '数据', '数', `${s.dataSources.length}`],
       ['triggers', '触发器', '触', `${s.triggers.filter((t) => t.enabled).length}`],
       ['knowledge', '知识库', '知', `${s.kb.length}`],
@@ -71,7 +77,7 @@ export function SideNav({ tab, active, onPick }: Props) {
     ] : [
       ['servers', '服务器和电脑', '服', `${s.servers.length}`],
       ['releases', '发布', '发', `${s.apps.length}`],
-      ['credentials', '权限和凭证', '权', `${s.credentials.length}`],
+      ['credentials', '凭证', '凭', `${s.credentials.length}`],
       ['channels', '消息渠道', '信', `${s.channels.filter((c) => c.inbound).length}`],
       ['inbox', '收件箱', '收', ''],
       ['knowledge', '知识库', '知', `${s.kb.length}`],

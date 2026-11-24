@@ -40,6 +40,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const [text, setText] = useState('')
   const [voice, setVoice] = useState(mobile && !LIVE) // 语音转文字还没接：真的一套默认打字
   const [sheet, setSheet] = useState<null | 'more' | 'attach' | 'work' | 'menus' | 'attachD' | 'phrases'>(null)
+  // 「先不换」：这一档（每 10%）不再提醒，涨到下一档再提醒；换不换由主人决定
+  const [ctxDismissed, setCtxDismissed] = useState('')
   const phrases = useStore((s) => s.settings.phrases) ?? NO_PHRASES
   const [rec, setRec] = useState<null | { start: number; y: number; cancel: boolean; secs: number }>(null)
   // 像 IM：往上翻着看时来了新消息，右下角出「↓ N 条新消息」
@@ -49,6 +51,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const [msgMenu, setMsgMenu] = useState<null | { m: Message; x: number; y: number }>(null)
   const [forward, setForward] = useState<Message | null>(null)
   const server = useStore((s) => s.servers.find((x) => x.name === emp?.host || x.id === emp?.host))
+  const ws = useStore((s) => s.workspaces.find((w) => w.id === emp?.workspace))
   // 真的一套：附件先传（输入框上面一排），跟着下一句话一起发；员工在干活时可以排队（带着附件）
   const allQueue = useStore((s) => s.queue)
   const myQueue = allQueue.filter((q) => q.emp === session.employee).sort((a, b) => a.at - b.at)
@@ -185,9 +188,12 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <span className="meta-chips">
                 <span className="meta-chip">{emp.title}</span>
                 <span className="meta-chip">{emp.executor}</span>
-                <span className="meta-chip">{emp.host}</span>
-                {emp.workspace && <span className="meta-chip branch">⎇ {emp.workspace}</span>}
+                <span className="meta-chip">{server ? (server.id === 'local' && server.name === '本机' ? 'Opero 这台' : server.name) : emp.host}</span>
+                {ws && <span className="meta-chip branch" title={ws.name}>{ws.name} · ⎇ {ws.branch || '…'}</span>}
                 {server && <ServerLoad cpu={server.cpu} mem={server.mem} online={server.online} />}
+                <button type="button" className={'meta-chip work-chip' + ((emp.contextUsed ?? 0) >= 80 ? ' hot' : '')} title="模型、思考方式、审核方式、上下文：点开改" onClick={() => setSheet('work')}>
+                  {emp.model} · 思考{effortLabel(emp.effort)} · {approvalShort(emp.approval)} · 上下文 {emp.contextUsed ?? 0}%
+                </button>
               </span>
             )}
         </div>
@@ -207,7 +213,9 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         {messages.length === 0 && <p className="hint center">还没有消息，跟「{emp.name}」说点什么吧。</p>}
         {messages.map((m, i) => (
           <MessageView key={m.id} m={m} owner={emp.id} showTime={!!m.at && m.at !== messages[i - 1]?.at && m.kind !== 'status'}
-            onCardAction={onCardAction} onMenu={(x, y) => { nativeHaptic(); setMsgMenu({ m, x, y }) }} />
+            onCardAction={onCardAction} onMenu={(x, y) => { nativeHaptic(); setMsgMenu({ m, x, y }) }}
+            onCopy={() => { navigator.clipboard?.writeText(msgText(m)); toast('已复制') }} onForward={() => setForward(m)}
+            working={session.working} onStop={session.working ? () => stopWorking(session.id) : undefined} />
         ))}
         <div className="msgs-end" />
       </div>
@@ -248,14 +256,15 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         </Sheet>
       )}
 
-      {((emp.contextUsed ?? 0) >= 80 || (LIVE && messages.length >= 300)) && !session.working && (
+      {((emp.contextUsed ?? 0) >= 80 || (LIVE && messages.length >= 300)) && !session.working && ctxDismissed !== `${session.id}:${Math.floor((emp.contextUsed ?? 0) / 10)}` && (
         <div className="ctx-warn">
           <span>{(emp.contextUsed ?? 0) >= 80 ? `上下文用了 ${emp.contextUsed}%，快满了` : '这个会话很长了'}</span>
           {!LIVE && <button className="btn ghost sm" onClick={() => compactContext(session.id, emp.id)}>压缩</button>}
+          <button className="btn ghost sm" onClick={() => setCtxDismissed(`${session.id}:${Math.floor((emp.contextUsed ?? 0) / 10)}`)}>先不换</button>
           <button className="btn primary sm" onClick={() => switchWork(session.id, emp.id, '上下文快满了')}>{LIVE ? '开新会话接着做' : '换 work'}</button>
         </div>
       )}
-      {session.working && (
+      {session.working && !messages.some((x) => x.kind === 'status' && x.spinning) && (
         <div className="working-bar">
           <i className="spinner" /><span>{session.working}</span>
           {!mobile && <button className="btn stop" onClick={() => stopWorking(session.id)}>停止</button>}
@@ -352,18 +361,6 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         ) : (
           <>
             <div className="composer-ctl">
-              <select className="ctl-select" value={emp.model} title="模型（选了就记住）" onChange={(e) => setWork(emp.id, { model: e.target.value })}>
-                {modelsFor(emp.executor).map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-              <select className="ctl-select" value={emp.effort} title="思考方式" onChange={(e) => setWork(emp.id, { effort: e.target.value as typeof emp.effort })}>
-                {EFFORTS.map((x) => <option key={x.value} value={x.value}>思考{x.label}</option>)}
-              </select>
-              <div className="seg sm" title="审核方式">
-                {APPROVALS.map((a) => (
-                  <button key={a.value} className={emp.approval === a.value ? 'on' : ''} title={a.desc} onClick={() => setWork(emp.id, { approval: a.value })}>{a.short}</button>
-                ))}
-              </div>
-              <button className={'ctx-chip' + ((emp.contextUsed ?? 0) >= 80 ? ' hot' : '')} onClick={() => setSheet('work')} title="上下文：压缩 / 新话题 / 换 work">上下文 {emp.contextUsed ?? 0}%</button>
               {LIVE && <button className="ctx-chip" onClick={() => setSheet('phrases')} title="常用语：点一下填进输入框">常用语</button>}
               {emp.menus.length > 0 && (
                 <>
@@ -483,19 +480,31 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
 const msgText = (m: Message) => m.text ?? (m.card ? String(m.card.data.title ?? '') : m.file?.name ?? '')
 
 // 像微信：每条消息左边（对方）/ 右边（我）带头像，气泡带小尖角；时间不一样时中间插一条时间
-function MessageView({ m, owner, showTime, onCardAction, onMenu }: {
-  m: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void
+function MessageView({ m, owner, showTime, onCardAction, onMenu, onCopy, onForward, working, onStop }: {
+  m: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void; onCopy: () => void; onForward: () => void
+  working?: string; onStop?: () => void
 }) {
   const press = useRef<number | null>(null)
   const time = showTime ? <div className="time-sep">{m.at}</div> : null
   if (m.kind === 'system') return <>{time}<div className="sys-line"><span>{m.text}</span></div></>
   if (m.kind === 'status') {
-    return (
-      <div className="status-line">
-        {m.spinning ? <i className="spinner" /> : <i className="dot-ok" />}
-        <span>{m.text}</span>
-      </div>
-    )
+    // 员工在干活：和消息一样带它的头像，气泡里跳三个点 + 它现在在做什么，旁边「停止」（像聊天软件的「对方正在输入」）
+    if (m.spinning) {
+      const what = (working || m.text || '').replace(new RegExp(`^${empName(owner).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`), '')
+      return (
+        <div className="msg-row typing-row">
+          <span className="msg-av"><Avatar id={owner} size={38} /></span>
+          <div className="msg-col">
+            <div className="bubble typing">
+              <span className="typing-dots"><i /><i /><i /></span>
+              <span className="typing-what">{what || '在想…'}</span>
+              {onStop && <button type="button" className="typing-stop" onClick={onStop} title="让它停下">停止</button>}
+            </div>
+          </div>
+        </div>
+      )
+    }
+    return <div className="status-line"><i className="dot-ok" /><span>{m.text}</span></div>
   }
   const me = m.from === 'me'
   // 长按 0.5 秒（手机）/ 右键（电脑）出菜单
@@ -522,6 +531,12 @@ function MessageView({ m, owner, showTime, onCardAction, onMenu }: {
         <div className="msg-col">
           {!me && m.from !== owner && <span className="bubble-who">{empName(m.from)}</span>}
           {body}
+          {(m.text || m.card || m.file) && (
+            <span className="msg-acts">
+              {(m.text || m.card) && <button type="button" title="复制" onClick={onCopy}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>复制</button>}
+              <button type="button" title="转发给别的员工" onClick={onForward}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l6 6-6 6" /><path d="M21 11H9a6 6 0 0 0-6 6v2" /></svg>转发</button>
+            </span>
+          )}
         </div>
       </div>
     </>

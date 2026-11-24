@@ -2,6 +2,8 @@
 // 要你决定的（审核、确认、选方案、危险命令、改数据）先在会话里发一张卡片，等你点了再回给 AI。
 import fs from 'node:fs'
 import path from 'node:path'
+import * as hosts from './hosts.ts'
+import * as agents from './agents.ts'
 import { cfg } from './config.ts'
 import { all, db, get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit } from './bus.ts'
@@ -10,14 +12,18 @@ import { DANGER, execOn, isReadOnly } from './ssh.ts'
 import { isReadSql, resultText, runQuery } from './dbconn.ts'
 import { git, syncWorkspace } from './git.ts'
 import * as runner from './runner.ts'
+import { switchAndTell } from './branch.ts'
 import type { Card, Credential, DataSource, Employee, KbDoc, Release, Server, Workspace } from './types.ts'
 import { isProtected } from './env.ts'
-import { checkCommand, policyOf } from './policy.ts'
+import { buildNeed, checkCommand, policyOf } from './policy.ts'
+import { hostRes } from './resources.ts'
 import { buildScan } from './logscan.ts'
 import * as issues from './issues.ts'
 import * as releases from './releases.ts'
 import { signFile } from './signing.ts'
 import { providerName } from './build.ts'
+import * as build from './build.ts'
+import * as buildjobs from './buildjobs.ts'
 import * as prs from './prs.ts'
 import * as dns from './dns.ts'
 import * as inbox from './inbox.ts'
@@ -32,10 +38,11 @@ const str = (description: string) => ({ type: 'string', description })
 
 export const TOOLS = [
   { name: 'approve', description: 'Permission check used by Claude Code before running a tool (internal).', inputSchema: S({ tool_name: { type: 'string' }, input: { type: 'object' } }) },
-  { name: 'list_servers', description: 'List the servers the owner connected to Opero (name, environment, OS, online, CPU/memory/disk). No credentials.', inputSchema: S({}) },
+  { name: 'list_servers', description: 'List the servers the owner connected to Opero (name, environment, OS, online, CPU/memory/disk, registered logs). No credentials.', inputSchema: S({}) },
   { name: 'server_exec', description: 'Run a shell command on one of the owner\'s servers through Opero (Opero holds the SSH credentials; you only get the output). Read-only commands run right away; anything that changes the server may need the owner to approve a card first. Always say why.', inputSchema: S({ server: str('server name or id from list_servers'), command: str('shell command'), reason: str('one line: why you need this') }, ['server', 'command', 'reason']) },
   { name: 'list_databases', description: 'List the databases the owner connected (name, MySQL/PostgreSQL, environment, writable, tables).', inputSchema: S({}) },
   { name: 'db_query', description: 'Run SQL on one of the owner\'s databases through Opero. SELECT/SHOW/EXPLAIN run in a read-only transaction (15 s timeout, 200 rows max, sensitive columns masked). Writes only on databases marked writable and always need the owner to approve.', inputSchema: S({ database: str('database name or id from list_databases'), sql: str('one SQL statement'), reason: str('one line: why') }, ['database', 'sql', 'reason']) },
+  { name: 'switch_branch', description: 'Switch your project (workspace) to another Git branch. Every employee of this project shares the same checkout, so they all switch with you; uncommitted changes are stashed first. Use when the owner asks to work on another branch.', inputSchema: S({ branch: str('branch name (existing local or remote branch, or a new one)') }, ['branch']) },
   { name: 'git_sync', description: 'Fetch the latest code of your workspace from its Git remote with the owner\'s token (you cannot fetch/pull/push yourself), optionally rebase onto it and push your commits. Commit first if you want to push.', inputSchema: S({ workspace: str('workspace name or id (default: yours)'), rebase: { type: 'boolean', description: 'rebase current branch onto its upstream (default true, only when clean)' }, push: { type: 'boolean', description: 'push HEAD to origin (default false)' } }) },
   { name: 'ask_owner', description: 'Ask the owner to pick one of a few options (shown as a card in the chat). Waits for the answer (up to 30 minutes) and returns the chosen option.', inputSchema: S({ question: str('the question'), options: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 6 }, recommend: { type: 'integer', description: 'index of the option you recommend' } }, ['question', 'options']) },
   { name: 'confirm', description: 'Ask the owner to approve something irreversible or production-affecting before you do it (a card with the details). Waits for the answer and returns approved / denied.', inputSchema: S({ title: str('what you want to do, short'), detail: str('the exact command / change'), why: str('why, and what could go wrong'), danger: { type: 'boolean', description: 'true = the owner must verify identity' } }, ['title', 'detail', 'why']) },
@@ -46,7 +53,7 @@ export const TOOLS = [
   { name: 'kb_save', description: 'Add or update a knowledge-base doc (by name) so every employee can use it.', inputSchema: S({ name: str('doc name'), kind: { type: 'string', enum: ['产品说明', '接口文档', '客户信息', '规范', '其它'] }, summary: str('one line'), body: str('markdown') }, ['name', 'body']) },
   { name: 'list_employees', description: 'List the other AI employees (id, name, role) you can delegate to.', inputSchema: S({}) },
   { name: 'delegate', description: 'Hand a task to another employee. It shows up in that employee\'s chat and it starts working on it.', inputSchema: S({ employee: str('employee id or name'), message: str('the task, with all context it needs') }, ['employee', 'message']) },
-  { name: 'log_scan', description: 'Analyse logs on a server without dumping them. mode: hist = matching lines per minute/10 min/hour (when did it start, is it still happening); first = first occurrences with following lines (stack traces); last = latest occurrences; top = error kinds and failing lines, counted (numbers/ids folded); grep = matching lines. Default pattern matches ERROR/Exception/FATAL/Traceback. Read-only.', inputSchema: S({ server: str('server name or id'), file: str('absolute log file path (may contain *)'), service: str('or a systemd service name (journalctl)'), mode: { type: 'string', enum: ['top', 'hist', 'first', 'last', 'grep'] }, grep: str('extended regex to match (optional)'), since_min: { type: 'integer', description: 'journalctl only: last N minutes (default 60)' }, bucket: { type: 'string', enum: ['1m', '10m', '1h'] }, limit: { type: 'integer' }, before: { type: 'integer' }, after: { type: 'integer' }, rotated: { type: 'boolean', description: 'also read rotated files (.1, .gz)' } }, ['server']) },
+  { name: 'log_scan', description: 'Analyse logs on a server without dumping them. mode: hist = matching lines per minute/10 min/hour (when did it start, is it still happening); first = first occurrences with following lines (stack traces); last = latest occurrences; top = error kinds and failing lines, counted (numbers/ids folded); grep = matching lines. Default pattern matches ERROR/Exception/FATAL/Traceback. Give neither file nor service to scan every log the owner registered on that server (list_servers shows them). Read-only.', inputSchema: S({ server: str('server name or id'), file: str('absolute log file path (may contain *)'), service: str('or a systemd service name (journalctl)'), mode: { type: 'string', enum: ['top', 'hist', 'first', 'last', 'grep'] }, grep: str('extended regex to match (optional)'), since_min: { type: 'integer', description: 'journalctl only: last N minutes (default 60)' }, bucket: { type: 'string', enum: ['1m', '10m', '1h'] }, limit: { type: 'integer' }, before: { type: 'integer' }, after: { type: 'integer' }, rotated: { type: 'boolean', description: 'also read rotated files (.1, .gz)' } }, ['server']) },
   { name: 'file_write', description: 'Write a file on one of the owner\'s servers (config files etc.). The old file is backed up next to it first (<path>.bak-<time>). Always needs the owner to approve a card. Use {{secret:<credential name>}} for passwords/keys — Opero fills them in, you never see them.', inputSchema: S({ server: str('server name or id'), path: str('absolute path'), content: str('full new content'), reason: str('one line: why') }, ['server', 'path', 'content', 'reason']) },
   { name: 'list_credentials', description: 'List the credentials the owner allowed employees to use (names only, never values). Put {{secret:<name>}} in a server_exec command or file_write content and Opero fills in the value; output is masked.', inputSchema: S({}) },
   { name: 'issue_list', description: 'List the issue list (production problems found in logs): id, title, status new/fixing/fixed/known/ignored, severity, count, where.', inputSchema: S({ status: { type: 'string', enum: ['new', 'fixing', 'fixed', 'known', 'ignored'] } }) },
@@ -65,6 +72,11 @@ export const TOOLS = [
   { name: 'inbox_draft', description: 'Save a reply draft for an inbox item (in the sender\'s language, plus the Chinese meaning). The owner copies and sends it — you can never send.', inputSchema: S({ id: str('inbox item id'), text: str('the draft') }, ['id', 'text']) },
   { name: 'release_list', description: 'List the release targets of the workspaces (name, servers, whether build/sign/health check is set, your release permission auto/ask/off) and their latest releases.', inputSchema: S({ workspace: str('workspace name or id (optional)') }) },
   { name: 'release_publish', description: 'Release a workspace to one of its targets: Opero takes the latest commit on the remote branch, builds / signs if configured, deploys, health-checks, and rolls back automatically on failure. Push your code first. Permission per target: auto = goes right away, ask = the owner approves a card, off = refused. Returns right away; progress shows as a card. If an auto release fails you get the reason back to fix it.', inputSchema: S({ workspace: str('workspace name or id (default: yours)'), target: str('release target name'), note: str('what is in this release'), reason: str('one line: why now') }, ['target', 'reason']) },
+  { name: 'build_info', description: 'Show how a project is built: template (node/go/android/spring/custom), where it builds (auto = local server if it has enough resources, else the pipeline; local; pipeline), pipeline tool (Codeup Yunxiao Flow / GitHub Actions) and whether the pipeline exists, the build script contract (put release files in out/; Opero adds SHA256SUMS/VERSION/COMMIT; a deploy.sh inside the package installs it with OPERO_DIR = deploy dir), the last test build and the generated build script. Read this before changing anything.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
+  { name: 'build_set', description: 'Change the build settings of a project. Only pass what you want to change. where: auto (default, recommended) / local / pipeline. kind: node / go / android / spring / custom (custom needs cmd: a command run at the repo root that puts the release files into out/, e.g. "bash deploy/build.sh"). Then call build_generate to (re)create the pipeline and build_try to test.', inputSchema: S({ workspace: str('project name or id (default: your project)'), kind: { type: 'string', enum: ['node', 'go', 'android', 'spring', 'custom'] }, where: { type: 'string', enum: ['auto', 'local', 'pipeline'] }, cmd: str('custom: build command'), subdir: str('code subdir (optional)'), versionFile: str('file with the version (optional)'), service: str('node/go: systemd service to restart after deploy (optional)') }) },
+  { name: 'build_generate', description: 'Create or update the pipeline for a project on its pipeline tool (Codeup Yunxiao Flow: created with the owner\'s Codeup token; GitHub Actions: commits .github/workflows/opero-build.yml). Safe to run again after changing settings. Push your build script changes first.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
+  { name: 'build_try', description: 'Test-build the latest pushed commit (build only, nothing is deployed). Decides local vs pipeline like a real release. Returns right away; poll build_status. Fix the build script / settings from the log until it passes.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
+  { name: 'build_status', description: 'Show the current / last test build of a project: status, where it ran, output files, and the log.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
   { name: 'release_status', description: 'Show recent releases (or one by id): steps, error, and the last part of the build / deploy output.', inputSchema: S({ id: str('release id (optional)'), workspace: str('workspace name or id (optional)') }) },
 ]
 
@@ -80,11 +92,18 @@ export async function callTool(run: Run, name: string, args: any): Promise<ToolR
   args = args ?? {}
   switch (name) {
     case 'approve': return approve(run, emp, args)
-    case 'list_servers': return ok(JSON.stringify(all<Server>('servers').map((s) => ({ id: s.id, name: s.name, env: s.env, os: s.os, online: s.online, cpu: s.cpu, mem: s.mem, disk: s.disk })), null, 1))
+    case 'list_servers': return ok(JSON.stringify(all<Server>('servers').map((s) => ({ id: s.id, name: s.name, env: s.env, os: s.os, online: s.online, cpu: s.cpu, mem: s.mem, disk: s.disk, logs: s.logSrc?.length ? s.logSrc.map((l) => `${l.kind}:${l.path}${l.note ? ` (${l.note})` : ''}`) : undefined })), null, 1))
     case 'server_exec': return serverExec(run, emp, args)
     case 'list_databases': return ok(JSON.stringify(all<DataSource>('dataSources').map((d) => ({ id: d.id, name: d.name, kind: d.kind, env: d.env, db: d.db, writable: d.writable, tables: d.tables.map((t) => `${t.name}(${t.cols.join(',')})`) })), null, 1))
     case 'db_query': return dbQuery(run, emp, args)
     case 'git_sync': return gitSync(emp, args)
+    case 'switch_branch': {
+      const w = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
+      if (!w) return fail('你没有项目')
+      const others = all<Employee>('employees').filter((e) => e.id !== emp.id && e.workspace === w.id && runner.isWorking(e.id))
+      if (others.length) return fail(`${others.map((e) => e.name).join('、')} 也在这个项目里干活，等它做完再切`)
+      try { const r = await switchAndTell(w, String(args.branch ?? '').trim(), emp.name); return ok(r.msg) } catch (e) { return fail((e as Error).message) }
+    }
     case 'ask_owner': return askOwner(run, emp, args)
     case 'confirm': {
       const a = await confirmCard(run, emp, { title: String(args.title ?? ''), detail: String(args.detail ?? ''), why: String(args.why ?? ''), danger: !!args.danger })
@@ -102,7 +121,7 @@ export async function callTool(run: Run, name: string, args: any): Promise<ToolR
     case 'delegate': return delegate(emp, args)
     case 'log_scan': return logScan(emp, args)
     case 'file_write': return fileWrite(run, emp, args)
-    case 'list_credentials': return ok(JSON.stringify(all<Credential>('credentials').filter((c) => c.aiAllowed).map((c) => ({ name: c.name, group: c.group, kind: c.kind, env: c.env, scope: c.scope })), null, 1))
+    case 'list_credentials': return ok(JSON.stringify(all<Credential>('credentials').filter((c) => c.aiAllowed && emp.creds?.includes(c.id)).map((c) => ({ name: c.name, group: c.group, kind: c.kind, env: c.env })), null, 1) + '\n（只列主人给你开了的；要别的请主人在你的档案「能用的凭证」里勾上）')
     case 'issue_list': return ok(JSON.stringify(issues.list({ status: args.status }).slice(0, 50).map(issues.summary), null, 1))
     case 'issue_report': try { const r = issues.report(emp, args); return ok(r.isNew ? `已记下（${r.issue.id}）${r.issue.severity === 'high' ? '，已发卡片给主人' : ''}` : `已有这个问题（${r.issue.id}），次数加到 ${r.issue.count}`) } catch (e) { return fail((e as Error).message) }
     case 'issue_update': try { const i = issues.update(emp, args); return ok(`已更新：${i.title} → ${i.status}`) } catch (e) { return fail((e as Error).message) }
@@ -133,6 +152,7 @@ export async function callTool(run: Run, name: string, args: any): Promise<ToolR
     case 'release_list': case 'list_deploys': return releaseList(args)
     case 'release_publish': case 'deploy': return releasePublish(run, emp, args)
     case 'release_status': return releaseStatus(args)
+    case 'build_info': case 'build_set': case 'build_generate': case 'build_try': case 'build_status': return buildTool(name, emp, args)
   }
   return fail(`没有这个工具：${name}`)
 }
@@ -154,7 +174,10 @@ async function approve(run: Run, emp: Employee, a: { tool_name?: string; input?:
   const hit = ro.find((r) => (EDIT_TOOLS.has(tool) && target.startsWith(r.dir)) || (tool === 'Bash' && String(input.command ?? '').includes(r.dir) && !isReadOnly(String(input.command ?? ''))))
   if (hit) return deny(`「${hit.name}」只给你看，不能改：要改告诉主人交给负责它的员工`)
   // 这台机器的规矩（服务器详情「给员工的规矩」）
-  const banned = cmd && checkCommand(cmd, policyOf(get<Server>('servers', runner.hostOf(emp))))
+  const pol = policyOf(get<Server>('servers', hosts.isLocal(runner.hostOf(emp)) ? 'local' : runner.hostOf(emp)))
+  // 编译命令、看资源决定：先读那台现在的资源（可用内存、磁盘、核数、负载）
+  const res = cmd && pol.build === 'auto' && buildNeed(cmd) ? await hostRes(runner.hostOf(emp)) : undefined
+  const banned = cmd && checkCommand(cmd, pol, { res })
   if (banned) {
     audit({ via: emp.name, action: 'policy.deny', target: cmd.slice(0, 120), level: '写', result: '拒绝', how: banned })
     return deny(`${banned}（这台机器的规矩）`)
@@ -223,6 +246,16 @@ function sendFile(emp: Employee, a: { path?: string; name?: string }): ToolResul
 }
 export const fmtSize = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
 
+/** 员工能不能用这个凭证：总开关开着，并且主人在员工档案「能用的凭证」里给它勾了 */
+function credBlock(emp: Employee, id: string | undefined, what: string): string {
+  if (!id) return ''
+  const c = get<Credential>('credentials', id)
+  if (!c) return ''
+  if (!c.aiAllowed) return `${what}（凭证「${c.name}」）设成了只有主人本人能用`
+  if (!emp.creds?.includes(c.id)) return `${what}用的凭证「${c.name}」没给你开：请主人在员工「${emp.name}」的档案 →「能用的凭证」里勾上它`
+  return ''
+}
+
 // ---------- 服务器 ----------
 const findServer = (k: string) => all<Server>('servers').find((s) => s.id === k || s.name === k || s.ip === k)
 
@@ -231,8 +264,8 @@ async function serverExec(run: Run, emp: Employee, a: { server?: string; command
   if (!sv) return fail('没有这台服务器（用 list_servers 看名字）')
   const command = String(a.command ?? '').trim()
   if (!command) return fail('命令是空的')
-  const cred = sv.credential ? get<Credential>('credentials', sv.credential) : undefined
-  if (cred && !cred.aiAllowed) return fail('这台服务器的账号设成了「只有主人本人能用」，员工不能用')
+  const blocked = credBlock(emp, sv.credential, `服务器「${sv.name}」的账号`)
+  if (blocked) return fail(blocked)
   const ro = isReadOnly(command)
   const danger = DANGER.test(command)
   // 这台自己设过就按它；没设过 = 像生产的标签 + 「我 → 设置」的生产保护开着
@@ -240,7 +273,7 @@ async function serverExec(run: Run, emp: Employee, a: { server?: string; command
   if (emp.approval === 'plan' && !ro) return fail('现在是「只看不改」，只能跑只读命令')
   const banned = checkCommand(command, policyOf(sv), { hard: false })
   if (banned) return fail(`${banned}（${sv.name} 的规矩）`)
-  const filled = fillSecrets(command)
+  const filled = fillSecrets(command, emp)
   if ('error' in filled) return fail(filled.error)
   if (danger || (!ro && (emp.approval !== 'auto' || prod))) {
     const yes = await confirmCard(run, emp, { title: `在 ${sv.name}（${sv.env}）上执行`, detail: command, why: String(a.reason ?? ''), danger: danger || isProtected(sv) })
@@ -256,37 +289,53 @@ async function serverExec(run: Run, emp: Employee, a: { server?: string; command
 async function logScan(emp: Employee, a: any): Promise<ToolResult> {
   const sv = findServer(String(a.server ?? ''))
   if (!sv) return fail('没有这台服务器（用 list_servers 看名字）')
-  let cmd: string
-  try { cmd = buildScan({ ...a, sinceMin: a.since_min }) } catch (e) { return fail((e as Error).message) }
-  const r = await execOn(sv, cmd, 90_000)
-  audit({ via: emp.name, action: 'log.scan', target: `${sv.name} · ${a.file ?? a.service} · ${a.mode ?? 'top'}`, level: '读', result: r.code === 0 || r.code === 1 ? '成功' : '失败', how: '只读' })
-  const out = r.out.length > 30_000 ? r.out.slice(0, 12_000) + '\n…（中间省略）…\n' + r.out.slice(-12_000) : r.out
+  { const blocked = credBlock(emp, sv.credential, `服务器「${sv.name}」的账号`); if (blocked) return fail(blocked) }
+  // 没指定日志：扫这台登记的全部日志（服务器详情「日志」里登记，可以多个）
+  const targets: { file?: string; service?: string; label: string }[] = a.file || a.service
+    ? [{ file: a.file, service: a.service, label: String(a.file ?? a.service) }]
+    : (sv.logSrc ?? []).map((l) => l.kind === 'service' ? { service: l.path, label: l.path } : { file: l.kind === 'dir' ? `${l.path}/*.log` : l.path, label: l.kind === 'dir' ? `${l.path}/*.log` : l.path })
+  if (!targets.length) return fail(`「${sv.name}」没登记日志：给 file（日志文件路径）或 service，或者请主人在服务器详情「日志」里登记要扫的日志`)
+  const parts: string[] = []
+  let okAll = true
+  for (const t of targets) {
+    let cmd: string
+    try { cmd = buildScan({ ...a, file: t.file, service: t.service, sinceMin: a.since_min }) } catch (e) { parts.push(`== ${t.label} ==\n${(e as Error).message}`); okAll = false; continue }
+    const r = await execOn(sv, cmd, 90_000)
+    if (r.code !== 0 && r.code !== 1) okAll = false
+    parts.push(targets.length > 1 ? `== ${t.label} ==\n${r.out.trim() || '没有匹配的行'}` : r.out)
+  }
+  audit({ via: emp.name, action: 'log.scan', target: `${sv.name} · ${targets.map((t) => t.label).join('、').slice(0, 200)} · ${a.mode ?? 'top'}`, level: '读', result: okAll ? '成功' : '失败', how: '只读' })
+  const all = parts.join('\n\n')
+  const out = all.length > 30_000 ? all.slice(0, 12_000) + '\n…（中间省略）…\n' + all.slice(-12_000) : all
   return ok(out.trim() ? out : '没有匹配的行')
 }
 
 async function fileWrite(run: Run, emp: Employee, a: { server?: string; path?: string; content?: string; reason?: string }): Promise<ToolResult> {
   const sv = findServer(String(a.server ?? ''))
   if (!sv) return fail('没有这台服务器（用 list_servers 看名字）')
+  { const blocked = credBlock(emp, sv.credential, `服务器「${sv.name}」的账号`); if (blocked) return fail(blocked) }
   const p = String(a.path ?? '')
   if (!/^\/[\w./@+-]+$/.test(p) || p.includes('..')) return fail('路径要是绝对路径（字母、数字、. _ - /）')
   const content = String(a.content ?? '')
   if (content.length > 200_000) return fail('一次最多写 200 KB')
   if (emp.approval === 'plan') return fail('现在是「只看不改」')
-  const filled = fillSecrets(content)
+  const filled = fillSecrets(content, emp)
   if ('error' in filled) return fail(filled.error)
-  const yes = await confirmCard(run, emp, { title: `改 ${sv.name} 上的文件`, detail: `${p}\n\n${content.slice(0, 1500)}${content.length > 1500 ? '\n…' : ''}`, why: String(a.reason ?? ''), danger: isProtected(sv), note: '原文件会先备份成 .bak-时间' })
+  // 先自动备份再写；只有生产（受保护）的服务器、或者审核方式不是「自动」才问主人
+  const prodSv = sv.protect ?? (isProtected(sv) && !!kvGet<{ prodProtect?: boolean }>('settings', {}).prodProtect)
+  const yes = !prodSv && emp.approval === 'auto' ? true : await confirmCard(run, emp, { title: `改 ${sv.name} 上的文件`, detail: `${p}\n\n${content.slice(0, 1500)}${content.length > 1500 ? '\n…' : ''}`, why: String(a.reason ?? ''), danger: isProtected(sv), note: '原文件会先备份成 .bak-时间' })
   if (!yes) return fail('主人没同意')
   const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
   const b64 = Buffer.from(filled.text).toString('base64')
   const cmd = `set -e; if [ -e '${p}' ]; then cp -a '${p}' '${p}.bak-${ts}'; echo "已备份 ${p}.bak-${ts}"; fi; mkdir -p "$(dirname '${p}')"; printf %s '${b64}' | base64 -d > '${p}'; echo "已写入 ${p}（$(wc -c < '${p}') 字节）"`
   const r = await execOn(sv, cmd, 60_000)
-  audit({ via: emp.name, action: 'server.write', target: `${sv.name} · ${p}`, level: '写', result: r.code === 0 ? '成功' : '失败', how: '本人同意后执行（先备份）' })
+  audit({ via: emp.name, action: 'server.write', target: `${sv.name} · ${p}`, level: '写', result: r.code === 0 ? '成功' : '失败', how: prodSv || emp.approval !== 'auto' ? '主人同意后执行（先备份）' : '先备份再写（不是生产，没问）' })
   return { text: scrub(r.out, filled.secrets), isError: r.code !== 0 }
 }
 
 // ---------- 签名（releases.signFile）：只认「员工能用」的签名证书、只签它工作目录里的文件 ----------
 async function signPackage(emp: Employee, a: { path?: string; cert?: string }): Promise<ToolResult> {
-  const certs = all<Credential>('credentials').filter((c) => c.group === '签名证书' && c.aiAllowed)
+  const certs = all<Credential>('credentials').filter((c) => c.group === '签名证书' && c.aiAllowed && emp.creds?.includes(c.id))
   if (!a.path) return ok(certs.length ? JSON.stringify(certs.map((c) => ({ name: c.name, scope: c.scope })), null, 1) : '没有能用的签名证书：主人在「权限和凭证 → 签名证书」里上传，并允许员工用')
   const c = certs.find((x) => x.name === a.cert || x.id === a.cert) ?? (certs.length === 1 ? certs[0] : undefined)
   if (!c) return fail(certs.length ? '指定 cert（签名证书的名字）' : '没有能用的签名证书')
@@ -350,7 +399,7 @@ async function dnsDelete(run: Run, emp: Employee, a: any): Promise<ToolResult> {
 // ---------- 合并请求（prs.ts） ----------
 async function prCreate(emp: Employee, a: { title?: string; body?: string; workspace?: string; target?: string }): Promise<ToolResult> {
   const w = findWs(String(a.workspace ?? '') || emp.workspace)
-  if (!w) return fail('没有这个工作空间')
+  if (!w) return fail('没有这个项目')
   const cur = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], { host: w.server, cwd: w.dir })).out.trim()
   const target = String(a.target || w.branch || '').trim()
   if (!cur || cur === 'HEAD') return fail('现在不在任何分支上')
@@ -385,6 +434,57 @@ async function prStatus(emp: Employee, a: { id?: string }): Promise<ToolResult> 
 
 // ---------- 发布（releases.ts） ----------
 const findWs = (k: string) => all<Workspace>('workspaces').find((x) => x.id === k || x.name === k)
+
+// ---------- 编译 / 流水线（员工自己配、自己试，发生产照旧问主人） ----------
+async function buildTool(name: string, emp: Employee, a: any): Promise<ToolResult> {
+  const w = findWs(String(a.workspace ?? '') || emp.workspace)
+  if (!w) return fail('没有这个项目（不填就是你自己的项目）')
+  const b = w.buildCfg
+  if (name === 'build_info') {
+    if (!b) return ok(`「${w.name}」还没有编译设置（接入时会自动配；也可以用 build_set 配）。`)
+    const last = buildjobs.lastOf(w.id)
+    return ok(JSON.stringify({
+      project: w.name, repo: w.repo, branch: w.branch, kind: b.kind, where: build.whereOf(b), summary: build.providerName(b),
+      pipeline: { tool: b.provider, ready: build.pipelineReady(b), error: b.pipelineError, yunxiao: b.yunxiao && { org: b.yunxiao.org, pipelineId: b.yunxiao.pipelineId }, github: b.github },
+      cmd: b.cmd, subdir: b.subdir, versionFile: b.versionFile, service: b.service, artifact: build.fileOf(b),
+      contract: '编译脚本把要发的东西放进 out/（node / go 模板会打成 <名字>-<版本>.tgz，包里带 deploy.sh）；Opero 补 SHA256SUMS / VERSION / COMMIT。部署时 Agent 以 root 跑包里的 deploy.sh，OPERO_DIR（= KL_DIR）是部署目录。本地编和流水线跑同一个脚本。',
+      lastTry: last && { status: last.status, mode: last.mode, version: last.version, files: last.files, error: last.error, at: new Date(last.at).toLocaleString('zh-CN') },
+      script: build.script(b, build.codeOf(w)).slice(0, 6000),
+    }, null, 1))
+  }
+  if (name === 'build_set') {
+    const s = (v: unknown, n = 200) => (v === undefined ? undefined : String(v).trim().slice(0, n))
+    const next: build.BuildCfg = { ...(b ?? { kind: 'custom', provider: 'local', where: 'auto' }) }
+    if (a.kind) next.kind = a.kind
+    if (a.where) next.where = a.where
+    if (a.cmd !== undefined) next.cmd = s(a.cmd, 8000)
+    if (a.subdir !== undefined) next.subdir = s(a.subdir, 100)
+    if (a.versionFile !== undefined) next.versionFile = s(a.versionFile)
+    if (a.service !== undefined) next.service = s(a.service, 80)?.replace(/[^A-Za-z0-9@._-]/g, '')
+    if (next.kind === 'custom' && !next.cmd) return fail('custom 模板要给 cmd（在仓库根目录跑、把要发的东西放进 out/ 的命令）')
+    if (next.where === 'pipeline' && next.provider === 'local') return fail('这个项目没有流水线工具（云效要 Codeup 仓库 + Codeup 凭证，GitHub 要项目配了令牌），不能设成「总是流水线」')
+    put('workspaces', { ...w, buildCfg: next }); emit({ t: 'put', coll: 'workspaces', item: { ...w, buildCfg: next } })
+    audit({ via: emp.name, action: 'build.set', target: `${w.name} · ${build.providerName(next)}`, level: '写', result: '成功', how: '员工' })
+    return ok(`已改：${build.providerName(next)}，模板 ${next.kind}。改了脚本相关的设置要再 build_generate 更新流水线。`)
+  }
+  if (!b) return fail('还没有编译设置：先 build_set')
+  if (name === 'build_generate') {
+    if (b.provider === 'local') return fail('这个项目没有流水线工具：云效要 Codeup 仓库 + 主人的 Codeup 凭证；GitHub / GitLab 要项目配了令牌；Jenkins 要主人在编译设置里选。没有就只能本地编')
+    try {
+      const next = await build.generate(w, b)
+      const cur = { ...get<Workspace>('workspaces', w.id)!, buildCfg: { ...next, pipelineError: undefined } }
+      put('workspaces', cur); emit({ t: 'put', coll: 'workspaces', item: cur })
+      audit({ via: emp.name, action: 'build.generate', target: `${w.name} · ${build.providerName(next)}`, level: '写', result: '成功', how: '员工' })
+      return ok(`流水线已建好 / 更新（${build.providerName(next)}${next.yunxiao?.pipelineId ? ` · 云效流水线 ${next.yunxiao.pipelineId}` : ''}）。用 build_try 试编一次。`)
+    } catch (e) { return fail(`没建成：${(e as Error).message}`) }
+  }
+  if (name === 'build_try') {
+    try { const j = buildjobs.start(w, emp.name); return ok(`开始试编译（${j.id}）：编远端最新提交，只编不发。几分钟后用 build_status 看结果。`) } catch (e) { return fail((e as Error).message) }
+  }
+  const j = buildjobs.lastOf(w.id)
+  if (!j) return ok('还没试编过：build_try')
+  return { text: `${j.status === 'running' ? '在编…' : j.status === 'ok' ? '编过了' : '没编过'}${j.version ? ` · 版本 ${j.version}` : ''}${j.files?.length ? ` · 产物 ${j.files.join('、')}` : ''}\n\n${j.log.slice(-80).join('\n')}${j.error ? `\n\n错误：${j.error}` : ''}`, isError: j.status === 'fail' }
+}
 function releaseList(a: { workspace?: string }): ToolResult {
   const wss = a.workspace ? [findWs(a.workspace)].filter(Boolean) as Workspace[] : all<Workspace>('workspaces').filter((w) => w.deploys?.length)
   const sv = (id?: string) => (id ? get<Server>('servers', id)?.name ?? id : undefined)
@@ -396,7 +496,7 @@ function releaseList(a: { workspace?: string }): ToolResult {
 }
 async function releasePublish(run: Run, emp: Employee, a: { workspace?: string; target?: string; note?: string; reason?: string }): Promise<ToolResult> {
   const w = findWs(String(a.workspace ?? '') || emp.workspace)
-  if (!w) return fail('没有这个工作空间（release_list 看）')
+  if (!w) return fail('没有这个项目（release_list 看）')
   const d = (w.deploys ?? []).find((x) => x.name === a.target || x.id === a.target)
   if (!d) return fail(`「${w.name}」没有叫「${a.target}」的发布目标（release_list 看）`)
   if (emp.approval === 'plan') return fail('现在是「只看不改」')
@@ -428,14 +528,15 @@ async function dbQuery(run: Run, emp: Employee, a: { database?: string; sql?: st
   const ds = all<DataSource>('dataSources').find((d) => d.id === k || d.name === k || d.db === k)
   if (!ds) return fail('没有这个库（用 list_databases 看名字）')
   const sql = String(a.sql ?? '').trim()
-  const cred = ds.credential ? get<Credential>('credentials', ds.credential) : undefined
-  if (cred && !cred.aiAllowed) return fail('这个库的账号设成了「只有主人本人能用」')
+  const blocked = credBlock(emp, ds.credential, `库「${ds.name}」的账号`)
+  if (blocked) return fail(blocked)
   const read = isReadSql(sql)
   if (!read) {
     if (!ds.writable) return fail('这个库只接了只读账号，不能改数据')
     if (emp.approval === 'plan') return fail('现在是「只看不改」')
     const danger = /\b(drop|truncate|alter)\b/i.test(sql) || (/^\s*(delete|update)\b/i.test(sql) && !/\bwhere\b/i.test(sql))
-    const yes = await confirmCard(run, emp, { title: `改 ${ds.name}（${ds.env}）的数据`, detail: sql, why: String(a.reason ?? ''), danger: danger || isProtected(ds), note: '改之前没有自动快照，确认 SQL 没问题再点' })
+    // 生产库、危险语句、或者审核方式不是「自动」才问主人；测试 / 开发库直接改
+    const yes = !danger && !isProtected(ds) && emp.approval === 'auto' ? true : await confirmCard(run, emp, { title: `改 ${ds.name}（${ds.env}）的数据`, detail: sql, why: String(a.reason ?? ''), danger: danger || isProtected(ds), note: '改之前没有自动快照，确认 SQL 没问题再点' })
     if (!yes) return fail('主人没同意')
   }
   try {
@@ -452,7 +553,7 @@ async function dbQuery(run: Run, emp: Employee, a: { database?: string; sql?: st
 async function gitSync(emp: Employee, a: { workspace?: string; rebase?: boolean; push?: boolean }): Promise<ToolResult> {
   const k = String(a.workspace ?? '') || emp.workspace
   const w = all<Workspace>('workspaces').find((x) => x.id === k || x.name === k)
-  if (!w) return fail('没有这个工作空间')
+  if (!w) return fail('没有这个项目')
   const out = await syncWorkspace(w, { rebase: a.rebase, push: a.push })
   audit({ via: emp.name, action: a.push ? 'git.push' : 'git.sync', target: w.name, level: a.push ? '写' : '读', result: /失败/.test(out) ? '失败' : '成功', how: '用主人的令牌' })
   return { text: out, isError: /失败/.test(out) }
@@ -489,10 +590,10 @@ async function empCreate(run: Run, emp: Employee, a: any): Promise<ToolResult> {
   if (!name || !String(a.prompt ?? '').trim()) return fail('名字和职责都要有')
   if (all<Employee>('employees').some((e) => e.name === name)) return fail('已经有同名的员工')
   const ws = a.workspace ? all<Workspace>('workspaces').find((w) => w.id === a.workspace || w.name === a.workspace) : undefined
-  if (a.workspace && !ws) return fail('没有这个工作空间')
+  if (a.workspace && !ws) return fail('没有这个项目')
   const sv = a.host ? all<Server>('servers').find((x) => x.id === a.host || x.name === a.host) : undefined
   const exec = /codex/i.test(String(a.executor ?? '')) ? 'Codex' : 'Claude Code'
-  const yes = await confirmCard(run, emp, { title: `建一个员工「${name}」`, detail: `职责：${String(a.title ?? '')}\n执行器：${exec}${ws ? `\n工作空间：${ws.name}` : ''}${sv ? `\n跑在：${sv.name}` : ''}\n\n${String(a.prompt).slice(0, 1500)}`, why: '不会给它任何服务器、库、凭证的权限，要的话你自己给' })
+  const yes = emp.approval === 'auto' ? true : await confirmCard(run, emp, { title: `建一个员工「${name}」`, detail: `职责：${String(a.title ?? '')}\n执行器：${exec}${ws ? `\n项目：${ws.name}` : ''}${sv ? `\n跑在：${sv.name}` : ''}\n\n${String(a.prompt).slice(0, 1500)}`, why: '不会给它任何服务器、库、凭证的权限，要的话你自己给' })
   if (!yes) return fail('主人没同意')
   const e: Employee = {
     id: uid('e'), name, avatar: name.slice(0, 1), color: '#5B4FE9', title: String(a.title ?? '').slice(0, 80), prompt: String(a.prompt).slice(0, 20000), persona: String(a.persona ?? '').slice(0, 200),
@@ -514,7 +615,7 @@ async function empUpdate(run: Run, emp: Employee, a: any): Promise<ToolResult> {
   if (!to) return fail('没有这个员工（list_employees 看）')
   if (runner.isWorking(to.id)) return fail(`「${to.name}」正在干活，等它做完再改`)
   const ws = a.workspace === undefined ? undefined : a.workspace === '' ? null : all<Workspace>('workspaces').find((w) => w.id === a.workspace || w.name === a.workspace)
-  if (ws === undefined && a.workspace) return fail('没有这个工作空间')
+  if (ws === undefined && a.workspace) return fail('没有这个项目')
   const patch: Partial<Employee> = {
     ...(a.title !== undefined ? { title: String(a.title).slice(0, 80) } : {}),
     ...(a.prompt !== undefined ? { prompt: String(a.prompt).slice(0, 20000) } : {}),
@@ -523,7 +624,7 @@ async function empUpdate(run: Run, emp: Employee, a: any): Promise<ToolResult> {
   }
   if (!Object.keys(patch).length) return fail('没有要改的')
   const detail = Object.entries(patch).filter(([k2]) => k2 !== 'resumeId').map(([k2, v]) => `${k2}：${String(v).slice(0, 800)}`).join('\n')
-  const yes = await confirmCard(run, emp, { title: `改员工「${to.name}」`, detail, why: '它下次干活时记忆仓库里「我的角色」会跟着改' })
+  const yes = emp.approval === 'auto' ? true : await confirmCard(run, emp, { title: `改员工「${to.name}」`, detail, why: '它下次干活时记忆仓库里「我的角色」会跟着改' })
   if (!yes) return fail('主人没同意')
   const next = { ...to, ...patch }
   put('employees', next)

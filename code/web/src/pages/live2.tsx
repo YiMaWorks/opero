@@ -1,8 +1,9 @@
-// 真的一套：员工的记忆仓库 / 历史会话 / work 历史，问题清单，服务器给员工的规矩，工作空间的自动同步和发布，用量明细
+// 真的一套：员工的记忆仓库 / 历史会话 / work 历史，问题清单，服务器给员工的规矩，项目的自动同步和发布，用量明细
 import { useEffect, useState } from 'react'
 import type { BuildCfg, Deploy, Employee, LiveIssue, Message, Policy, Server, ServerDir, Session, Workspace } from '../types'
 import { requireVerify, toast, useStore } from '../store'
-import { call } from '../live'
+import { api, call } from '../live'
+import { PathInput } from '../components/PathPicker'
 import { Markdown } from '../components/Markdown'
 import { Empty, Field, PageHeader, Row, Section, Segmented, Tag, Toggle } from '../components/ui'
 import { headNav, type PageProps } from './nav'
@@ -22,9 +23,6 @@ export function EmployeeWorkSections({ e, nav }: { e: Employee; nav: PageProps['
   }
   return (
     <>
-      <Section title="记忆（它自己的 git 仓库）" right={<span className="sub">换会话、换执行器、换服务器都从这里接着做</span>}>
-        <Row title="打开记忆仓库" sub={e.memRepo ? `远端 ${e.memRepo}` : '规矩、交接、记录、机器笔记（只在它干活那台机器上；要换服务器带着走，在「编辑」里配远端）'} chevron onClick={() => nav.push({ page: 'memory', params: { id: e.id } })} />
-      </Section>
       <Section title={`work 历史 · 现在是第 ${e.works?.[0]?.no ?? 1} 个`}>
         {(e.works ?? []).slice(0, 8).map((w) => (
           <Row key={w.no} title={`第 ${w.no} 个${w.to ? '' : '（现在）'}`} sub={`${w.from}${w.to ? ' → ' + w.to : ' 起'}${w.host ? ' · ' + w.host : ''} · ${w.reason}`} right={!w.to ? <Tag tone="ok">在用</Tag> : undefined} />
@@ -53,7 +51,9 @@ export function LiveMemoryPage({ params, nav }: PageProps) {
     if (open === f) { setOpen(null); return }
     const r = await call<{ text: string }>('GET', `/api/employees/${params.id}/memory/file?path=${encodeURIComponent(f)}`)
     if (r) { setOpen(f); setText(r.text) }
-  }
+  }  // 从项目页点某个文档进来：直接打开它
+  useEffect(() => { if (params.file) void openFile(String(params.file)) }, [params.file]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const save = async () => {
     if (!open) return
     setBusy(true)
@@ -63,7 +63,7 @@ export function LiveMemoryPage({ params, nav }: PageProps) {
   }
   return (
     <div className="page">
-      <PageHeader title="记忆仓库" sub={e?.name} {...headNav(nav)} />
+      <PageHeader title={e?.workspace ? '项目文档（docs/）' : '记忆仓库'} sub={e?.workspace ? `${e.name} 和这个项目的其它员工共用` : e?.name} {...headNav(nav)} />
       <div className="page-body">
         {!info && <Empty>在读…</Empty>}
         {info && (
@@ -216,32 +216,62 @@ export function LiveIssuePage({ params, nav }: PageProps) {
 }
 
 // ======================= 服务器：给员工的规矩 =======================
+/** 各类编译大概要多少（和后台 policy.ts buildNeed 一致） */
+const BUILD_NEEDS: { what: string; mem: number; disk: number; cores: number; cloud?: boolean }[] = [
+  { what: '前端 / Node / Go / Python', mem: 2, disk: 3, cores: 2 },
+  { what: 'Java（Gradle / Maven）、.NET', mem: 4, disk: 5, cores: 4 },
+  { what: 'Rust、C / C++、Docker 镜像', mem: 4, disk: 10, cores: 4 },
+  { what: 'Android / Flutter 打包', mem: 8, disk: 20, cores: 8, cloud: true },
+  { what: 'iOS、Unity', mem: 16, disk: 50, cores: 8, cloud: true },
+]
+const DENY_PRESETS = ['rm -rf', 'docker system prune', 'git push -f', 'git push --force', 'git reset --hard', 'DROP ', 'TRUNCATE ', 'shutdown', 'reboot']
 export function PolicySection({ s }: { s: Server }) {
   const p: Policy = s.policy ?? {}
   const [deny, setDeny] = useState((p.deny ?? []).join('\n'))
   const save = (patch: Policy, msg = '已保存') => call('PUT', `/api/servers/${s.id}`, { policy: { ...p, ...patch } }, msg)
+  const buildMode = p.build ?? (p.allowBuild === false ? 'off' : 'auto')
   return (
     <Section title="给员工的规矩" right={<span className="sub">员工在这台干活时生效</span>}>
-      <label className="lrow"><span className="row-main"><span className="row-title">允许编译 / 打包</span><span className="row-sub">gradle、mvn、docker build、npm run build 这类；关了员工只能改代码，写清楚怎么编交给你</span></span><Toggle on={p.allowBuild ?? true} onChange={(v) => save({ allowBuild: v })} /></label>
+      <div className="pad">
+        <div className="field-label">编译 / 打包（gradle、mvn、docker build、npm run build…）</div>
+        <Segmented value={buildMode} onChange={(v) => save({ build: v, allowBuild: v !== 'off' })} options={[{ value: 'auto', label: '看资源决定（推荐）' }, { value: 'on', label: '总是允许' }, { value: 'off', label: '不允许' }]} />
+        <p className="field-hint">{buildMode === 'auto' ? '每次编译前查这台现在的可用内存、磁盘、CPU：够才跑，不够就拒绝并告诉员工交给你在「发布」里编。跑的时候也少用一个核，不把机器打满。' : buildMode === 'on' ? '不查资源，员工想编就编（小心把机器跑满）。' : '员工只改代码，写清楚怎么编交给你。'}</p>
+        {buildMode === 'auto' && s.sys && (
+          <div className="res-table">
+            {BUILD_NEEDS.map((n) => {
+              const low = s.sys!.cores <= 2 || s.sys!.memGb <= 8.5
+              const ok = !n.cloud && !(low && n.mem >= 4) && s.sys!.memGb >= n.mem + Math.max(1, s.sys!.memGb * 0.1) && s.sys!.cores >= n.cores
+              return <div key={n.what} className="res-row"><span>{n.what}</span><span className="sub">约 {n.mem}G 内存 · {n.disk}G 磁盘 · {n.cores} 核</span>{n.cloud ? <Tag>默认走流水线</Tag> : ok ? <Tag tone="ok">空闲时能本地编</Tag> : <Tag tone="warn">走流水线</Tag>}</div>
+            })}
+            <p className="field-hint">这台：{s.sys.cores} 核 · {s.sys.memGb}G 内存 · {s.sys.diskGb}G 磁盘。真跑之前还会看那一刻的空闲情况。</p>
+          </div>
+        )}
+      </div>
       <label className="lrow"><span className="row-main"><span className="row-title">允许自测</span><span className="row-sub">跑测试、起项目或服务来试；关了员工读代码、看 diff 自查</span></span><Toggle on={p.allowTest ?? true} onChange={(v) => save({ allowTest: v })} /></label>
       <div className="pad form">
         <Field label="禁止的命令（一行一个，按开头匹配）" hint="比如 rm -rf、docker system prune。不管怎么设，sudo、装系统软件、管系统服务、改 /etc 都不许">
-          <textarea className="mono" rows={3} value={deny} onChange={(v) => setDeny(v.target.value)} onBlur={() => deny !== (p.deny ?? []).join('\n') && save({ deny: deny.split('\n').map((x) => x.trim()).filter(Boolean) })} data-no-i18n="" />
+          <div className="chips">{DENY_PRESETS.map((x) => {
+            const cur = p.deny ?? []
+            const on = cur.includes(x)
+            return <button key={x} type="button" className={'chip mono' + (on ? ' on' : '')} onClick={() => { const next = on ? cur.filter((y) => y !== x) : [...cur, x]; setDeny(next.join('\n')); save({ deny: next }) }} data-no-i18n="">{on ? '✓ ' : ''}{x}</button>
+          })}</div>
+          <textarea className="mono" rows={2} value={deny} onChange={(v) => setDeny(v.target.value)} onBlur={() => deny !== (p.deny ?? []).join('\n') && save({ deny: deny.split('\n').map((x) => x.trim()).filter(Boolean) })} placeholder="别的（一行一个）" data-no-i18n="" />
         </Field>
-        <div className="inline-form">
-          <Field label="内存上限（%）" hint="员工进程加起来超了先提醒，一直超就停掉最大的进程；0 = 不管">
-            <input inputMode="numeric" defaultValue={String(p.memPct ?? 80)} onBlur={(v) => save({ memPct: Number(v.target.value) || 0 })} />
-          </Field>
-          <Field label="同时最多几个员工" hint="多了排队；0 = 不限">
-            <input inputMode="numeric" defaultValue={String(p.maxConcurrent ?? 0)} onBlur={(v) => save({ maxConcurrent: Number(v.target.value) || 0 })} />
-          </Field>
-        </div>
+        <Field label="内存上限" hint="只算员工自己的进程；超了先提醒，连续 2 分钟或 10 分钟内超 5 回才停掉最大的那个进程">
+          <div className="chips">{[0, 60, 70, 80, 90].map((n) => <button key={n} type="button" className={'chip' + ((p.memPct ?? 80) === n ? ' on' : '')} onClick={() => save({ memPct: n })}>{n ? `${n}%` : '不管'}</button>)}</div>
+        </Field>
+        <Field label="CPU 上限" hint="只算员工自己的进程；超了先提醒，连续 2 分钟或 10 分钟内超 5 回，先暂停最占 CPU 的进程（多半是编译），机器降下来自动继续">
+          <div className="chips">{[0, 60, 70, 80, 90].map((n) => <button key={n} type="button" className={'chip' + ((p.cpuPct ?? 80) === n ? ' on' : '')} onClick={() => save({ cpuPct: n })}>{n ? `${n}%` : '不管'}</button>)}</div>
+        </Field>
+        <Field label="同时最多几个员工" hint="多了排队">
+          <div className="chips">{[0, 1, 2, 4, 8].map((n) => <button key={n} type="button" className={'chip' + ((p.maxConcurrent ?? 0) === n ? ' on' : '')} onClick={() => save({ maxConcurrent: n })}>{n ? `${n} 个员工` : '不限'}</button>)}</div>
+        </Field>
       </div>
     </Section>
   )
 }
 
-// ======================= 工作空间：自动同步、编译、发布环境 =======================
+// ======================= 项目：自动同步、编译、发布环境 =======================
 export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProps['nav'] }) {
   const servers = useStore((s) => s.servers)
   const releases = useStore((s) => s.liveReleases)
@@ -258,7 +288,7 @@ export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProp
   return (
     <>
       <Section title="自动同步">
-        <label className="lrow"><span className="row-main"><span className="row-title">干完自动提交推送</span><span className="row-sub">员工开工前拉到最新（冲突会告诉它先解决）；这一轮干完有改动就提交（出错的标「[未完成]」，你点停止的不提交）再推送，被拒就变基一次再推。要配了令牌才推送</span></span><Toggle on={w.autoSync !== false} onChange={(v) => call('PUT', `/api/workspaces/${w.id}`, { autoSync: v }, v ? '已开自动同步' : '已关：员工自己用 git_sync')} /></label>
+        <label className="lrow"><span className="row-main"><span className="row-title">干完自动提交推送</span><span className="row-sub">员工开工前拉到最新（冲突会告诉它先解决）；这一轮干完有改动就提交（出错的、你点停止的都标「[未完成]」照样提交，做了一半的不丢）再推送，被拒就变基一次再推。要配了令牌才推送</span></span><Toggle on={w.autoSync !== false} onChange={(v) => call('PUT', `/api/workspaces/${w.id}`, { autoSync: v }, v ? '已开自动同步' : '已关：员工自己用 git_sync')} /></label>
       </Section>
       <BuildSection w={w} />
       <Section title={`发布环境 · ${list.length}`} right={<button className="btn ghost sm" onClick={() => setEditing('new')}>添加</button>}>
@@ -266,19 +296,23 @@ export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProp
         {list.map((d) => {
           const lastR = releases.filter((r) => r.ws === w.id && r.target === d.id).sort((a, b) => b.started - a.started)[0]
           return editing && editing !== 'new' && editing.id === d.id
-            ? <DeployForm key={d.id} init={d} servers={servers} onCancel={() => setEditing(null)} onSave={async (x) => { if (await saveDeploys(list.map((y) => (y.id === d.id ? x : y)))) setEditing(null) }} />
+            ? <DeployForm key={d.id} init={d} servers={servers} build={w.buildCfg} onCancel={() => setEditing(null)} onSave={async (x) => { if (await saveDeploys(list.map((y) => (y.id === d.id ? x : y)))) setEditing(null) }} />
             : <Row key={d.id} title={d.name}
                 sub={<>发到 {d.servers.map(sv).join('、')}{d.dir ? `（${d.dir}）` : ''}{d.sign ? ' · 签名' : ''}{d.health ? ' · 检查' : ''} · 员工{d.ai === 'auto' ? '直接发' : d.ai === 'off' ? '不许发' : '发前问你'}{lastR ? ` · 上次 ${lastR.status === 'success' ? '成功' : lastR.status === 'failed' ? '失败' : '发布中'}` : ''}</>}
                 right={<span className="row-actions"><button className="btn primary sm" onClick={() => run(d)}>发布</button><button className="btn ghost sm" onClick={() => setEditing(d)}>改</button><button className="btn ghost sm" onClick={() => { if (confirm(`删掉发布环境「${d.name}」？`)) saveDeploys(list.filter((x) => x.id !== d.id), '已删') }}>删</button></span>} />
         })}
-        {editing === 'new' && <DeployForm servers={servers} onCancel={() => setEditing(null)} onSave={async (d) => { if (await saveDeploys([...list, d], '已添加')) setEditing(null) }} />}
+        {editing === 'new' && <DeployForm servers={servers} build={w.buildCfg} onCancel={() => setEditing(null)} onSave={async (d) => { if (await saveDeploys([...list, d], '已添加')) setEditing(null) }} />}
         {nav && releases.some((r) => r.ws === w.id) && <Row title="发布记录" chevron onClick={() => nav.push({ page: 'releases', params: { ws: w.id } })} />}
       </Section>
     </>
   )
 }
 
-const PROVIDER: Record<BuildCfg['provider'], string> = { yunxiao: '云效流水线', github: 'GitHub Actions', local: '自己的服务器' }
+const PROVIDER: Record<BuildCfg['provider'], string> = { yunxiao: '云效', github: 'GitHub Actions', gitlab: 'GitLab CI', jenkins: 'Jenkins', local: '不用流水线' }
+const WHERE: Record<NonNullable<BuildCfg['where']>, string> = { auto: '自动（本地够就本地，不够走流水线）', local: '总是本地', pipeline: '总是流水线' }
+const whereOf = (b: BuildCfg) => b.where ?? (b.provider === 'local' ? 'local' : 'auto')
+const pipeReady = (b: BuildCfg) => (b.provider === 'yunxiao' ? !!b.yunxiao?.pipelineId : b.provider === 'github' ? !!b.github?.at : b.provider === 'gitlab' ? !!b.gitlab?.at : b.provider === 'jenkins' ? !!b.jenkins?.at : false)
+const pipeAt = (b: BuildCfg) => b.yunxiao?.at ?? b.github?.at ?? b.gitlab?.at ?? b.jenkins?.at
 const KIND: Record<BuildCfg['kind'], string> = { node: 'Node', go: 'Go', android: '安卓 App', spring: 'Java（Spring）', custom: '自定义命令' }
 
 /** 编译设置：模板 + 在哪编；云效 / GitHub 能一键生成流水线 */
@@ -291,49 +325,111 @@ function BuildSection({ w }: { w: Workspace }) {
   const [busy, setBusy] = useState(false)
   useEffect(() => { setB(w.buildCfg ?? null) }, [w.buildCfg])
   const up = (p: Partial<BuildCfg>) => setB((x) => ({ ...(x ?? { kind: 'node', provider: 'yunxiao' }), ...p }))
+  const [adv, setAdv] = useState(false)
+  const codeupCreds = creds.filter((c) => c.group === '代码仓库' && /codeup/i.test(c.kind))
+  const jenkinsCreds = creds.filter((c) => c.group === '其它' && c.kind === 'Jenkins')
+  // 试编译：只编不发
+  type Try = { status: 'running' | 'ok' | 'fail'; by: string; at: number; files?: string[]; error?: string; log: string[] }
+  const [last, setLast] = useState<Try | null>(null)
+  const [showLog, setShowLog] = useState(false)
+  const tryBusy = last?.status === 'running'
+  const loadTry = () => call<Try | null>('GET', `/api/workspaces/${w.id}/build/try`).then((r) => setLast(r ?? null))
+  useEffect(() => { void loadTry() }, [w.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!tryBusy) return; const t = window.setInterval(loadTry, 5000); return () => clearInterval(t) }, [tryBusy]) // eslint-disable-line react-hooks/exhaustive-deps
+  const tryBuild = async () => { const r = await call<Try>('POST', `/api/workspaces/${w.id}/build/try`, undefined, '开始试编译：编远端最新提交，只编不发'); if (r) { setLast(r); setShowLog(true) } }
+  // 重启哪个服务：在要部署的第一台上列服务
+  const svcServer = w.deploys?.[0]?.servers?.[0] ?? w.server ?? 'local'
+  /** 打开「要编译」时按仓库里的文件猜：项目类型、版本号文件、在哪编、用哪个账号 */
+  const detect = async (): Promise<BuildCfg> => {
+    const provider: BuildCfg['provider'] = w.provider === 'Codeup' ? 'yunxiao' : w.provider === 'GitHub' ? 'github' : w.provider === 'GitLab' ? 'gitlab' : 'local'
+    const cfg: BuildCfg = { kind: 'node', provider, where: 'auto', ...(provider === 'yunxiao' ? { yunxiao: { cred: (w.credential && codeupCreds.some((c) => c.id === w.credential) ? w.credential : codeupCreds[0]?.id) ?? '' } } : {}), ...(provider === 'local' ? { local: { server: w.server ?? 'local' } } : {}) }
+    const ls = async (dir: string) => (await api<{ entries: { name: string }[] }>('GET', `/api/servers/${w.server ?? 'local'}/ls?path=${encodeURIComponent(dir)}`).catch(() => ({ entries: [] }))).entries.map((e) => e.name)
+    const top = w.dir ? await ls(w.dir) : []
+    const has = (n: string) => top.includes(n)
+    const GB = /^build\.gradle(\.kts)?$/
+    if (has('go.mod')) return { ...cfg, kind: 'go', ...(has('VERSION') ? { versionFile: 'VERSION' } : {}) }
+    if (has('pom.xml')) return { ...cfg, kind: 'spring', spring: { tool: 'maven', jdk: 17 }, versionFile: 'pom.xml' }
+    if (top.some((n) => GB.test(n) || /^settings\.gradle(\.kts)?$/.test(n))) {
+      const app = has('app') ? await ls(`${w.dir}/app`) : []
+      const appBuild = app.find((n) => GB.test(n))
+      if (appBuild) return { ...cfg, kind: 'android', versionFile: `app/${appBuild}` }
+      return { ...cfg, kind: 'spring', spring: { tool: 'gradle', jdk: 17 }, versionFile: top.find((n) => GB.test(n)) }
+    }
+    if (has('package.json')) return { ...cfg, kind: 'node', versionFile: 'package.json' }
+    return { ...cfg, kind: 'custom', ...(has('deploy') ? { cmd: 'bash deploy/build.sh' } : {}) }
+  }
   const save = () => call('PUT', `/api/workspaces/${w.id}`, { buildCfg: b }, b ? '编译设置已存' : '已改成不编译').then((r) => r && setOpen(false))
-  const gen = async () => { setBusy(true); await call('POST', `/api/workspaces/${w.id}/build/generate`, undefined, b?.provider === 'yunxiao' ? '云效流水线已生成 / 更新' : '工作流文件已提交进仓库'); setBusy(false) }
+  const gen = async () => { setBusy(true); await call('POST', `/api/workspaces/${w.id}/build/generate`, undefined, '流水线已建好 / 更新'); setBusy(false) }
   const cur = w.buildCfg
   return (
     <Section title="编译" right={<button className="btn ghost sm" onClick={() => setOpen(!open)}>{open ? '收起' : cur ? '改' : '设置'}</button>}>
-      {!open && (cur
-        ? <Row title={`${KIND[cur.kind]} · ${PROVIDER[cur.provider]}`} sub={cur.provider === 'yunxiao' ? (cur.yunxiao?.pipelineId ? `流水线 ${cur.yunxiao.pipelineId}${cur.yunxiao.at ? ` · ${new Date(cur.yunxiao.at).toLocaleString('zh-CN')} 生成` : ''}` : '还没生成流水线') : cur.provider === 'github' ? (cur.github?.at ? `工作流 ${cur.github.workflow}` : '还没生成工作流') : `在 ${servers.find((x) => x.id === cur.local?.server)?.name ?? '?'} 上编`}
-            right={cur.provider !== 'local' ? <button className="btn primary sm" disabled={busy} onClick={gen}>{busy ? '生成中…' : (cur.provider === 'yunxiao' ? cur.yunxiao?.pipelineId : cur.github?.at) ? '更新流水线' : '生成流水线'}</button> : undefined} />
-        : <Empty>不编译：发布时直接在服务器上跑部署命令（适合 git pull 型的项目）。要编译就点「设置」：模板和以前在云效上用的一样，产物放 out/</Empty>)}
+      {!open && (cur ? (
+        <>
+          <Row title={`${KIND[cur.kind]} · ${WHERE[whereOf(cur)].replace(/（.*）/, '')}`}
+            sub={cur.provider === 'local' ? '没有流水线：只能在服务器上编（资源不够就编不了）' : pipeReady(cur) ? `流水线：${PROVIDER[cur.provider]}，已建好${pipeAt(cur) ? ` · ${new Date(pipeAt(cur)!).toLocaleString('zh-CN')}` : ''}` : `流水线：${PROVIDER[cur.provider]}，还没建好`}
+            right={<span className="row-actions">
+              {cur.provider !== 'local' && <button className="btn default sm" disabled={busy} onClick={gen}>{busy ? '生成中…' : pipeReady(cur) ? '更新流水线' : '生成流水线'}</button>}
+              <button className="btn primary sm" disabled={tryBusy} onClick={tryBuild}>{tryBusy ? '在编…' : '试编译'}</button>
+            </span>} />
+          {cur.pipelineError && <div className="pad"><div className="banner b-warn">流水线没建成：{cur.pipelineError}</div></div>}
+          {last && (
+            <Row title={<>上次试编译 <Tag tone={last.status === 'ok' ? 'ok' : last.status === 'fail' ? 'danger' : 'primary'}>{last.status === 'ok' ? '编过了' : last.status === 'fail' ? '没编过' : '在编…'}</Tag></>}
+              sub={`${new Date(last.at).toLocaleString('zh-CN')} · ${last.by}${last.files?.length ? ` · ${last.files.join('、')}` : ''}`}
+              right={<button className="btn ghost sm" onClick={() => setShowLog(!showLog)}>{showLog ? '收起' : '看日志'}</button>} />
+          )}
+          {last && showLog && <pre className="console small" data-no-i18n="">{last.log.join('\n')}{last.error ? `\n\n${last.error}` : ''}</pre>}
+        </>
+      ) : <Empty>不编译：发布时直接在服务器上跑部署命令（适合 git pull 型的项目）。接入项目时会自动认出类型、建好流水线；要现在设就点「设置」</Empty>)}
       {open && (
         <div className="pad form boxed">
-          <label className="lrow"><span className="row-main"><span className="row-title">要编译</span><span className="row-sub">编出来的包（out/ 里，带 SHA256SUMS / VERSION / COMMIT）发到每台服务器，包里的 deploy.sh 自己装</span></span><Toggle on={!!b} onChange={(v) => setB(v ? (b ?? { kind: 'node', provider: 'yunxiao' }) : null)} /></label>
+          <label className="lrow"><span className="row-main"><span className="row-title">要编译</span><span className="row-sub">打开时按仓库里的文件自动认出项目类型（package.json / go.mod / pom.xml / 安卓），编出来的包发到每台服务器</span></span><Toggle on={!!b} onChange={(v) => { if (!v) { setB(null); return } if (!b) void detect().then(setB) }} /></label>
           {b && (
             <>
               <Field label="模板"><Segmented value={b.kind} onChange={(v) => up({ kind: v })} options={(Object.keys(KIND) as BuildCfg['kind'][]).map((k) => ({ value: k, label: KIND[k] }))} /></Field>
-              <Field label="在哪编"><Segmented value={b.provider} onChange={(v) => up({ provider: v })} options={(Object.keys(PROVIDER) as BuildCfg['provider'][]).map((k) => ({ value: k, label: PROVIDER[k] }))} /></Field>
+              <Field label="在哪编" hint="自动：编之前看本地那台的空闲内存、磁盘、CPU，够就本地编（快），不够交给流水线；Android 这类重的默认走流水线">
+                <Segmented value={whereOf(b)} onChange={(v) => up({ where: v })} options={(Object.keys(WHERE) as NonNullable<BuildCfg['where']>[]).map((k) => ({ value: k, label: k === 'auto' ? '自动（推荐）' : WHERE[k] }))} />
+              </Field>
+              <Field label="流水线用哪个打包工具">
+                <div className="chips">{(Object.keys(PROVIDER) as BuildCfg['provider'][]).map((k) => <button key={k} type="button" className={'chip' + (b.provider === k ? ' on' : '')} onClick={() => up({ provider: k, ...(k === 'local' ? { where: 'local' } : {}) })}>{PROVIDER[k]}</button>)}</div>
+              </Field>
+              {b.provider === 'gitlab' && <p className="field-hint">用项目的 GitLab 凭证（要有 api 权限）：「生成流水线」会在仓库里放 .opero/gitlab-ci.yml 并在 .gitlab-ci.yml 里 include 它。GitLab 要能访问 Opero 的外网地址（传产物回来）。</p>}
+              {b.provider === 'jenkins' && (
+                <Field label="用哪个 Jenkins" hint="「凭证 → 其它 → Jenkins」：地址、用户名、API Token。「生成流水线」会在 Jenkins 里建一个任务；Jenkins 要能访问 Opero 的外网地址（拿源码、传产物）">
+                  <div className="chips">{jenkinsCreds.map((c) => <button key={c.id} type="button" className={'chip' + (b.jenkins?.cred === c.id ? ' on' : '')} onClick={() => up({ jenkins: { ...(b.jenkins ?? {}), cred: c.id } })}>{c.name}</button>)}{jenkinsCreds.length === 0 && <span className="sub">还没有 Jenkins 凭证</span>}</div>
+                </Field>
+              )}
               {b.provider === 'yunxiao' && (
+                <Field label="用哪个云效账号" hint="Codeup 的个人访问令牌就行（要有流水线读写）；没有就去「凭证 → 代码仓库 → Codeup」加">
+                  <div className="chips">{codeupCreds.map((c) => <button key={c.id} type="button" className={'chip' + (b.yunxiao?.cred === c.id ? ' on' : '')} onClick={() => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), cred: c.id } })}>{c.name}</button>)}{codeupCreds.length === 0 && <span className="sub">还没有 Codeup 凭证</span>}</div>
+                </Field>
+              )}
+              {whereOf(b) !== 'pipeline' && <Field label="本地编在哪台" hint="在那台拉一份干净的代码跑同一个脚本；工具装在 /root/.cache/opero"><div className="chips">{servers.filter((x) => x.id === 'local' || x.via === 'agent').map((x) => <button key={x.id} type="button" className={'chip' + ((b.local?.server ?? '') === x.id ? ' on' : '')} onClick={() => up({ local: { server: x.id } })}>{x.name}</button>)}</div></Field>}
+              {b.kind === 'custom' && <Field label="编译命令" hint="在仓库根目录跑，把要发的东西放进 out/（包里放 deploy.sh 就由它来装）"><textarea className="mono" rows={3} value={b.cmd ?? ''} onChange={(e) => up({ cmd: e.target.value })} placeholder="bash deploy/build.sh" /></Field>}
+              {(b.kind === 'node' || b.kind === 'go') && <Field label="部署完重启哪个服务（可选）"><ServicePick server={svcServer} value={b.service ?? ''} onChange={(v) => up({ service: v })} /></Field>}
+              {b.kind === 'spring' && (
                 <>
-                  <Field label="云效个人访问令牌在哪个凭证" hint="云效「个人设置 → 个人访问令牌」，权限要有流水线读写、代码库读"><select value={b.yunxiao?.cred ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), cred: e.target.value } })}><option value="">选一个</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
-                  <div className="inline-form">
-                    <Field label="组织编号（默认用 Codeup 地址里的）"><input value={b.yunxiao?.org ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), org: e.target.value } })} /></Field>
-                    <Field label="已有的流水线编号（可选）"><input value={b.yunxiao?.pipelineId ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), pipelineId: e.target.value } })} placeholder="空 = 点「生成流水线」新建" /></Field>
-                  </div>
-                  <Field label="构建镜像（可选）" hint="要装很多工具的项目用一个装好工具的镜像（放在国内能快速拉的仓库）"><input value={b.yunxiao?.image ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), image: e.target.value } })} placeholder="默认 alinux3" /></Field>
+                  <Field label="工具"><Segmented value={b.spring?.tool ?? 'maven'} onChange={(v) => up({ spring: { ...(b.spring ?? {}), tool: v } })} options={[{ value: 'maven', label: 'Maven' }, { value: 'gradle', label: 'Gradle' }]} /></Field>
+                  <Field label="JDK"><Segmented value={String(b.spring?.jdk ?? 17) as '17' | '21'} onChange={(v) => up({ spring: { ...(b.spring ?? {}), jdk: Number(v) as 17 } })} options={[{ value: '17', label: '17' }, { value: '21', label: '21' }]} /></Field>
                 </>
               )}
-              {b.provider === 'github' && <Field label="工作流文件名" hint="「生成流水线」会用工作空间的令牌把它提交进仓库（令牌要有 workflow 权限）"><input value={b.github?.workflow ?? ''} onChange={(e) => up({ github: { ...(b.github ?? {}), workflow: e.target.value } })} placeholder="opero-build.yml" /></Field>}
-              {b.provider === 'local' && <Field label="在哪台编" hint="在那台拉一份干净的代码跑同一个脚本；工具装在 /root/.cache/opero"><select value={b.local?.server ?? ''} onChange={(e) => up({ local: { server: e.target.value } })}><option value="">选一台</option>{servers.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}</select></Field>}
-              {b.kind !== 'custom' && <Field label="代码在哪个子目录（可选）"><input value={b.subdir ?? ''} onChange={(e) => up({ subdir: e.target.value })} placeholder="." /></Field>}
-              {b.kind === 'custom' && <Field label="编译命令" hint="在仓库根目录跑，把要发的东西放进 out/（包里放 deploy.sh 就由它来装）"><textarea className="mono" rows={4} value={b.cmd ?? ''} onChange={(e) => up({ cmd: e.target.value })} placeholder="bash deploy/build.sh" /></Field>}
-              {(b.kind === 'node' || b.kind === 'go') && <Field label="部署完重启哪个服务（可选）"><input value={b.service ?? ''} onChange={(e) => up({ service: e.target.value })} placeholder="myapp" /></Field>}
-              {b.kind === 'spring' && (
-                <div className="inline-form">
-                  <Field label="工具"><select value={b.spring?.tool ?? 'maven'} onChange={(e) => up({ spring: { ...(b.spring ?? {}), tool: e.target.value as 'maven' } })}><option value="maven">Maven</option><option value="gradle">Gradle</option></select></Field>
-                  <Field label="JDK"><select value={String(b.spring?.jdk ?? 17)} onChange={(e) => up({ spring: { ...(b.spring ?? {}), jdk: Number(e.target.value) as 17 } })}><option value="17">17</option><option value="21">21</option></select></Field>
-                  <Field label="编译命令（可选）"><input value={b.spring?.task ?? ''} onChange={(e) => up({ spring: { ...(b.spring ?? {}), task: e.target.value } })} placeholder="clean package -DskipTests" /></Field>
-                </div>
+              <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起高级设置' : '高级设置（一般不用动）'}</button>
+              {adv && (
+                <>
+                  {b.kind !== 'custom' && <Field label="代码在哪个子目录"><PathInput server={w.server ?? 'local'} base={w.dir} value={b.subdir ?? ''} onChange={(v) => up({ subdir: v })} placeholder="." /></Field>}
+                  <Field label="版本号文件" hint="自动认出来的；一般不用改"><PathInput server={w.server ?? 'local'} base={w.dir} files value={b.versionFile ?? ''} onChange={(v) => up({ versionFile: v })} placeholder="package.json" /></Field>
+                  <Field label="版本号正则（不填按版本号文件猜）"><input className="mono" value={b.versionRe ?? ''} onChange={(e) => up({ versionRe: e.target.value })} placeholder={'"version"\\s*:\\s*"([^"]+)"'} /></Field>
+                  <Field label="发哪个产物（不填按模板）"><input value={b.file ?? ''} onChange={(e) => up({ file: e.target.value })} placeholder={b.kind === 'android' ? '*.apk' : b.kind === 'spring' ? 'bundle.tgz' : '*.tgz'} /></Field>
+                  {b.kind === 'spring' && <Field label="编译命令"><div className="chips">{SPRING_TASKS.map((x) => <button key={x} type="button" className={'chip mono' + ((b.spring?.task ?? '') === x ? ' on' : '')} onClick={() => up({ spring: { ...(b.spring ?? {}), task: x } })} data-no-i18n="">{x}</button>)}</div></Field>}
+                  {b.provider === 'yunxiao' && (
+                    <>
+                      <Field label="组织编号（不填用 Codeup 地址里的）"><input value={b.yunxiao?.org ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), org: e.target.value } })} /></Field>
+                      <Field label="已有的流水线编号（不填 = 点「生成流水线」新建）"><input value={b.yunxiao?.pipelineId ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), pipelineId: e.target.value } })} /></Field>
+                      <Field label="构建镜像（不填用 alinux3）" hint="要装很多工具的项目用一个装好工具的镜像"><input value={b.yunxiao?.image ?? ''} onChange={(e) => up({ yunxiao: { ...(b.yunxiao ?? { cred: '' }), image: e.target.value } })} /></Field>
+                    </>
+                  )}
+                  {b.provider === 'github' && <Field label="工作流文件名（不填用 opero-build.yml）"><input value={b.github?.workflow ?? ''} onChange={(e) => up({ github: { ...(b.github ?? {}), workflow: e.target.value } })} placeholder="opero-build.yml" /></Field>}
+                </>
               )}
-              <div className="inline-form">
-                <Field label="版本号文件（可选）"><input value={b.versionFile ?? ''} onChange={(e) => up({ versionFile: e.target.value })} placeholder="package.json" /></Field>
-                <Field label="版本号正则"><input className="mono" value={b.versionRe ?? ''} onChange={(e) => up({ versionRe: e.target.value })} placeholder={'"version"\\s*:\\s*"([^"]+)"'} /></Field>
-                <Field label="发哪个产物"><input value={b.file ?? ''} onChange={(e) => up({ file: e.target.value })} placeholder={b.kind === 'android' ? '*.apk' : b.kind === 'spring' ? 'bundle.tgz' : '*.tgz'} /></Field>
-              </div>
             </>
           )}
           <div className="row-actions">
@@ -347,34 +443,84 @@ function BuildSection({ w }: { w: Workspace }) {
   )
 }
 
-function DeployForm({ init, servers, onSave, onCancel }: { init?: Deploy; servers: Server[]; onSave: (d: Deploy) => void; onCancel: () => void }) {
+/** 不编译时常用的部署命令：点一个，再点要重启的服务 */
+const DEPLOY_CMDS: [string, string][] = [
+  ['拉最新代码', 'git pull'],
+  ['Node：拉代码 + 装依赖', 'git pull && npm ci --omit=dev'],
+  ['Docker Compose', 'docker compose pull && docker compose up -d'],
+  ['PHP / 静态站：只拉代码', 'git pull --ff-only'],
+]
+function DeployForm({ init, servers, build, onSave, onCancel }: { init?: Deploy; servers: Server[]; build?: BuildCfg; onSave: (d: Deploy) => void; onCancel: () => void }) {
   const certs = useStore((s) => s.credentials).filter((c) => c.group === '签名证书')
-  const [d, setD] = useState<Deploy>(init ?? { id: '', name: '', servers: [], ai: 'ask', keep: 5, autoRollback: true })
+  const [d, setD] = useState<Deploy>(init ?? { id: '', name: '', servers: [], keep: 5, autoRollback: true })
+  const [adv, setAdv] = useState(false)
   const up = (p: Partial<Deploy>) => setD((x) => ({ ...x, ...p }))
+  const dirsOf = (ids: string[]) => [...new Set(ids.flatMap((id) => (servers.find((s) => s.id === id)?.dirs ?? []).filter((x) => x.mode === 'deploy').map((x) => x.path)))]
+  // 选中的服务器上登记成「能部署」的目录：点一下填进去；只有一个就直接用
+  const deployDirs = dirsOf(d.servers)
   const notAllowed = d.dir ? d.servers.map((id) => servers.find((s) => s.id === id)).filter((s) => s && !(s.dirs ?? []).some((x) => x.mode === 'deploy' && (d.dir === x.path || d.dir!.startsWith(x.path + '/')))) : []
+  const toggleServer = (id: string) => {
+    const next = d.servers.includes(id) ? d.servers.filter((x) => x !== id) : [...d.servers, id]
+    const dirs = dirsOf(next)
+    up({ servers: next, ...(!d.dir && dirs.length === 1 ? { dir: dirs[0] } : {}) })
+  }
+  // 名字不填就用第一台的环境标签（生产 / 测试…）
+  const envs = [...new Set(d.servers.map((id) => servers.find((s) => s.id === id)?.env).filter((x): x is string => !!x))]
+  const autoName = envs.join(' + ') || '发布'
+  const svc = d.command?.match(/systemctl restart (\S+)/)?.[1] ?? ''
+  const setSvc = (v: string) => up({ command: `${(d.command ?? '').replace(/\s*&&\s*systemctl restart \S+/, '')}${v ? `${d.command ? ' && ' : ''}systemctl restart ${v}` : ''}` || undefined })
   return (
     <div className="pad form boxed">
-      <Field label="名字"><input value={d.name} onChange={(v) => up({ name: v.target.value })} placeholder="比如：生产、测试" /></Field>
       <div className="field"><span className="field-label">发到哪几台</span>
-        <div className="chips">{servers.map((s) => { const on = d.servers.includes(s.id); return <button key={s.id} className={'chip' + (on ? ' on' : '')} onClick={() => up({ servers: on ? d.servers.filter((x) => x !== s.id) : [...d.servers, s.id] })}>{s.name}</button> })}</div>
+        <div className="chips">{servers.map((s) => <button key={s.id} type="button" className={'chip' + (d.servers.includes(s.id) ? ' on' : '')} onClick={() => toggleServer(s.id)}>{s.name}<span className="sub"> · {s.env}</span></button>)}</div>
       </div>
-      <Field label="部署目录（OPERO_DIR = KL_DIR）" hint="每台都要在服务器详情「目录」里把它（或它的上层）登记成「能部署」"><input className="mono" value={d.dir ?? ''} onChange={(v) => up({ dir: v.target.value || undefined })} placeholder="/home/project/myapp" /></Field>
-      {notAllowed.length > 0 && <div className="banner b-warn">还没登记成能部署：{notAllowed.map((s) => s!.name).join('、')}</div>}
-      <div className="inline-form">
-        <Field label="包里的部署脚本"><input className="mono" value={d.script ?? ''} onChange={(v) => up({ script: v.target.value || undefined })} placeholder="deploy.sh" /></Field>
-        <Field label="给 apk / aab 签名"><select value={d.sign ?? ''} onChange={(v) => up({ sign: v.target.value || undefined })}><option value="">不签</option>{certs.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
-      </div>
-      <Field label="部署命令（包里没有部署脚本、或者不编译时用）" hint="在部署目录里跑；包在 $OPERO_PKG，提交在 $OPERO_REF，要密码用 {{secret:凭证名}}"><textarea className="mono" rows={3} value={d.command ?? ''} onChange={(v) => up({ command: v.target.value || undefined })} placeholder="git pull && npm ci && systemctl restart app" /></Field>
-      <Field label="发完检查的地址（可选）" hint="在每台上 curl，1 分钟内 2xx / 3xx 算好"><input value={d.health ?? ''} onChange={(v) => up({ health: v.target.value || undefined })} placeholder="http://127.0.0.1:8080/health" /></Field>
-      <div className="inline-form">
-        <Field label="留几个版本（能回滚）"><input inputMode="numeric" value={String(d.keep ?? 5)} onChange={(v) => up({ keep: Number(v.target.value) || 5 })} /></Field>
-        <Field label="员工能不能发"><select value={d.ai ?? 'ask'} onChange={(v) => up({ ai: v.target.value as Deploy['ai'] })}><option value="ask">发前问你</option><option value="auto">直接发（失败自动让它修）</option><option value="off">不许</option></select></Field>
-      </div>
+      <Field label="部署目录（OPERO_DIR = KL_DIR）" hint="点下面登记过「能部署」的目录，或者「选…」在第一台上浏览">
+        {deployDirs.length > 0 && <div className="chips">{deployDirs.map((x) => <button key={x} type="button" className={'chip mono' + (d.dir === x ? ' on' : '')} onClick={() => up({ dir: x })} data-no-i18n="">{x}</button>)}</div>}
+        <PathInput server={d.servers[0]} value={d.dir ?? ''} onChange={(v) => up({ dir: v || undefined })} placeholder="/home/project/myapp" />
+      </Field>
+      {notAllowed.length > 0 && <div className="banner b-warn">还没登记成能部署：{notAllowed.map((s) => s!.name).join('、')}（服务器详情 → 目录）</div>}
+      {build?.kind === 'android' && certs.length > 0 && (
+        <Field label="给 apk / aab 签名"><div className="chips"><button type="button" className={'chip' + (!d.sign ? ' on' : '')} onClick={() => up({ sign: undefined })}>不签</button>{certs.map((c) => <button key={c.id} type="button" className={'chip' + (d.sign === c.id ? ' on' : '')} onClick={() => up({ sign: c.id })}>{c.name}</button>)}</div></Field>
+      )}
+      {!build && (
+        <Field label="部署命令" hint="在部署目录里跑；点一个常用的，再选要重启的服务">
+          <div className="chips">{DEPLOY_CMDS.map(([label, c]) => <button key={label} type="button" className={'chip' + ((d.command ?? '').startsWith(c) ? ' on' : '')} onClick={() => up({ command: c + (svc ? ` && systemctl restart ${svc}` : '') })}>{label}</button>)}</div>
+          {d.servers[0] && <ServicePick server={d.servers[0]} value={svc} onChange={setSvc} />}
+          <textarea className="mono" rows={2} value={d.command ?? ''} onChange={(v) => up({ command: v.target.value || undefined })} placeholder="git pull && systemctl restart app" />
+        </Field>
+      )}
+      <Field label="员工能不能发" hint="默认：发生产先问你，测试 / 开发直接发"><Segmented value={d.ai ?? (d.servers.some((id) => /生产|prod/i.test(servers.find((x) => x.id === id)?.env ?? '')) ? 'ask' : 'auto')} onChange={(v) => up({ ai: v })} options={[{ value: 'ask', label: '发前问你' }, { value: 'auto', label: '直接发（失败自动让它修）' }, { value: 'off', label: '不许' }]} /></Field>
+      <Field label="留几个版本（能回滚）"><div className="chips">{[3, 5, 10].map((n) => <button key={n} type="button" className={'chip' + ((d.keep ?? 5) === n ? ' on' : '')} onClick={() => up({ keep: n })}>{`${n} 个版本`}</button>)}</div></Field>
       <label className="lrow"><span className="row-main"><span className="row-title">失败自动退回上一版</span><span className="row-sub">部署或检查失败时，用上一个成功版本留着的包重新部署</span></span><Toggle on={d.autoRollback !== false} onChange={(v) => up({ autoRollback: v })} /></label>
-      <div className="row-actions"><button className="btn ghost" onClick={onCancel}>取消</button><button className="btn primary" disabled={!d.name.trim() || !d.servers.length} onClick={() => onSave(d)}>保存</button></div>
+      <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起高级设置' : '高级设置（一般不用动）'}</button>
+      {adv && (
+        <>
+          <Field label="名字（不填用环境标签）"><input value={d.name} onChange={(v) => up({ name: v.target.value })} placeholder={autoName} /></Field>
+          <Field label="发完检查的地址" hint="在每台上 curl，1 分钟内 2xx / 3xx 算好；不填不检查"><input value={d.health ?? ''} onChange={(v) => up({ health: v.target.value || undefined })} placeholder="http://127.0.0.1:8080/health" /></Field>
+          {build && <Field label="包里的部署脚本（不填用 deploy.sh）"><input className="mono" value={d.script ?? ''} onChange={(v) => up({ script: v.target.value || undefined })} placeholder="deploy.sh" /></Field>}
+          {build && <Field label="部署命令（包里没有部署脚本时用）" hint="包在 $OPERO_PKG，提交在 $OPERO_REF，要密码用 {{secret:凭证名}}"><textarea className="mono" rows={2} value={d.command ?? ''} onChange={(v) => up({ command: v.target.value || undefined })} /></Field>}
+        </>
+      )}
+      <div className="row-actions"><button className="btn ghost" onClick={onCancel}>取消</button><button className="btn primary" disabled={!d.servers.length} onClick={() => onSave({ ...d, name: d.name.trim() || autoName })}>保存</button></div>
     </div>
   )
 }
+
+const SPRING_TASKS = ['clean package -DskipTests', 'clean package', 'bootJar']
+/** 选这台在跑的系统服务（点开才去读），也能手填 */
+export function ServicePick({ server, value, onChange }: { server: string; value: string; onChange: (v: string) => void }) {
+  const [list, setList] = useState<string[] | null>(null)
+  const load = () => { if (list === null) call<{ services: string[] }>('GET', `/api/servers/${server}/services`).then((r) => setList((r?.services ?? []).map((x) => x.replace(/\.service$/, '')).filter((x) => !SYS_SVC.test(x)))) }
+  return (
+    <div className="chips">
+      {list === null && <button type="button" className="chip" onClick={load}>{value || '从这台在跑的服务里选…'}</button>}
+      {list?.map((x) => <button key={x} type="button" className={'chip mono' + (value === x ? ' on' : '')} onClick={() => onChange(value === x ? '' : x)} data-no-i18n="">{x}</button>)}
+      {list && <input className="chip-input" value={list.includes(value) ? '' : value} onChange={(e) => onChange(e.target.value)} placeholder="别的" />}
+    </div>
+  )
+}
+/** 系统自带的服务：不列出来 */
+const SYS_SVC = /^(systemd-|getty@|serial-getty|user@|dbus|cron|crond|ssh|sshd|rsyslog|polkit|snapd|chronyd|irqbalance|unattended|multipathd|udisks|packagekit|accounts-daemon|atd|ModemManager|NetworkManager|networkd|wpa_supplicant|qemu-guest|cloud-|aliyun|AssistDaemon|tuned|firewalld|auditd|containerd|lvm2|blk-|rngd|acpid|kdump|postfix|getty)/
 
 // ======================= 服务器：登记本地目录 =======================
 const MODE: Record<ServerDir['mode'], string> = { read: '员工只读', write: '员工能改', deploy: '能部署' }
@@ -383,15 +529,14 @@ export function DirsSection({ s }: { s: Server }) {
   const [dirty, setDirty] = useState(false)
   useEffect(() => { setList(s.dirs ?? []); setDirty(false) }, [s.dirs])
   const up = (i: number, p: Partial<ServerDir>) => { setList((l) => l.map((x, j) => (j === i ? { ...x, ...p } : x))); setDirty(true) }
-  const save = () => requireVerify(`改「${s.name}」登记的目录`, () => call('PUT', `/api/servers/${s.id}`, { dirs: list.map(({ path, mode, note }) => ({ path, mode, note })) }, '已保存，在给 AI 用户开权限…'))
+  const save = () => (call('PUT', `/api/servers/${s.id}`, { dirs: list.map(({ path, mode, note }) => ({ path, mode, note })) }, '已保存，在给 AI 用户开权限…'))
   return (
     <Section title={`目录 · ${list.length}`} right={<span className="sub">员工能读 / 改哪些本地目录，发布能部署进哪些</span>}>
       {list.length === 0 && <Empty>还没登记：员工只能碰自己的工作目录；发布不能部署进任何目录</Empty>}
       {list.map((d, i) => (
         <div key={i} className="pad inline-form">
-          <input className="mono" value={d.path} onChange={(e) => up(i, { path: e.target.value })} placeholder="/home/project/myapp" />
+          <PathInput server={s.id} value={d.path} onChange={(v) => up(i, { path: v })} placeholder="/home/project/myapp" />
           <select value={d.mode} onChange={(e) => up(i, { mode: e.target.value as ServerDir['mode'] })}>{(Object.keys(MODE) as ServerDir['mode'][]).map((m) => <option key={m} value={m}>{MODE[m]}</option>)}</select>
-          <input value={d.note ?? ''} onChange={(e) => up(i, { note: e.target.value })} placeholder="备注（可选）" />
           {!dirty && d.error && <Tag tone={d.error === '在设权限…' ? 'primary' : 'danger'}>{d.error === '在设权限…' ? '在设' : '没设好'}</Tag>}
           {!dirty && d.ok && <Tag tone="ok">好了</Tag>}
           <button className="btn ghost sm" onClick={() => { setList((l) => l.filter((_, j) => j !== i)); setDirty(true) }}>删</button>

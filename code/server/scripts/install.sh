@@ -19,7 +19,7 @@
 #   /opt/opero/app       程序（code/server + code/web/dist）
 #   /etc/opero/opero.env 配置（端口、目录、AI 用户）
 #   /var/lib/opero       数据（数据库、保险箱密钥、文件），只有 opero 用户能读
-#   /srv/opero/work      员工干活的目录（工作空间），opero-ai 用户读写
+#   /srv/opero/work      员工干活的目录，opero-ai 用户读写
 #   用户 opero 跑后台；用户 opero-ai 跑 Claude Code / Codex（读不到 /var/lib/opero）
 set -euo pipefail
 

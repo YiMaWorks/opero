@@ -20,7 +20,7 @@ import * as tunnel from './tunnel.ts'
 import * as memory from './memory.ts'
 import * as autogit from './autogit.ts'
 import { policyOf, policyText, shimBins, SHIM_SCRIPT, type Policy } from './policy.ts'
-import { watchMemory } from './limits.ts'
+import { watchResources } from './limits.ts'
 import { spawn } from 'node:child_process'
 
 /** path = 员工那台机器上看到的路径；local = Opero 这台上的原文件（远程员工时两者不同） */
@@ -46,7 +46,7 @@ interface Live {
   stderr: string
   secrets: string[]
   ctx?: number
-  /** 这一轮的第一句（自动提交的说明用）、工作空间、内存看守 */
+  /** 这一轮的第一句（自动提交的说明用）、项目、内存看守 */
   ask: string
   ws?: Workspace
   unwatch: () => void
@@ -176,12 +176,18 @@ export function empHome(emp: Employee) {
 const homeOn = (emp: Employee, host: string) => (hosts.isLocal(host) ? empHome(emp) : path.posix.join(agents.REMOTE_WORK, 'emp', emp.id))
 function cwdOf(emp: Employee, host: string): { cwd: string; ws?: Workspace } {
   const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
-  // 工作空间要和员工在同一台机器上
+  // 项目要和员工在同一台机器上
   if (ws && (ws.server ?? hosts.LOCAL) === host && (!hosts.isLocal(host) || fs.existsSync(ws.dir))) return { cwd: ws.dir, ws }
   return { cwd: homeOn(emp, host) }
 }
 
-/** 能只读看的别的工作空间（要和员工在同一台机器上、已经拉下来了） */
+/** 员工档案上显示：在哪台、工作目录、记忆放在哪 */
+export function whereOf(emp: Employee): { host: string; cwd: string; project?: string; mem: string } {
+  const host = hostOf(emp)
+  const { cwd, ws } = cwdOf(emp, host)
+  return { host, cwd, project: ws?.id, mem: ws ? `${ws.dir}/docs` : memory.memDir(emp, host) }
+}
+/** 能只读看的别的项目（要和员工在同一台机器上、已经拉下来了） */
 export function readDirsOf(emp: Employee, host = hostOf(emp)): { name: string; dir: string }[] {
   const wss = (emp.reads ?? []).slice(0, 8).map((id) => get<Workspace>('workspaces', id)).filter((w): w is Workspace => !!w && w.id !== emp.workspace && (w.server ?? hosts.LOCAL) === host)
     .map((w) => ({ name: w.name, dir: w.dir }))
@@ -226,15 +232,20 @@ function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: stri
 - 服务器、数据库、代码仓库、云的账号都在 Opero 的保险箱里，你拿不到，也不要去找、不要让主人发给你。
 - 连服务器用 opero 的 server_exec（先 list_servers 看有哪些）；看日志用 log_scan（按时间统计、第一次 / 最近出现、异常汇总，别整份 cat）；改服务器上的文件用 file_write（自动备份）；要密码 / 令牌就在命令里写 {{secret:凭证名}}（list_credentials 看有哪些），Opero 替你填，你看不到值。
 - 查库用 db_query（先 list_databases）；同步 / 推送代码用 git_sync；${emp.dns?.length ? '改域名解析用 dns_list / dns_set / dns_delete（只限主人开给你的域名，改前先看、改后用 dig 确认）；' : ''}${emp.workBranch ? `你在自己的分支 ${emp.workBranch} 上改，做完用 pr_create 提合并请求（pr_status 看合没合）；` : ''}发布用 release_publish（release_list 看有哪些目标、你有没有权限发，release_status 看结果）。
+- 编译 / 打包由 Opero 管（build_info 看现在怎么编）：配或改编译、建流水线按这个顺序——build_info 看现状 → 需要的话写好 deploy/build.sh（把要发的东西放进 out/）和包里的 deploy.sh → 提交推送 → build_set 改设置 → build_generate 建 / 更新流水线（云效、GitHub Actions）→ build_try 试编 → build_status 看日志，改到编通 → release_list 看发布目标。建流水线、试编译不用问主人；发生产要主人确认。在哪编默认「自动」：编译那台资源够就本地编，不够走流水线；不要自己在服务器上硬跑大编译（Android、Docker 这类）。
 - 线上问题记进问题清单：issue_report（同一个问题用同一个 key），修好了 issue_update 标 fixed；issue_list 看现在有哪些。
 - 要主人在几个方案里选，用 ask_owner；做不可撤销或影响生产的事之前用 confirm；要给主人看结构化的结果用 send_card；要把文件或图片发给主人用 send_file。
+- 按约定直接做，少问：只有删重要数据、影响生产（发生产、改生产服务器 / 生产库）这类不可撤销的事才用 confirm；同步代码、建临时文件、清理自己的临时目录、在测试 / 开发环境改东西这些都直接做，不要问主人。
+- 临时文件放在你自己的目录 ${path.posix.join(homeOn(emp, host), 'tmp')}（没有就建），不要用 /tmp；在你自己干活的这台机器上直接在终端跑命令，不要用 server_exec（那是管别的服务器用的，以 root 跑）。
 - 别的员工更合适的活，用 delegate 转给它（list_employees 看有谁）。${emp.canManage ? '\n- 你能管员工：主人要建新员工或改别的员工的职责，用 emp_create / emp_update（主人会点确认；服务器、库、凭证的权限由主人自己给）。' : ''}
 - 共用资料（规范、接口文档、产品说明）先用 kb_search / kb_get 查；值得留给所有员工的，用 kb_save 存进去。
-- 工作目录：${cwd}${ws ? `（工作空间「${ws.name}」，仓库 ${ws.repo}，分支 ${ws.branch}）` : '（就是你的记忆仓库）'}。${ws && autogit.autoOn(ws) ? '\n- 这个工作空间开了自动同步：开工前 Opero 已经拉到最新；这一轮干完 Opero 会自动提交并推送，你可以自己 commit（写好提交说明），不用推送。' : ''}`,
-    `## 你的记忆仓库：${mem}
+- 工作目录：${cwd}${ws ? `（项目「${ws.name}」，仓库 ${ws.repo}，分支 ${ws.branch}）` : '（就是你的记忆仓库）'}。${ws && autogit.autoOn(ws) ? '\n- 这个项目开了自动同步：开工前 Opero 已经拉到最新；这一轮干完 Opero 会自动提交并推送，你可以自己 commit（写好提交说明），不用推送。' : ''}`,
+    mem ? `## 你的记忆仓库：${mem}
 - 开工先读 ${mem}/CLAUDE.md 和 ${mem}/docs/交接.md 最上面几条，接着上次做。
 - 做完在 docs/交接.md 最上面加一条（做了什么、为什么、怎么验证、还剩什么、下一步），docs/记录/<年-月>.md 记一行流水；机器的事记 docs/机器/。
-- 这个仓库每轮干完 Opero 自动提交，换会话、换执行器、换服务器都从这里接着干，所以交接要写清楚。`,
+- 这个仓库每轮干完 Opero 自动提交，换会话、换执行器、换服务器都从这里接着干，所以交接要写清楚。` : `## 记忆：就是这个项目的 docs/
+- 开工先读项目里的 CLAUDE.md / AGENTS.md / README 和 docs/交接.md 最上面几条（没有 docs/交接.md 就建一个），接着上次做。
+- 做完在 docs/交接.md 最上面加一条（做了什么、为什么、怎么验证、还剩什么、下一步），跟代码一起提交。这个项目可能还有别的员工，大家看同一份交接。`,
     writeDirsOf(host).length && `## 这台服务器上你能改的目录\n${writeDirsOf(host).map((r) => `- ${r.name}：${r.dir}`).join('\n')}`,
     readDirsOf(emp, host).length && `## 只读参考的项目（只能看，不能改）\n${readDirsOf(emp, host).map((r) => `- ${r.name}：${r.dir}`).join('\n')}\n要改这些项目，告诉主人交给负责它的员工。`,
     policyText(policyOf(hosts.isLocal(host) ? get<Server>('servers', 'local') : get<Server>('servers', host)), hosts.isLocal(host) ? 'Opero 这台' : get<Server>('servers', host)?.name ?? host),
@@ -290,11 +301,11 @@ export async function send(empId: string, text: string, files: Attachment[] = []
 }
 
 
-/** 员工 / 它的工作空间这个月的预算用满了：返回原因 */
+/** 员工 / 它的项目这个月的预算用满了：返回原因 */
 export function budgetOver(emp: Employee): string {
   if (emp.budget && monthCostOf({ emp: emp.id }) >= emp.budget) return `「${emp.name}」这个月的预算（$${emp.budget}）用满了，先停下。到员工档案里调高预算再试。`
   const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
-  if (ws?.budget && monthCostOf({ ws: ws.id }) >= ws.budget) return `项目「${ws.name}」这个月的预算（$${ws.budget}）用满了，先停下。到工作空间里调高预算再试。`
+  if (ws?.budget && monthCostOf({ ws: ws.id }) >= ws.budget) return `项目「${ws.name}」这个月的预算（$${ws.budget}）用满了，先停下。到项目里调高预算再试。`
   return ''
 }
 
@@ -351,12 +362,15 @@ function start(emp: Employee, text: string, files: Attachment[]) {
 
   const begin = async () => {
     let proc: ChildProcess
-    // 记忆仓库（没有就建、Opero 管的那段对一遍）和工作空间（拉到最新）
-    const mem = await memory.ensureMemory(emp, host)
+    // 记忆仓库（没有就建、Opero 管的那段对一遍）和项目（拉到最新）
+    // 项目员工：记忆就是项目的 docs/，不另建
+    const mem = ws ? { dir: '', note: undefined as string | undefined } : await memory.ensureMemory(emp, host)
     const pre = ws ? await autogit.preSync(ws, emp) : ''
-    const notes = [mem.note && `（Opero：${mem.note}）`, pre].filter(Boolean).join('\n')
+    // 只读参考的项目也拉到最新（比如从上游仓库同步代码的项目，要读上游最新的）
+    const readNotes = (await Promise.all((emp.reads ?? []).map((id) => get<Workspace>('workspaces', id)).filter((w): w is Workspace => !!w && (w.server ?? hosts.LOCAL) === host).map((w) => autogit.refreshRead(w)))).filter(Boolean).join('\n')
+    const notes = [mem.note && `（Opero：${mem.note}）`, pre, readNotes].filter(Boolean).join('\n')
     if (notes) text = `${notes}\n\n${text}`
-    const memDirs = mem.note ? [] : [mem.dir]
+    const memDirs = ws || mem.note ? [] : [mem.dir]
     Object.assign(env, await shimEnv(host, policyOf(get<Server>('servers', host))))
     if (kind === 'claude') {
       const pm = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : 'acceptEdits'
@@ -366,10 +380,12 @@ function start(emp: Employee, text: string, files: Attachment[]) {
         '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__opero__approve', '--allowedTools', 'mcp__opero',
         '--append-system-prompt', rules(emp, cwd, ws, host, mem.dir), '--add-dir', uploads, ...memDirs.filter((d) => d !== cwd).flatMap((d) => ['--add-dir', d]), ...readDirsOf(emp, host).flatMap((r) => ['--add-dir', r.dir]), ...writeDirsOf(host).flatMap((r) => ['--add-dir', r.dir])]
       if (!cfg.aiUser && hosts.isLocal(host)) args.push('--disallowedTools', `Read(/${cfg.data}/**),Edit(/${cfg.data}/**),Write(/${cfg.data}/**)`)
-      if (MODEL_IDS[emp.model]) args.push('--model', MODEL_IDS[emp.model])
+      // 显示名（Opus 5.5）换成型号；从接口读到的完整型号（claude-…）直接用
+      const mid = MODEL_IDS[emp.model] ?? (/^claude-[\w.-]+$/.test(emp.model ?? '') ? emp.model : '')
+      if (mid) args.push('--model', mid)
       if (emp.effort && (await supportsEffort(host))) args.push('--effort', emp.effort)
       if (emp.resumeId) args.push('--resume', emp.resumeId)
-      proc = hosts.spawnAiOn(host, hosts.claudeBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
+      proc = hosts.spawnAiOn(host, hosts.claudeBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     } else {
       const q = (v: string) => JSON.stringify(v)
       const args = ['exec',
@@ -391,14 +407,18 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       if (emp.model && emp.model !== '执行器默认') args.push('-m', emp.model)
       if (emp.resumeId) args.push('resume', emp.resumeId)
       args.push('-')
-      proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
+      proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     }
     const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
       said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0 }
     // 内存上限（这台的规矩）：本机在这里看着，远程由 Agent 看着、超了在 stderr 里说一句
-    const memPct = policyOf(get<Server>('servers', host)).memPct
-    if (hosts.isLocal(host)) l.unwatch = watchMemory(proc.pid, memPct, {
-      kill: (pid) => { if (cfg.aiUser) spawn('sudo', ['-n', '-u', cfg.aiUser, 'kill', '-9', String(pid)], { stdio: 'ignore' }).on('error', () => {}); else process.kill(pid, 'SIGKILL') },
+    const { memPct, cpuPct } = policyOf(get<Server>('servers', host))
+    if (hosts.isLocal(host)) l.unwatch = watchResources(proc.pid, { memPct, cpuPct }, {
+      signal: (pid, sig) => { if (cfg.aiUser) spawn('sudo', ['-n', '-u', cfg.aiUser, 'kill', `-${sig.slice(3)}`, String(pid)], { stdio: 'ignore' }).on('error', () => {}); else process.kill(pid, sig) },
+      warnCpu: (pct) => { if (Date.now() - l.warned > 5 * 60_000) { l.warned = Date.now(); system(l.sid, `⚠ ${emp.name} 的进程用了这台 ${pct}% CPU（上限 ${cpuPct}%），一直这样会先暂停最占 CPU 的进程`) } },
+      paused: (p, pct) => system(l.sid, `⏸ CPU 一直超过上限（${pct}% > ${cpuPct}%），先暂停了：${p.cmd || p.pid}。机器降下来会自动继续`),
+      resumed: (p) => system(l.sid, `▶ 机器降下来了，继续：${p.cmd || p.pid}`),
+      stoppedCpu: (p) => system(l.sid, `⚠ 暂停了 10 分钟机器还是忙，停掉了：${p.cmd || p.pid}。要编译就交给流水线（发布里的编译设置）`),
       warn: (pct) => { if (Date.now() - l.warned > 5 * 60_000) { l.warned = Date.now(); system(l.sid, `⚠ ${emp.name} 的进程用了这台 ${pct}% 内存（上限 ${memPct}%），一直这样会停掉最大的那个进程`) } },
       killed: (p, pct) => system(l.sid, `⚠ 内存超过上限（${pct}% > ${memPct}%），停掉了最大的进程：${p.cmd || p.pid}（${p.mb} MB）`),
     })
@@ -542,12 +562,12 @@ function finish(l: Live, code: number | null) {
   if (l.ctx && emp) saveEmp(emp.id, { contextUsed: Math.min(100, Math.round((100 * l.ctx) / 200_000)) })
   recordRun(l.runId, l.emp, l.ok && !l.stopped, l.cost, l.tokens, l.ws?.id ?? '')
   if (emp) budgetWarn(emp, l.sid)
-  // 收尾：记忆仓库提交、工作空间提交推送，做完再放下一条排队的（免得两轮同时动 git）
+  // 收尾：记忆仓库提交、项目提交推送，做完再放下一条排队的（免得两轮同时动 git）
   const ok = l.ok && !l.stopped
   ;(async () => {
     if (!emp) return
     if (l.ws) { setStatus(l, '在提交、推送代码…'); const r = await autogit.postSync(l.ws, emp, { ok, stopped: l.stopped, ask: l.ask }).catch((e) => `自动提交出错：${(e as Error).message}`); if (r) system(l.sid, r) }
-    await memory.commitMemory(emp, l.host, `${emp.name}: ${l.ask.replace(/\s+/g, ' ').slice(0, 60) || '一轮'}${ok ? '' : '（没做完）'}`).catch(() => '')
+    if (!l.ws) await memory.commitMemory(emp, l.host, `${emp.name}: ${l.ask.replace(/\s+/g, ' ').slice(0, 60) || '一轮'}${ok ? '' : '（没做完）'}`).catch(() => '')
   })().finally(() => {
     finishing.delete(l.emp)
     delMsg(l.statusId)
@@ -584,7 +604,7 @@ export function stop(empId: string): boolean {
   return true
 }
 
-/** 新话题：下一句开一个新的执行器会话（上下文清空）；员工的目录和工作空间都还在 */
+/** 新话题：下一句开一个新的执行器会话（上下文清空）；员工的目录和项目都还在 */
 export function newTopic(empId: string, note = '—— 新话题：上下文已清空 ——') {
   stop(empId)
   saveEmp(empId, { resumeId: undefined, contextUsed: 0 })

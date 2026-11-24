@@ -120,7 +120,7 @@ export function usage() {
     { emp: string; n: number; ok: number; cost: number; tokens: number }[]
   return rows.map((r) => ({ employee: r.emp, tasks: r.n, success: r.ok, tokens: fmtTokens(r.tokens), cost: Math.round(r.cost * 100) / 100 }))
 }
-/** 用量明细：这个月按工作空间分、最近 30 天按天分 */
+/** 用量明细：这个月按项目分、最近 30 天按天分 */
 export function usageDetail() {
   const d = new Date()
   const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime()
@@ -139,7 +139,7 @@ export function usageDetail() {
   }
   return { byWs, byDay: [...days.values()].map((x) => ({ ...x, cost: Math.round(x.cost * 100) / 100 })) }
 }
-/** 这个月某个员工 / 某个工作空间花了多少（美元） */
+/** 这个月某个员工 / 某个项目花了多少（美元） */
 export function monthCostOf(o: { emp?: string; ws?: string }): number {
   const d = new Date()
   const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime()

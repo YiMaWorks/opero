@@ -107,7 +107,7 @@ export function remove(id: string) {
   const sv = get<Server>('servers', id)
   if (!sv) return
   const { agentKeyHash: _k, ...rest } = sv
-  // 只是作废密钥：那台机器的 Agent 下一次来就会被拒；服务器记录留着（员工、工作空间还指着它），可以再接入
+  // 只是作废密钥：那台机器的 Agent 下一次来就会被拒；服务器记录留着（员工、项目还指着它），可以再接入
   const next: Server = { ...rest, online: false, via: 'ssh' } // 指纹留着：这台再用同一对密钥来就拒绝，除非重新用令牌接入
   put('servers', next)
   emit({ t: 'put', coll: 'servers', item: pub(next) })
@@ -208,7 +208,7 @@ class RemoteProc extends EventEmitter {
 }
 const procs = new Map<string, RemoteProc>()
 
-export interface SpawnOpts { as: 'ai' | 'root'; bin: string; args: string[]; env?: Record<string, string>; cwd: string; mkdirs?: string[]; /** 内存上限 %（Agent 看着，超了停最大的进程） */ memPct?: number }
+export interface SpawnOpts { as: 'ai' | 'root'; bin: string; args: string[]; env?: Record<string, string>; cwd: string; mkdirs?: string[]; /** 内存上限 %（Agent 看着，超了停最大的进程） */ memPct?: number; /** CPU 上限 %（一直超先暂停最占 CPU 的进程） */ cpuPct?: number }
 
 /** 在那台服务器上起一个进程；返回的东西当 ChildProcess 用（stdin / stdout / stderr / close / kill） */
 export function spawnRemote(serverId: string, o: SpawnOpts): ChildProcess {

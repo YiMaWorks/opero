@@ -6,7 +6,7 @@ import { Avatar } from './Avatar'
 import { Row, Section, Sheet } from './ui'
 import { IconBack, IconFingerprint, IconPlus, IconSearch } from './icons'
 import { LIVE } from '../mode'
-import { getPasskey, passkeySupported } from '../webauthn'
+import { createPasskey, getPasskey, passkeySupported } from '../webauthn'
 import { api } from '../live'
 
 export function SearchOverlay({ onClose, onOpenChat, onOpen }: {
@@ -126,11 +126,30 @@ export function VerifyModal() {
   )
 }
 
-/** 真的一套在网页里验证本人：再输一次登录密码（5 分钟内不再问） */
+/** 这台设备叫什么（加指纹时的名字）：「Mac · Chrome」 */
+function deviceName() {
+  const u = navigator.userAgent
+  const dev = /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android 手机' : /Mac OS X/.test(u) ? 'Mac' : /Windows/.test(u) ? 'Windows 电脑' : '这台设备'
+  const br = /Edg\//.test(u) ? 'Edge' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : ''
+  return br ? `${dev} · ${br}` : dev
+}
+const SKIP_KEY = `opero.pk.skip.${typeof location !== 'undefined' ? location.hostname : ''}`
+
+/** 真的一套在网页里验证本人：有指纹（通行密钥）就点一下指纹；没有就输密码，输完问一句「下次用指纹？」。5 分钟内不再问 */
 function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
   const [pwd, setPwd] = useState('')
   const [busy, setBusy] = useState(false)
   const [byCode, setByCode] = useState(false)
+  const [usePwd, setUsePwd] = useState(false)
+  // 这个地址加过通行密钥（指纹 / 面容）才给「用指纹」；没加过就输密码，输完可以顺手加上
+  const supported = passkeySupported()
+  const [pk, setPk] = useState(false)
+  const [offer, setOffer] = useState(false)
+  useEffect(() => {
+    if (!supported) return
+    api<{ passkeys: { rpId: string }[] }>('GET', '/api/auth/passkeys').then((r) => setPk(r.passkeys.some((x) => x.rpId === location.hostname))).catch(() => {})
+  }, [supported])
+  const close = () => set({ verify: null })
   const done = () => { const cur = getState().verify; set({ verify: null }); cur?.onOk() }
   const withPasskey = async () => {
     setBusy(true)
@@ -141,24 +160,63 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
     setBusy(true)
     try {
       await api('POST', '/api/auth/verify', byCode ? { code: pwd } : { password: pwd })
-      const cur = getState().verify
-      set({ verify: null })
-      cur?.onOk()
+      setBusy(false)
+      // 这台还没加指纹：问一句要不要加（加了下次点一下就行）；说过「以后再说」就不问
+      if (supported && !pk && !localStorage.getItem(SKIP_KEY)) setOffer(true)
+      else done()
     } catch (e) {
       toast((e as Error).message)
       setBusy(false)
     }
   }
+  const addPasskey = async () => {
+    setBusy(true)
+    try {
+      const o = await api('POST', '/api/auth/passkey/register-options', {})
+      await api('POST', '/api/auth/passkey/register', { credential: await createPasskey(o), name: deviceName() })
+      toast('已加上：下次点一下指纹就行')
+    } catch (e) { toast((e as Error).message) }
+    done()
+  }
+  const lock = <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+  if (offer) return (
+    <div className="modal-mask top">
+      <div className="verify-box" onClick={(e) => e.stopPropagation()}>
+        <span className="verify-ico ok"><IconFingerprint /></span>
+        <b>下次用指纹确认？</b>
+        <p className="verify-what">在这台设备上加一个通行密钥（指纹 / 面容 / 设备密码），以后验证本人点一下就行，不用再输密码。</p>
+        <button className="btn primary lg block" disabled={busy} onClick={addPasskey}>{busy ? '在加…' : '加上指纹'}</button>
+        <button className="btn ghost block" disabled={busy} onClick={() => { localStorage.setItem(SKIP_KEY, '1'); done() }}>以后再说</button>
+      </div>
+    </div>
+  )
+  const showPk = pk && !usePwd
   return (
-    <div className="modal-mask top" onClick={() => set({ verify: null })}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-mask top" onClick={close}>
+      <div className="verify-box" onClick={(e) => e.stopPropagation()}>
+        <span className="verify-ico">{showPk ? <IconFingerprint /> : lock}</span>
         <b>验证本人</b>
-        <p className="sub center">{title}{desc ? ` · ${desc}` : ''}</p>
-        {passkeySupported() && <button className="btn primary" disabled={busy} onClick={withPasskey}>用通行密钥（指纹 / 面容）</button>}
-        <input type={byCode ? 'text' : 'password'} autoFocus value={pwd} onChange={(e) => setPwd(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} placeholder={byCode ? '两步验证的 6 位码' : '输入登录密码'} autoComplete={byCode ? 'one-time-code' : 'current-password'} inputMode={byCode ? 'numeric' : undefined} />
-        <button className="btn ghost sm" onClick={() => { setByCode(!byCode); setPwd('') }}>{byCode ? '改用密码' : '改用两步验证码'}</button>
-        <button className={passkeySupported() ? 'btn default' : 'btn primary'} disabled={busy || !pwd} onClick={go}>{busy ? '验证中…' : '确认'}</button>
-        <button className="btn default" onClick={() => set({ verify: null })}>取消</button>
+        <p className="verify-what">{title}{desc && <span>{desc}</span>}</p>
+        {showPk ? (
+          <>
+            <button className="btn primary lg block" disabled={busy} onClick={withPasskey}><IconFingerprint /> {busy ? '验证中…' : '用指纹 / 面容确认'}</button>
+            <button className="btn ghost block" onClick={() => setUsePwd(true)}>改用密码</button>
+          </>
+        ) : (
+          <>
+            <input className="verify-input" type={byCode ? 'text' : 'password'} autoFocus value={pwd} onChange={(e) => { setPwd(e.target.value); if (byCode && /^\d{6}$/.test(e.target.value)) void go() }} onKeyDown={(e) => e.key === 'Enter' && go()}
+              placeholder={byCode ? '两步验证的 6 位码' : '登录密码'} autoComplete={byCode ? 'one-time-code' : 'current-password'} inputMode={byCode ? 'numeric' : undefined} />
+            <div className="verify-acts">
+              <button className="btn default" onClick={close}>取消</button>
+              <button className="btn primary" disabled={busy || !pwd} onClick={go}>{busy ? '验证中…' : '确认'}</button>
+            </div>
+            <div className="verify-links">
+              <button className="link" onClick={() => { setByCode(!byCode); setPwd('') }}>{byCode ? '改用密码' : '改用两步验证码'}</button>
+              {pk && <button className="link" onClick={() => setUsePwd(false)}>用指纹</button>}
+            </div>
+            {supported && !pk && <p className="verify-tip">输完密码可以把这台设备的指纹加上，下次点一下就行</p>}
+          </>
+        )}
       </div>
     </div>
   )

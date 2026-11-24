@@ -55,7 +55,7 @@ export function LiveChannelsPage({ nav }: PageProps) {
             </div>
           ))}
         </Section>
-        <p className="hint">账号、令牌、Webhook 地址先放进「权限和凭证」（消息渠道组），这里选它；值加密存着，AI 拿不到。</p>
+        <p className="hint">令牌、Webhook 地址、授权码直接在这里贴：加密存成「凭证 → 消息渠道」，AI 拿不到。</p>
       </div>
       {addIn && <AddInSheet kind={addIn} creds={creds.filter((c) => c.group === '消息渠道')} onClose={() => setAddIn(null)} />}
       {addOut && <AddOutSheet kind={addOut} creds={creds.filter((c) => c.group === '消息渠道')} onClose={() => setAddOut(null)} />}
@@ -63,71 +63,136 @@ export function LiveChannelsPage({ nav }: PageProps) {
   )
 }
 
-const PRESETS: Record<string, { host: string; port: number }> = { Gmail: { host: 'imap.gmail.com', port: 993 }, 'QQ 邮箱': { host: 'imap.qq.com', port: 993 }, '163 邮箱': { host: 'imap.163.com', port: 993 }, Outlook: { host: 'outlook.office365.com', port: 993 }, 腾讯企业邮: { host: 'imap.exmail.qq.com', port: 993 }, 阿里企业邮: { host: 'imap.qiye.aliyun.com', port: 993 } }
+// 常见邮箱：IMAP / SMTP 地址和「授权码 / 应用专用密码」去哪拿（都不是登录密码）
+const MAIL: { name: string; imap: string; smtp: string; smtpPort: number; url?: string; steps: string }[] = [
+  { name: 'QQ 邮箱', imap: 'imap.qq.com', smtp: 'smtp.qq.com', smtpPort: 465, url: 'https://wx.mail.qq.com/', steps: '网页版 QQ 邮箱 → 设置 → 账号与安全 → 安全设置 → 开启「POP3/IMAP/SMTP/Exchange/CardDAV 服务」→ 按提示用手机验证 → 复制生成的授权码' },
+  { name: '163 邮箱', imap: 'imap.163.com', smtp: 'smtp.163.com', smtpPort: 465, url: 'https://mail.163.com/', steps: '网页版 163 邮箱 → 设置 → POP3/SMTP/IMAP → 开启「IMAP/SMTP 服务」→ 按提示验证 → 复制授权码（只显示一次）' },
+  { name: 'Gmail', imap: 'imap.gmail.com', smtp: 'smtp.gmail.com', smtpPort: 465, url: 'https://myaccount.google.com/apppasswords', steps: '先开两步验证；打开「应用专用密码」页，名字填 Opero，点创建，复制 16 位密码（去掉空格）' },
+  { name: 'Outlook', imap: 'outlook.office365.com', smtp: 'smtp.office365.com', smtpPort: 587, url: 'https://account.live.com/proofs/AppPassword', steps: '先开两步验证；在「应用密码」页创建一个，复制。公司的 Microsoft 365 账号要管理员允许 IMAP / SMTP' },
+  { name: '腾讯企业邮', imap: 'imap.exmail.qq.com', smtp: 'smtp.exmail.qq.com', smtpPort: 465, url: 'https://exmail.qq.com/', steps: '企业邮网页版 → 设置 → 客户端设置 → 开启 IMAP/SMTP；开了「安全登录」的话在 微信绑定 → 生成客户端专用密码' },
+  { name: '阿里企业邮', imap: 'imap.qiye.aliyun.com', smtp: 'smtp.qiye.aliyun.com', smtpPort: 465, url: 'https://qiye.aliyun.com/', steps: '企业邮网页版 → 设置 → 客户端设置 → 开启 IMAP/SMTP；开了二次验证就生成「三方客户端安全密码」' },
+]
+const SLACK_APP = 'https://api.slack.com/apps?new_app=1'
+/** 提醒渠道：去哪拿、怎么拿（每一种都写明白） */
+const OUT_GUIDE: Record<Notifier['kind'], { link?: { label: string; url: string }; steps: string[]; secret: string; ph?: string; signKey?: string }> = {
+  telegram: {
+    link: { label: '打开 @BotFather', url: 'https://t.me/BotFather' },
+    steps: ['在 Telegram 里打开 @BotFather，发 /newbot', '按提示起一个名字，再起一个以 bot 结尾的用户名', '它会回你一串令牌（像 123456789:AAE…），复制贴到下面', '打开你刚建的机器人，给它发一句话（要发到群里：把机器人拉进群，在群里发一句）', '点「加上」：Opero 自动找到要发去的聊天（chat_id），不用你填'],
+    secret: '机器人令牌', ph: '123456789:AAE…',
+  },
+  slack: {
+    link: { label: '去 Slack 建 App', url: SLACK_APP },
+    steps: ['点按钮 → Create New App → From scratch，名字填 Opero，选你的工作区', '左边点 Incoming Webhooks → 打开 Activate Incoming Webhooks', '点页面下面的 Add New Webhook to Workspace，选要收提醒的频道，点 Allow', '复制 https://hooks.slack.com/services/… 开头的地址，贴到下面'],
+    secret: 'Webhook 地址', ph: 'https://hooks.slack.com/services/…',
+  },
+  wecom: {
+    steps: ['在企业微信电脑版打开要收提醒的群', '右上角「…」→「消息推送」（老版本叫「群机器人」）→ 添加', '名字填 Opero，点添加', '复制 Webhook 地址（https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=… 开头），贴到下面'],
+    secret: 'Webhook 地址', ph: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…',
+  },
+  dingtalk: {
+    steps: ['在钉钉电脑版打开要收提醒的群 → 群设置 → 机器人 → 添加机器人 → 自定义', '名字填 Opero；安全设置勾「加签」，复制 SEC 开头的密钥，贴到下面的「加签密钥」', '同意协议点完成，复制 Webhook 地址（https://oapi.dingtalk.com/robot/send?access_token=… 开头），贴到下面'],
+    secret: 'Webhook 地址', ph: 'https://oapi.dingtalk.com/robot/send?access_token=…', signKey: '加签密钥（SEC 开头）',
+  },
+  feishu: {
+    steps: ['在飞书打开要收提醒的群 → 设置 → 群机器人 → 添加机器人 → 自定义机器人', '名字填 Opero；安全设置勾「签名校验」，复制密钥，贴到下面的「签名密钥」', '点完成，复制 Webhook 地址（https://open.feishu.cn/open-apis/bot/v2/hook/… 开头），贴到下面'],
+    secret: 'Webhook 地址', ph: 'https://open.feishu.cn/open-apis/bot/v2/hook/…', signKey: '签名密钥',
+  },
+  email: { steps: ['选你的邮箱（不在里面的就自己填 SMTP 地址）', '照下面的说明拿「授权码 / 应用专用密码」（不是登录密码），贴到下面', '「发给谁」不填就发给自己'], secret: '授权码 / 应用专用密码' },
+  webhook: { steps: ['填你自己服务的地址：有事时 Opero 往这里 POST 一个 JSON（title、text、link）', '要校验来源就填一个签名密钥：请求头 X-Opero-Signature = 用它对请求体做的 sha256 HMAC'], secret: '地址', ph: 'https://example.com/opero-hook', signKey: '签名密钥（可选）' },
+}
+
+function Guide({ link, steps }: { link?: { label: string; url: string }; steps: string[] }) {
+  return (
+    <div className="cred-guide">
+      <b>怎么拿</b>
+      {link && <a className="btn primary" href={link.url} target="_blank" rel="noreferrer">{link.label} ↗</a>}
+      <ol className="exec-howto">{steps.map((x, i) => <li key={i}>{x}</li>)}</ol>
+    </div>
+  )
+}
+/** 直接贴（存成凭证），或者用已经存过的 */
+function SecretOrCred({ label, ph, creds, f, setF }: { label: string; ph?: string; creds: { id: string; name: string }[]; f: { cred: string; secret: string }; setF: (p: Partial<{ cred: string; secret: string }>) => void }) {
+  const [old, setOld] = useState(false)
+  return old
+    ? <Field label="用已经存过的凭证"><select value={f.cred} onChange={(e) => setF({ cred: e.target.value })}><option value="">选一个</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select><button type="button" className="btn ghost sm" onClick={() => { setOld(false); setF({ cred: '' }) }}>改成直接贴</button></Field>
+    : (
+      <Field label={label} hint="加密存成一个「消息渠道」凭证，AI 拿不到">
+        <input type="password" value={f.secret} onChange={(e) => setF({ secret: e.target.value })} placeholder={ph} autoComplete="new-password" />
+        {creds.length > 0 && <button type="button" className="btn ghost sm" onClick={() => { setOld(true); setF({ secret: '' }) }}>用已经存过的</button>}
+      </Field>
+    )
+}
 
 function AddInSheet({ kind, creds, onClose }: { kind: 'email' | 'slack'; creds: { id: string; name: string; user?: string }[]; onClose: () => void }) {
-  const [f, setF] = useState({ name: '', cred: '', imapHost: '', imapPort: '993', user: '' })
+  const [f, setF] = useState({ name: '', cred: '', secret: '', imapHost: '', imapPort: '993', user: '' })
+  const up = (p: Partial<typeof f>) => setF((x) => ({ ...x, ...p }))
+  const mail = MAIL.find((m) => m.imap === f.imapHost)
   const save = async () => { if (await call('POST', '/api/channels', { kind, ...f, imapPort: Number(f.imapPort) || 993 }, '已接上，2 分钟内开始收')) onClose() }
   return (
     <Sheet title={kind === 'email' ? '接一个邮箱' : '接 Slack'} onClose={onClose}>
       <div className="pad form">
-        <Field label="名字"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder={kind === 'email' ? '比如：工作邮箱' : '比如：公司 Slack'} /></Field>
         {kind === 'email' ? (
           <>
-            <div className="chips">{Object.entries(PRESETS).map(([k, v]) => <button key={k} className={'chip' + (f.imapHost === v.host ? ' on' : '')} onClick={() => setF({ ...f, imapHost: v.host, imapPort: String(v.port) })}>{k}</button>)}</div>
-            <div className="inline-form">
-              <Field label="IMAP 服务器"><input value={f.imapHost} onChange={(e) => setF({ ...f, imapHost: e.target.value })} placeholder="imap.example.com" /></Field>
-              <Field label="端口"><input value={f.imapPort} onChange={(e) => setF({ ...f, imapPort: e.target.value })} inputMode="numeric" /></Field>
-            </div>
-            <Field label="邮箱账号"><input value={f.user} onChange={(e) => setF({ ...f, user: e.target.value })} placeholder="you@example.com" /></Field>
-            <Field label="密码 / 授权码在哪个凭证" hint="Gmail、QQ、163 要用「应用专用密码 / 授权码」，不是登录密码"><CredSelect creds={creds} value={f.cred} onChange={(v) => setF({ ...f, cred: v })} /></Field>
+            <Field label="哪家邮箱"><div className="chips">{MAIL.map((m) => <button key={m.name} type="button" className={'chip' + (f.imapHost === m.imap ? ' on' : '')} onClick={() => up({ imapHost: m.imap, imapPort: '993' })}>{m.name}</button>)}<button type="button" className={'chip' + (f.imapHost && !mail ? ' on' : '')} onClick={() => up({ imapHost: '' })}>其它</button></div></Field>
+            {mail && <Guide link={mail.url ? { label: `打开${mail.name}`, url: mail.url } : undefined} steps={[mail.steps, '邮箱账号填完整的邮箱地址，授权码贴到下面']} />}
+            {!mail && (
+              <div className="inline-form">
+                <Field label="IMAP 服务器"><input value={f.imapHost} onChange={(e) => up({ imapHost: e.target.value })} placeholder="imap.example.com" /></Field>
+                <Field label="端口"><input value={f.imapPort} onChange={(e) => up({ imapPort: e.target.value })} inputMode="numeric" /></Field>
+              </div>
+            )}
+            <Field label="邮箱账号"><input value={f.user} onChange={(e) => up({ user: e.target.value })} placeholder="you@example.com" /></Field>
+            <SecretOrCred label="授权码 / 应用专用密码（不是登录密码）" creds={creds} f={f} setF={up} />
           </>
         ) : (
           <>
-            <p className="field-hint">在你的 Slack 工作区建一个自己的 App，给它用户权限（channels:history、groups:history、im:history、mpim:history、users:read、channels:read、groups:read、im:read、mpim:read），装到工作区，拿 User OAuth Token（xoxp- 开头）放进凭证。</p>
-            <Field label="用户令牌在哪个凭证"><CredSelect creds={creds} value={f.cred} onChange={(v) => setF({ ...f, cred: v })} /></Field>
+            <Guide link={{ label: '去 Slack 建 App', url: SLACK_APP }} steps={[
+              '点按钮 → Create New App → From scratch，名字填 Opero，选你的工作区',
+              '左边点 OAuth & Permissions，在 User Token Scopes 里加上：channels:history、groups:history、im:history、mpim:history、channels:read、groups:read、im:read、mpim:read、users:read',
+              '页面上面点 Install to Workspace → Allow',
+              '复制 User OAuth Token（xoxp- 开头），贴到下面',
+            ]} />
+            <SecretOrCred label="User OAuth Token" ph="xoxp-…" creds={creds} f={f} setF={up} />
           </>
         )}
-        <button className="btn primary" disabled={!f.name.trim() || !f.cred} onClick={save}>接上</button>
+        <Field label="名字（可选）"><input value={f.name} onChange={(e) => up({ name: e.target.value })} placeholder={kind === 'email' ? f.user || '工作邮箱' : '公司 Slack'} /></Field>
+        <button className="btn primary" disabled={!f.cred && !f.secret.trim()} onClick={save}>接上</button>
       </div>
     </Sheet>
   )
 }
 
 function AddOutSheet({ kind, creds, onClose }: { kind: Notifier['kind']; creds: { id: string; name: string }[]; onClose: () => void }) {
-  const [f, setF] = useState({ name: NK[kind].label, cred: '', chatId: '', smtpHost: '', smtpPort: '465', smtpUser: '', to: '', events: ['decide', 'error'] as string[] })
-  const save = async () => { if (await call('POST', '/api/notifiers', { kind, ...f, smtpPort: Number(f.smtpPort) || 465 }, '已加上：点「试一下」发一条看看')) onClose() }
+  const g = OUT_GUIDE[kind]
+  const [f, setF] = useState({ name: NK[kind].label, cred: '', secret: '', secretUser: '', chatId: '', smtpHost: '', smtpPort: '465', smtpUser: '', to: '', events: ['decide', 'error'] as string[] })
+  const up = (p: Partial<typeof f>) => setF((x) => ({ ...x, ...p }))
+  const mail = MAIL.find((m) => m.smtp === f.smtpHost)
+  const save = async () => { if (await call('POST', '/api/notifiers', { kind, ...f, to: f.to || f.smtpUser, smtpPort: Number(f.smtpPort) || 465 }, '已加上：点「试一下」发一条看看')) onClose() }
   return (
     <Sheet title={`提醒发到${NK[kind].label}`} onClose={onClose}>
       <div className="pad form">
-        <Field label="名字"><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
-        <Field label="凭证" hint={NK[kind].credHint}><CredSelect creds={creds} value={f.cred} onChange={(v) => setF({ ...f, cred: v })} /></Field>
-        {kind === 'telegram' && <Field label="chat_id" hint="先给机器人发一句话，再打开 https://api.telegram.org/bot<令牌>/getUpdates 看 chat.id"><input value={f.chatId} onChange={(e) => setF({ ...f, chatId: e.target.value })} /></Field>}
+        {kind === 'email' && <Field label="哪家邮箱"><div className="chips">{MAIL.map((m) => <button key={m.name} type="button" className={'chip' + (f.smtpHost === m.smtp ? ' on' : '')} onClick={() => up({ smtpHost: m.smtp, smtpPort: String(m.smtpPort) })}>{m.name}</button>)}<button type="button" className={'chip' + (f.smtpHost && !mail ? ' on' : '')} onClick={() => up({ smtpHost: '' })}>其它</button></div></Field>}
+        <Guide link={kind === 'email' && mail?.url ? { label: `打开${mail.name}`, url: mail.url } : g.link} steps={kind === 'email' && mail ? [mail.steps, ...g.steps.slice(2)] : g.steps} />
         {kind === 'email' && (
           <>
-            <div className="inline-form">
-              <Field label="SMTP 服务器"><input value={f.smtpHost} onChange={(e) => setF({ ...f, smtpHost: e.target.value })} placeholder="smtp.example.com" /></Field>
-              <Field label="端口"><input value={f.smtpPort} onChange={(e) => setF({ ...f, smtpPort: e.target.value })} inputMode="numeric" /></Field>
-            </div>
-            <Field label="发件邮箱（留空用凭证的用户名）"><input value={f.smtpUser} onChange={(e) => setF({ ...f, smtpUser: e.target.value })} /></Field>
-            <Field label="发给谁"><input value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} placeholder="you@example.com" /></Field>
+            {!mail && (
+              <div className="inline-form">
+                <Field label="SMTP 服务器"><input value={f.smtpHost} onChange={(e) => up({ smtpHost: e.target.value })} placeholder="smtp.example.com" /></Field>
+                <Field label="端口"><input value={f.smtpPort} onChange={(e) => up({ smtpPort: e.target.value })} inputMode="numeric" /></Field>
+              </div>
+            )}
+            <Field label="发件邮箱"><input value={f.smtpUser} onChange={(e) => up({ smtpUser: e.target.value })} placeholder="you@example.com" /></Field>
           </>
         )}
+        <SecretOrCred label={g.secret} ph={g.ph} creds={creds} f={f} setF={up} />
+        {g.signKey && !f.cred && <Field label={g.signKey}><input type="password" value={f.secretUser} onChange={(e) => up({ secretUser: e.target.value })} autoComplete="new-password" /></Field>}
+        {kind === 'email' && <Field label="发给谁（不填发给自己）"><input value={f.to} onChange={(e) => up({ to: e.target.value })} placeholder={f.smtpUser || 'you@example.com'} /></Field>}
         <div className="field"><span className="field-label">发哪些</span>
-          <div className="chips">{EV.map((e) => <button key={e.value} className={'chip' + (f.events.includes(e.value) ? ' on' : '')} onClick={() => setF({ ...f, events: f.events.includes(e.value) ? f.events.filter((x) => x !== e.value) : [...f.events, e.value] })}>{e.label}</button>)}</div>
+          <div className="chips">{EV.map((e) => <button key={e.value} className={'chip' + (f.events.includes(e.value) ? ' on' : '')} onClick={() => up({ events: f.events.includes(e.value) ? f.events.filter((x) => x !== e.value) : [...f.events, e.value] })}>{e.label}</button>)}</div>
         </div>
-        <button className="btn primary" disabled={!f.cred} onClick={save}>加上</button>
+        <button className="btn primary" disabled={!f.cred && !f.secret.trim()} onClick={save}>加上</button>
       </div>
     </Sheet>
-  )
-}
-
-function CredSelect({ creds, value, onChange }: { creds: { id: string; name: string }[]; value: string; onChange: (v: string) => void }) {
-  return (
-    <>
-      <select value={value} onChange={(e) => onChange(e.target.value)}><option value="">选一个</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-      {creds.length === 0 && <span className="field-hint">还没有「消息渠道」组的凭证：先去「权限和凭证」加一个</span>}
-    </>
   )
 }
 
@@ -166,7 +231,7 @@ function InboxSheet({ item: i, onClose }: { item: InboxItem; onClose: () => void
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const mark = (p: { cat?: string; done?: boolean }, msg: string) => call('PUT', `/api/inbox/${i.id}`, p, msg)
-  const draft = async () => { setBusy(true); await call('POST', `/api/inbox/${i.id}/draft`, { hint }); setBusy(false) }
+  const draft = async (h = hint) => { setHint(h); setBusy(true); await call('POST', `/api/inbox/${i.id}/draft`, { hint: h }); setBusy(false) }
   return (
     <Sheet title={i.subject} onClose={onClose}>
       <div className="pad form">
@@ -180,7 +245,8 @@ function InboxSheet({ item: i, onClose }: { item: InboxItem; onClose: () => void
           {(['need', 'fyi', 'skip'] as const).filter((c) => c !== i.cat).map((c) => <button key={c} className="btn ghost sm" onClick={() => mark({ cat: c }, `改成「${CAT[c]}」`)}>改成{CAT[c]}</button>)}
         </div>
         <Field label="回复建议（只写不发，你复制去回）">
-          <div className="inline-form"><input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="想怎么回（可选）：比如 婉拒、问清预算" /><button className="btn primary sm" disabled={busy} onClick={draft}>{busy ? '在写…' : i.draft ? '重写' : '写一条'}</button></div>
+          <div className="chips">{['同意', '婉拒', '问清细节', '稍后回复', '转给同事'].map((x) => <button key={x} type="button" className={'chip' + (hint === x ? ' on' : '')} disabled={busy} onClick={() => draft(x)}>{x}</button>)}</div>
+          <div className="inline-form"><input value={hint} onChange={(e) => setHint(e.target.value)} placeholder="或者自己说想怎么回（可选）" /><button className="btn primary sm" disabled={busy} onClick={() => draft()}>{busy ? '在写…' : i.draft ? '重写' : '写一条'}</button></div>
         </Field>
         {i.draft && (
           <div className="boxed pad">

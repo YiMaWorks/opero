@@ -111,6 +111,15 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
     setCode(v)
     if (isTok(v) || (mine?.state === 'waitCode' && v.length >= 20)) void submit(v)
   }
+  // 「凭证 → AI」里已经存的 Key：点一下就用，不用再贴
+  const allCreds = useStore((s) => s.credentials)
+  const savedKeys = allCreds.filter((c) => c.group === 'AI' && c.hasSecret !== false && (codex ? /openai/i.test(c.kind) : /anthropic/i.test(c.kind)))
+  const useSaved = async (id: string) => {
+    setBusy('save')
+    const r = await call('PUT', '/api/ai', { host, ...(codex ? { codexCredId: id } : { claudeCredId: id }) }, '已换成这个 Key')
+    setBusy('')
+    if (r) { await reload(); void runTest() }
+  }
   const saveKey = async () => {
     if (!key.trim()) { toast('先把 Key 贴进来'); return }
     setBusy('save')
@@ -199,6 +208,7 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
                 : <li>打开 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com/settings/keys</a>，登录 → 点 <b>Create Key</b> → 复制</li>}
               <li>粘贴到下面，点「保存」</li>
             </ol>
+            {savedKeys.length > 0 && <Field label="用「凭证」里已经存的"><div className="chips">{savedKeys.map((c) => <button key={c.id} type="button" className="chip" disabled={busy === 'save'} onClick={() => useSaved(c.id)}>{c.name}</button>)}</div></Field>}
             <Field label={loggedIn ? 'API Key（已存，贴新的会替换）' : 'API Key'}>
               <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={codex ? 'sk-…' : 'sk-ant-…'} autoComplete="new-password" />
             </Field>

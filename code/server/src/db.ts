@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS push (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGE
 `)
 // 收件箱（邮件、Slack 收进来的消息）：量大，单独一张表
 db.exec('CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, ch TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS inbox_ts ON inbox (ts);')
-// 用量按工作空间分：老库补一列
+// 用量按项目分：老库补一列
 try { db.exec('ALTER TABLE runs ADD COLUMN ws TEXT') } catch { /* 已经有了 */ }
 
 export type Coll =

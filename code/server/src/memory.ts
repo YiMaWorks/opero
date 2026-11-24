@@ -11,12 +11,19 @@ import { get } from './db.ts'
 import { git, handBackDir, q } from './git.ts'
 import * as agents from './agents.ts'
 import * as hosts from './hosts.ts'
-import type { Employee, Server } from './types.ts'
+import type { Employee, Server, Workspace } from './types.ts'
 
 const START = '<!-- opero:start（这一段由 Opero 按员工设置自动写，改员工设置就会更新，别手改） -->'
 const END = '<!-- opero:end（下面随便记） -->'
 
+/** 项目员工（项目在它干活那台）：不另建记忆仓库，记忆就是项目自己的 docs/（同一项目的员工共用） */
+export function projectOf(emp: Employee, host: string): Workspace | undefined {
+  const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
+  return ws && (ws.server ?? hosts.LOCAL) === host ? ws : undefined
+}
 export function memDir(emp: Employee, host: string): string {
+  const ws = projectOf(emp, host)
+  if (ws) return ws.dir
   return hosts.isLocal(host) ? path.join(cfg.work, 'emp', emp.id, 'memory') : path.posix.join(agents.REMOTE_WORK, 'emp', emp.id, 'memory')
 }
 
@@ -154,7 +161,10 @@ export async function commitMemory(emp: Employee, host: string, message: string)
 /** 网页「记忆」页：列文件 / 读 / 写（写完自动提交） */
 export async function listFiles(emp: Employee, host: string): Promise<string[]> {
   const r = await git(['ls-files'], { host, cwd: memDir(emp, host) })
-  return r.code === 0 ? r.out.split('\n').filter((f) => f && !f.endsWith('.gitkeep')).slice(0, 200) : []
+  const all = r.code === 0 ? r.out.split('\n').filter((f) => f && !f.endsWith('.gitkeep')) : []
+  // 项目员工：只给看项目的说明和 docs/
+  const mine = projectOf(emp, host) ? all.filter((f) => f.startsWith('docs/') || /^(CLAUDE|AGENTS|README)[\w.-]*\.md$/i.test(f)) : all
+  return mine.slice(0, 300)
 }
 export async function readFile(emp: Employee, host: string, rel: string): Promise<string | undefined> {
   if (!safeRel(rel)) return undefined
@@ -163,13 +173,14 @@ export async function readFile(emp: Employee, host: string, rel: string): Promis
 export async function writeFile(emp: Employee, host: string, rel: string, text: string): Promise<string> {
   if (!safeRel(rel)) throw new Error('路径不对')
   await writeText(host, path.posix.join(memDir(emp, host), rel), text)
+  if (projectOf(emp, host)) return `已保存 ${rel}（项目的文件：下一轮员工干完会跟代码一起提交）`
   return commitMemory(emp, host, `主人改了 ${rel}`)
 }
 const safeRel = (rel: string) => !!rel && !rel.startsWith('/') && !rel.split('/').includes('..') && !rel.startsWith('.git')
 
 /** 员工换了服务器、又没配远端：把记忆仓库（连 .git）从旧机器搬到新机器。配了远端的不用搬，新机器上会拉 */
 export async function moveMemory(emp: Employee, from: string, to: string): Promise<string> {
-  if (emp.memRepo || from === to) return ''
+  if (emp.memRepo || from === to || projectOf(emp, from) || projectOf(emp, to)) return ''
   const src = memDir(emp, from)
   const dst = memDir(emp, to)
   if (!(await exists(from, path.posix.join(src, '.git')))) return ''

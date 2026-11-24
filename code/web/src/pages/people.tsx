@@ -1,10 +1,11 @@
 // 员工：列表 · 档案 · 新建 / 编辑 · 记忆
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Employee } from '../types'
 import { memoryFiles } from '../data/mock'
 import { MENU_REGISTRY } from '../menus'
 import { employeeFromTemplate, runFlow, saveEmployee, set, setLook, switchWork, sessionFor, togglePin, toast, useStore } from '../store'
 import { LIVE } from '../mode'
+import { call } from '../live'
 import type { ChatBg, Notify } from '../types'
 import { Avatar } from '../components/Avatar'
 import { editImage, fileToDataUrl } from '../components/ImageEditor'
@@ -72,7 +73,7 @@ export function EmployeePage({ params, nav }: PageProps) {
   const u = usage.find((x) => x.employee === e.id)
   const myTriggers = triggers.filter((t) => t.employee === e.id)
   const myFlows = flows.filter((f) => f.employee === e.id)
-  const myCreds = creds.filter((c) => c.usedBy.includes(e.id) || c.usedBy.includes('全部员工'))
+  const myCreds = creds.filter((c) => (c.usedBy ?? []).includes(e.id) || (c.usedBy ?? []).includes('全部员工'))
   return (
     <div className="page">
       <PageHeader title={e.name} sub="员工档案" {...headNav(nav)}
@@ -105,7 +106,7 @@ export function EmployeePage({ params, nav }: PageProps) {
         <Section title="基本">
           <Row title="执行器" right={e.executor} />
           <Row title="跑在" right={e.host} />
-          <Row title="工作空间" right={e.workspace} />
+          <Row title="项目" right={e.workspace} />
           {e.persona && <Row title="人设" right={e.persona} />}
         </Section>
 
@@ -126,7 +127,7 @@ export function EmployeePage({ params, nav }: PageProps) {
         </Section>
 
         <Section title={`用到的权限 · ${myCreds.length}`} right={<span className="sub">都是你带进来的账号，员工不会比你权限大</span>}>
-          {myCreds.length === 0 && <Empty>还没有：要它碰服务器 / 库 / 仓库，先在「权限和凭证」里带进来</Empty>}
+          {myCreds.length === 0 && <Empty>还没有：要它碰服务器 / 库 / 仓库，先在「凭证」里带进来</Empty>}
           {myCreds.map((c) => (
             <Row key={c.id} title={c.name} sub={`${c.group} · 能做：${c.scope}`} chevron onClick={() => nav.push({ page: 'credentialEdit', params: { id: c.id } })} />
           ))}
@@ -200,10 +201,15 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
     model: 'Opus 5.5', effort: 'high', approval: 'auto', notify: 'decide', bg: 'plain', repo: '',
   })
   const up = (p: Partial<Employee>) => setE((x) => ({ ...x, ...p }))
+  const [adv, setAdv] = useState(false)
+  // 预设角色（后台 presets.ts）：新建时点一个就填好
+  const [presets, setPresets] = useState<(Pick<Employee, 'name' | 'avatar' | 'color' | 'title' | 'prompt' | 'menus' | 'persona' | 'effort' | 'approval' | 'credGroups'> & { key: string })[]>([])
+  useEffect(() => { if (LIVE && !existing) call<{ presets: typeof presets }>('GET', '/api/presets').then((r) => r && setPresets(r.presets)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const save = () => {
-    if (!e.name.trim()) { toast('先起个名字'); return }
+    if (!e.name.trim()) { toast('先起个名字（或者点上面一个角色）'); return }
+    const title = e.title.trim() || (e.prompt.trim() ? e.prompt.trim().split(/[。；;\n]/)[0].replace(/^你(负责|是)/, '').slice(0, 30) : '')
     const id = e.id || 'emp-' + Date.now().toString(36)
-    saveEmployee({ ...e, id, avatar: e.avatar || e.name.trim().slice(0, 1), workspace: LIVE ? e.workspace : e.workspace || `emp-${id}` })
+    saveEmployee({ ...e, title, id, avatar: e.avatar || e.name.trim().slice(0, 1), workspace: LIVE ? e.workspace : e.workspace || `emp-${id}` })
     nav.back()
   }
   return (
@@ -217,12 +223,24 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
             {COLORS.map((c) => <button key={c} className={'swatch' + (c === e.color ? ' on' : '')} style={{ background: c }} onClick={() => up({ color: c })} aria-label={c} />)}
           </div>
         </div>
+        {LIVE && !existing && presets.length > 0 && (
+          <Field label="照着哪个角色建（点一个，名字、职责、提示词、菜单都填好）">
+            <div className="chips">{presets.map((p) => <button key={p.key} type="button" className={'chip' + (e.prompt === p.prompt ? ' on' : '')} onClick={() => up({ name: p.name, avatar: p.avatar, color: p.color, title: p.title, prompt: p.prompt, menus: p.menus, persona: p.persona, effort: p.effort, approval: p.approval, credGroups: p.credGroups })}>{p.name}</button>)}</div>
+          </Field>
+        )}
         <Field label="名字"><input value={e.name} onChange={(v) => up({ name: v.target.value })} placeholder="比如：crm 运营" /></Field>
-        <Field label="头像上的字" hint="留空用名字第一个字"><input value={e.avatar} maxLength={2} onChange={(v) => up({ avatar: v.target.value })} /></Field>
-        <Field label="职责一句话"><input value={e.title} onChange={(v) => up({ title: v.target.value })} placeholder="会显示在聊天顶栏" /></Field>
+        <Field label="职责一句话（可选）" hint="不填用提示词的第一句"><input value={e.title} onChange={(v) => up({ title: v.target.value })} placeholder="会显示在聊天顶栏" /></Field>
         <Field label="职责（提示词）" hint={LIVE ? '每次派活都带上（系统提示词），写清它负责什么、做事的规矩' : '写进它 git 的 CLAUDE.md「我的角色」，以后派活不用长篇大论'}>
           <textarea rows={5} value={e.prompt} onChange={(v) => up({ prompt: v.target.value })} placeholder="你负责 …；做事的规矩是 …" />
         </Field>
+        <Field label={LIVE ? '项目' : '项目'} hint={LIVE ? '选了项目：在项目目录里干活，记忆就是项目的 docs/；不选 = 在它自己的目录里干活（适合运维、消息助理）' : '留空 = 只在自己的记忆仓库里干活（适合消息助理、总调度这类）'}>
+          <select value={e.workspace} onChange={(v) => up({ workspace: v.target.value })}>
+            <option value="">{LIVE ? '不选（它自己的目录）' : '新建员工仓库'}</option>
+            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </Field>
+        {LIVE && <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起高级设置' : '高级设置（执行器、模型、服务器、菜单、预算…，一般不用动）'}</button>}
+        {(!LIVE || adv) && (<>
         <Field label="执行器">
           <Segmented value={e.executor as (typeof EXECUTORS)[number]} options={EXECUTORS.map((x) => ({ value: x, label: x }))}
             onChange={(v) => up({ executor: v, model: modelsFor(v).includes(e.model) ? e.model : modelsFor(v)[0] })} />
@@ -254,12 +272,6 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
             </select>
           </Field>
         )}
-        <Field label="工作空间（它干活的项目）" hint={LIVE ? '留空 = 在它自己的目录里干活；要改代码先在「工作空间」接入仓库' : '留空 = 只在自己的记忆仓库里干活（适合消息助理、总调度这类）'}>
-          <select value={e.workspace} onChange={(v) => up({ workspace: v.target.value })}>
-            <option value="">{LIVE ? '它自己的目录' : '新建员工仓库'}</option>
-            {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-          </select>
-        </Field>
         <div className="field">
           <span className="field-label">底部菜单（点选，建议不超过 3 个）</span>
           <div className="chips">
@@ -272,12 +284,12 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
         </div>
         {!existing && !LIVE && <p className="field-hint">建好后会自动给它建一个记忆仓库 <span className="mono">emp-名字</span>（放在你带进来的代码仓库账号下），规矩、交接都存在里面，换 work、换服务器都不丢。</p>}
         <Field label="性别（可选）"><Segmented value={e.gender ?? ''} onChange={(v) => up({ gender: v })} options={[{ value: '', label: '不设' }, { value: '女', label: '女' }, { value: '男', label: '男' }]} /></Field>
-        <Field label="性格 / 说话风格（可选）" hint={LIVE ? '写进它记忆仓库的「我的人设」，每次干活都按这个说话' : undefined}>
-          <input value={e.persona ?? ''} onChange={(v) => up({ persona: v.target.value })} placeholder="比如：冷静、话少、先给结论" />
+        <Field label="性格 / 说话风格" hint={LIVE ? '写进它记忆仓库的「我的人设」，每次干活都按这个说话' : undefined}>
+          <div className="chips">
+            <button type="button" className={'chip' + (!e.persona ? ' on' : '')} onClick={() => up({ persona: '' })}>不设</button>
+            {PERSONAS.map((x) => <button key={x} type="button" className={'chip' + (e.persona === x ? ' on' : '')} onClick={() => up({ persona: x })}>{x}</button>)}
+          </div>
         </Field>
-        <div className="chips">
-          {PERSONAS.map((x) => <button key={x} className={'chip' + (e.persona === x ? ' on' : '')} onClick={() => up({ persona: x })}>{x}</button>)}
-        </div>
         {LIVE && (
           <>
             <div className="field">
@@ -287,14 +299,14 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
                   const on = (e.reads ?? []).includes(w.id)
                   return <button key={w.id} className={'chip' + (on ? ' on' : '')} onClick={() => up({ reads: on ? (e.reads ?? []).filter((x) => x !== w.id) : [...(e.reads ?? []), w.id].slice(0, 8) })}>{w.name}</button>
                 })}
-                {workspaces.length <= 1 && <span className="sub">还没有别的工作空间</span>}
+                {workspaces.length <= 1 && <span className="sub">还没有别的项目</span>}
               </div>
               <span className="field-hint">它能看这些项目的代码（不能改），要和它在同一台服务器上</span>
             </div>
-            <Field label="每月预算（美元，可选）" hint="用满了它先停下，到 80% 提醒一次；0 = 不单独限，只看全局预算">
-              <input inputMode="decimal" value={String(e.budget ?? '')} onChange={(v) => up({ budget: Number(v.target.value) || 0 })} placeholder="0" />
+            <Field label="每月预算" hint="用满了它先停下，到 80% 提醒一次">
+              <div className="chips">{[0, 10, 30, 100, 300].map((n) => <button key={n} type="button" className={'chip' + ((e.budget ?? 0) === n ? ' on' : '')} onClick={() => up({ budget: n })}>{n ? `$${n}` : '不单独限'}</button>)}</div>
             </Field>
-            <label className="lrow boxed"><span className="row-main"><span className="row-title">在自己的分支上改</span><span className="row-sub">{`开了它在 opero/${e.name ? e.name.replace(/[^A-Za-z0-9._-]+/g, '-').toLowerCase() || 'emp' : '名字'} 分支上干活，干完用 pr_create 提合并请求，你在 GitHub / GitLab / Gitee / Codeup 上合；关了直接改主分支。一个工作空间多个员工同时用时别开`}</span></span>
+            <label className="lrow boxed"><span className="row-main"><span className="row-title">在自己的分支上改</span><span className="row-sub">{`开了它在 opero/${e.name ? e.name.replace(/[^A-Za-z0-9._-]+/g, '-').toLowerCase() || 'emp' : '名字'} 分支上干活，干完用 pr_create 提合并请求，你在 GitHub / GitLab / Gitee / Codeup 上合；关了直接改主分支。一个项目多个员工同时用时别开`}</span></span>
               <Toggle on={!!e.workBranch} onChange={(v) => up({ workBranch: v ? `opero/${(e.name.replace(/[^A-Za-z0-9._-]+/g, '-').toLowerCase() || e.id || 'emp').replace(/^-+|-+$/g, '') || 'emp'}` : '' })} /></label>
             {domains.length > 0 && (
               <div className="field">
@@ -309,10 +321,10 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
               </div>
             )}
             <label className="lrow boxed"><span className="row-main"><span className="row-title">能建、改别的员工</span><span className="row-sub">在聊天里让它建员工、改职责（每次都要你点确认；服务器、库、凭证的权限由你自己给）</span></span><Toggle on={!!e.canManage} onChange={(v) => up({ canManage: v })} /></label>
-            <Field label="记忆仓库的远端（可选）" hint="不配 = 记忆只在它干活那台机器上（也有版本记录）；配了每轮干完推上去，换服务器时在新机器上拉下来接着做。建一个空仓库填在这里">
+            {!e.workspace && <Field label="记忆仓库的远端（可选）" hint="不配 = 记忆只在它干活那台机器上（也有版本记录）；配了每轮干完推上去，换服务器时在新机器上拉下来接着做。建一个空仓库填在这里">
               <input value={e.memRepo ?? ''} onChange={(v) => up({ memRepo: v.target.value })} placeholder="https://github.com/you/emp-dev.git" />
-            </Field>
-            {e.memRepo && (
+            </Field>}
+            {e.memRepo && !e.workspace && (
               <Field label="推送用的令牌">
                 <select value={e.memCred ?? ''} onChange={(v) => up({ memCred: v.target.value })}>
                   <option value="">不用（公开仓库或这台机器上已经配好）</option>
@@ -322,6 +334,7 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
             )}
           </>
         )}
+        </>)}
       </div>
     </div>
   )

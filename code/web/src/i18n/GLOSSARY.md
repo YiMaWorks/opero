@@ -8,7 +8,7 @@ Opero 是一个自己部署的「AI 开发团队」：主人在聊天 App 里指
 | 员工 / AI 员工 | employee / AI employee | |
 | 主人 / 你 | you（owner 只在设置里需要时用） | 单用户产品，界面直接称「你」 |
 | 会话 | Chats | 底部页签；单个是 chat |
-| 工作空间 | Workspaces | 代码仓库 |
+| 项目 | Projects | 一个代码仓库（以前叫「工作空间」，页签也叫「项目」） |
 | 应用 | Apps | 页签 |
 | 我 | Me | 页签 |
 | 执行器 / AI 执行器 | executor / AI executor | Claude Code、Codex |
@@ -19,7 +19,7 @@ Opero 是一个自己部署的「AI 开发团队」：主人在聊天 App 里指
 | 新话题 | new topic | |
 | 卡片 | card | |
 | 验证本人 | verify it's you | 输密码 / 指纹 |
-| 权限和凭证 | Access & credentials | |
+| 凭证 | Credentials | 应用里的「凭证」管理（以前叫「权限和凭证」） |
 | 凭证 / 账号 | credential / account | |
 | 保险箱 | vault | |
 | 触发器 | triggers | |

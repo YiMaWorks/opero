@@ -38,7 +38,7 @@ export function MePage({ params, nav }: PageProps) {
           <Section title="应用">
             <Row title="服务器" chevron onClick={go('servers')} />
             <Row title="发布" chevron onClick={go('releases')} />
-            <Row title="权限和凭证" chevron onClick={go('credentials')} />
+            <Row title="凭证" chevron onClick={go('credentials')} />
             <Row title="消息渠道" chevron onClick={go('channels')} />
             <Row title="知识库" chevron onClick={go('knowledge')} />
             <Row title="流程" chevron onClick={go('flows')} />

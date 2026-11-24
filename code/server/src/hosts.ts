@@ -27,9 +27,9 @@ export function spawnAi(bin: string, args: string[], env: Record<string, string>
 }
 
 /** 在某台机器上以 AI 用户起进程；远程时 mkdirs 里的目录 Agent 会先建好（属 AI 用户） */
-export function spawnAiOn(host: string | undefined, bin: string, args: string[], env: Record<string, string>, cwd: string, mkdirs: string[] = [], memPct = 0): ChildProcess {
+export function spawnAiOn(host: string | undefined, bin: string, args: string[], env: Record<string, string>, cwd: string, mkdirs: string[] = [], memPct = 0, cpuPct = 0): ChildProcess {
   if (isLocal(host)) return spawnAi(bin, args, env, cwd)
-  return agents.spawnRemote(host!, { as: 'ai', bin, args, env, cwd, mkdirs, memPct })
+  return agents.spawnRemote(host!, { as: 'ai', bin, args, env, cwd, mkdirs, memPct, cpuPct })
 }
 
 export function killTree(p: ChildProcess) {

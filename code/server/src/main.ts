@@ -7,7 +7,7 @@ import { cfg } from './config.ts'
 import { all } from './db.ts'
 import { clientIp, HttpError, json, match, parseCookies, readBody, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { expireStaleCards } from './api.ts'
+import { expireStaleCards, migrateEmployeeCreds } from './api.ts'
 import * as runner from './runner.ts'
 import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
@@ -120,7 +120,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       c.raw = pre
       if (pre.length && !m.r.raw) { try { c.body = JSON.parse(pre.toString('utf8')) } catch { throw new HttpError(400, '不是 JSON') } }
     } else if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
-      const buf = await readBody(req, m.r.raw ? 30 * 1024 * 1024 : 4 * 1024 * 1024)
+      const buf = await readBody(req, m.r.max ?? (m.r.raw ? 30 * 1024 * 1024 : 4 * 1024 * 1024))
       if (m.r.raw) c.raw = buf
       else if (buf.length) { try { c.body = JSON.parse(buf.toString('utf8')) } catch { throw new HttpError(400, '不是 JSON') } }
     }
@@ -134,6 +134,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 
 ensureLocal()
 expireStaleCards()
+migrateEmployeeCreds()
 const server = http.createServer((req, res) => { handle(req, res).catch((e) => { console.error(e); try { json(res, 500, { message: '出错了' }) } catch { /* 已经断了 */ } }) })
 server.requestTimeout = 0 // SSE、长轮询、上传
 server.headersTimeout = 60_000

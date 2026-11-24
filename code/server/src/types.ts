@@ -17,7 +17,7 @@ export interface Employee {
   persona?: string
   executor: string // 'Claude Code' | 'Codex'
   host: string
-  workspace: string // 工作空间 id；空 = 在自己的目录里干活
+  workspace: string // 项目 id；空 = 在自己的目录里干活
   menus: string[]
   model: string
   effort: Effort
@@ -38,14 +38,18 @@ export interface Employee {
   memCred?: string
   /** 能建 / 改别的员工（emp_create / emp_update，都要主人点确认） */
   canManage?: boolean
-  /** 能只读看的别的工作空间（最多 8 个，要和员工在同一台机器上） */
+  /** 能只读看的别的项目（最多 8 个，要和员工在同一台机器上） */
   reads?: string[]
   /** 这个员工每月预算（美元，0 / 不填 = 不单独限） */
   budget?: number
-  /** 在自己的分支上改（比如 opero/dev），干完提合并请求；不填 = 直接在工作空间的主分支上改 */
+  /** 在自己的分支上改（比如 opero/dev），干完提合并请求；不填 = 直接在项目的主分支上改 */
   workBranch?: string
   /** 能改哪些域名的解析（域名 id，见 dns.ts） */
   dns?: string[]
+  /** 能用哪些凭证（凭证 id）：连服务器、查库、{{secret:名}}、签名都只认这里勾了的 */
+  creds?: string[]
+  /** 以后新加的这几类凭证自动给它（按角色预先勾好，员工页能改） */
+  credGroups?: string[]
 }
 
 export interface Session {
@@ -115,6 +119,8 @@ export interface Server {
   policy?: Partial<Policy>
   /** 这台上登记的本地目录：read = 员工能读，write = 员工能读写，deploy = 发布能部署进去（Agent 用 ACL 给 AI 用户开权限） */
   dirs?: ServerDir[]
+  /** 登记的日志（可以多个）：员工的 log_scan 不指定就扫这些；网页「日志」里点一下就看 */
+  logSrc?: LogSource[]
   /** 接入方式：local = Opero 自己这台；agent = 装了 Opero Agent（员工能在上面干活）；ssh = 只用 SSH 跑命令 */
   via?: 'local' | 'agent' | 'ssh' | 'pending' | 'rejected'
   /** Agent 自己的公钥（ed25519 原始 32 字节 base64）和指纹（SHA256:…）：Opero 按指纹认机器，换地址也认得 */
@@ -137,21 +143,31 @@ export interface Server {
 export interface Credential {
   id: string
   name: string
+  /** 分类：服务器 / 数据库 / 代码仓库 / 云账号 / AI / 签名证书 / 其它 */
   group: string
+  /** 分类里的具体类型：MySQL、GitHub、阿里云、OpenAI、SSH 密码…（见网页 credmeta.ts） */
   kind: string
   env: EnvTag
-  scope: string
-  usedBy: string[]
+  /** 不是密码的那些字段：地址、端口、库名、平台地址、AccessKey ID、区域…… */
+  meta?: Record<string, string>
+  /** 最近一次「测试连接」：能不能用、说明（比如识别出的账号、读到几张表） */
+  test?: { ok: boolean; msg: string; at: number; details?: { title: string; items: string[]; total?: number }[] }
   updated: string
+  /** 总开关：关了只有主人本人能用；开着也要在员工那边勾了才给那个员工用 */
   aiAllowed: boolean
   user?: string
   hasSecret?: boolean
+  /** 旧字段（以前手写的说明 / 给自己看的标记），不再用 */
+  scope?: string
+  usedBy?: string[]
 }
 
+/** 能查的库（Redis、MongoDB 只存账号、能测试连接，不进「数据」） */
+export type DbKind = 'MySQL' | 'MariaDB' | 'PostgreSQL' | 'SQL Server' | 'Oracle'
 export interface DataSource {
   id: string
   name: string
-  kind: 'MySQL' | 'PostgreSQL'
+  kind: DbKind
   env: EnvTag
   /** 改数据的确认卡片标成危险；没设过按环境标签猜 */
   protect?: boolean
@@ -265,7 +281,7 @@ export interface Release {
 export interface Issue {
   id: string
   title: string
-  /** 哪台服务器 / 哪个项目（工作空间） */
+  /** 哪台服务器 / 哪个项目 */
   server?: string
   workspace?: string
   severity: 'high' | 'mid' | 'low'
@@ -288,4 +304,6 @@ export interface Device { id: string; name: string; platform: string; appVersion
 
 export interface Owner { email: string; name: string; salt: string; hash: string }
 
+/** 服务器上登记的日志：file = 文件（可带 *），dir = 目录（里面的 *.log），service = 系统服务（journalctl）。日志扫描不指定时扫这些 */
+export interface LogSource { kind: 'file' | 'dir' | 'service'; path: string; note?: string }
 export interface ServerDir { path: string; mode: 'read' | 'write' | 'deploy'; note?: string; ok?: boolean; error?: string }

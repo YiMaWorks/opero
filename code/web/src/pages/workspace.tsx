@@ -1,4 +1,4 @@
-// 工作空间（项目）：列表 · 详情（员工、分支、提交、问题、文档、预览）· 接入仓库 · 问题清单 / 问题详情
+// 项目（项目）：列表 · 详情（员工、分支、提交、问题、文档、预览）· 接入仓库 · 问题清单 / 问题详情
 import { useState } from 'react'
 import type { Issue, IssueStatus, Workspace } from '../types'
 import { addWorkspace, empName, setIssueStatus, toast, useStore } from '../store'
@@ -22,7 +22,7 @@ export function WorkspacesPage({ nav }: PageProps) {
   const issues = useStore((s) => s.issues)
   return (
     <div className="page">
-      <PageHeader title="工作空间" sub="员工干活的项目（git 仓库 + 服务器上的目录）" {...headNav(nav)}
+      <PageHeader title="项目" sub="员工干活的项目（git 仓库 + 服务器上的目录）" {...headNav(nav)}
         right={<button className="btn primary sm" onClick={() => nav.push({ page: 'workspaceAdd' })}><IconPlus /> 接入</button>} />
       <div className="page-body">
         <Section flush>
@@ -47,7 +47,7 @@ export function WorkspacesPage({ nav }: PageProps) {
 export function WorkspacePage({ params, nav }: PageProps) {
   const w = useStore((s) => s.workspaces.find((x) => x.id === params.id))
   const allIssues = useStore((s) => s.issues)
-  if (!w) return <div className="page"><PageHeader title="工作空间" {...headNav(nav)} /><Empty>这个员工用的是它自己的仓库（只放记忆），没有业务代码。</Empty></div>
+  if (!w) return <div className="page"><PageHeader title="项目" {...headNav(nav)} /><Empty>这个员工用的是它自己的仓库（只放记忆），没有业务代码。</Empty></div>
   const issues = allIssues.filter((i) => i.project === w.id)
   return (
     <div className="page">
@@ -117,7 +117,7 @@ export function WorkspaceAddPage({ nav }: PageProps) {
         <Field label="代码托管">
           <Segmented value={provider} options={[{ value: 'GitHub', label: 'GitHub' }, { value: 'Gitea', label: 'Gitea' }, { value: 'Codeup', label: 'Codeup' }]} onChange={setProvider} />
         </Field>
-        <Field label="仓库地址" hint="用你带进来的「GitHub 个人令牌」（或别的托管的令牌）拉代码：你能看的仓库员工就能看；没有就先去「权限和凭证」带进来">
+        <Field label="仓库地址" hint="用你带进来的「GitHub 个人令牌」（或别的托管的令牌）拉代码：你能看的仓库员工就能看；没有就先去「凭证」带进来">
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/you/my-app.git" />
         </Field>
         <Field label="主分支"><input value={branch} onChange={(e) => setBranch(e.target.value)} /></Field>

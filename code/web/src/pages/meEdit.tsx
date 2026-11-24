@@ -20,7 +20,6 @@ export function MeEditPage({ nav }: PageProps) {
           </div>
         </div>
         <Field label="名字"><input value={me.name} maxLength={16} onChange={(e) => setMe({ name: e.target.value || '主人' })} /></Field>
-        <Field label="签名" hint="显示在名字下面，一句话就好"><input value={me.signature ?? ''} maxLength={40} placeholder="比如：把重复的事交给员工，自己只做决定" onChange={(e) => setMe({ signature: e.target.value })} /></Field>
         <div className="field">
           <span className="field-label">封面</span>
           <div className="cover-grid">

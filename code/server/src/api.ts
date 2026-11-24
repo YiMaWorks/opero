@@ -19,7 +19,11 @@ import * as releases from './releases.ts'
 import * as build from './build.ts'
 import { checkServer, execOn, isReadOnly, LOCAL_ID } from './ssh.ts'
 import { isReadSql, loadSchema, runQuery } from './dbconn.ts'
-import { cloneWorkspace, git, inspect, providerOf, workspaceDir } from './git.ts'
+import { gitRepos, isSqlKind, testCred } from './creds.ts'
+import { cloneWorkspace, git, inspect, providerOf, remoteBranches, workspaceDir } from './git.ts'
+import { switchAndTell } from './branch.ts'
+import * as pipes from './pipelines.ts'
+import * as buildjobs from './buildjobs.ts'
 import { fire, parseRule } from './triggers.ts'
 import { PRESETS } from './presets.ts'
 import * as execs from './executors.ts'
@@ -28,7 +32,7 @@ import * as hosts from './hosts.ts'
 import * as queue from './queue.ts'
 import * as keys from './keys.ts'
 import { delSecret, getSecret, hasSecret, setSecret } from './vault.ts'
-import type { Credential, DataSource, Deploy, Device, Employee, Issue, KbDoc, Message, Release, SavedQuery, Server, ServerDir, Session, Trigger, Workspace } from './types.ts'
+import type { Credential, DataSource, Deploy, Device, Employee, Issue, KbDoc, Message, Release, SavedQuery, LogSource, Server, ServerDir, Session, Trigger, Workspace } from './types.ts'
 import * as memory from './memory.ts'
 import * as issues from './issues.ts'
 import { cleanPolicy } from './policy.ts'
@@ -282,6 +286,8 @@ route('PUT', '/api/ai', async (c) => {
     put1('credentials', { id, name: sub ? 'Claude Code 的登录令牌' : name, group: 'AI', kind: 'Token', env: '生产', scope: sub ? 'Claude 订阅（一年有效）' : '调模型（按量计费）', usedBy: [], updated: now(), aiAllowed: true } satisfies Credential)
     conf[field] = id
   }
+  // 用「凭证 → AI」里已经存的 Key（不用再贴一遍）
+  for (const [f, k] of [['claudeCred', b.claudeCredId], ['codexCred', b.codexCredId]] as const) if (k && get<Credential>('credentials', String(k)) && hasSecret(String(k))) conf[f] = String(k)
   saveKey('claudeCred', 'Claude Code 的 API Key / 令牌', b.claudeKey)
   saveKey('codexCred', 'Codex 的 OpenAI API Key', b.codexKey)
   if (b.claudeBaseUrl !== undefined) conf.claudeBaseUrl = String(b.claudeBaseUrl).trim()
@@ -369,6 +375,8 @@ function cleanEmp(b: any, old?: Employee): Employee {
     reads: (Array.isArray(b.reads) ? b.reads : old?.reads ?? []).map(String).filter((id: string) => get<Workspace>('workspaces', id)).slice(0, 8),
     budget: Math.max(0, Number(pick('budget', 0)) || 0) || undefined,
     dns: (Array.isArray(b.dns) ? b.dns : old?.dns ?? []).map(String).filter((id: string) => get('domains', id)),
+    creds: [...new Set<string>((Array.isArray(b.creds) ? b.creds : old?.creds ?? []).map(String))].filter((id) => get('credentials', id)),
+    credGroups: (Array.isArray(b.credGroups) ? b.credGroups : old?.credGroups ?? []).map(String).filter((g: string) => CRED_GROUPS.includes(g)),
     workBranch: /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,100}(?<!\/)$/.test(String(pick('workBranch', '') ?? '')) ? String(pick('workBranch', '')) : undefined,
   }
 }
@@ -389,6 +397,9 @@ route('PUT', '/api/employees/:id', (c) => {
   const old = get<Employee>('employees', c.params.id)
   if (!old) throw new HttpError(404, '没有这个员工')
   const e = cleanEmp({ ...c.body, id: old.id }, old)
+  // 给员工多开了凭证：记进操作记录（不用验证本人，看明文、删才要）
+  const added = (e.creds ?? []).filter((id) => !(old.creds ?? []).includes(id))
+  if (added.length) audit({ via: '—', action: 'employee.creds', target: `${e.name}：${added.map((id) => get<Credential>('credentials', id)?.name).join('、')}`, level: '写', result: '成功', how: '本人' })
   if (old.executor !== e.executor || old.workspace !== e.workspace || old.host !== e.host) e.resumeId = undefined // 换了执行器 / 目录：会话接不上了，下一句开新的
   if (old.host !== e.host) {
     if (runner.isWorking(old.id)) throw bad('员工正在干活：等这一轮做完再换服务器')
@@ -398,9 +409,17 @@ route('PUT', '/api/employees/:id', (c) => {
   }
   return put1('employees', e)
 })
+route('GET', '/api/employees/:id/where', (c) => {
+  const e = get<Employee>('employees', c.params.id)
+  if (!e) throw new HttpError(404, '没有这个员工')
+  return runner.whereOf(e)
+})
 route('DELETE', '/api/employees/:id', (c) => {
   const e = get<Employee>('employees', c.params.id)
-  if (!e) return { ok: true }
+  if (e) deleteEmployee(e)
+  return { ok: true }
+})
+function deleteEmployee(e: Employee) {
   runner.stop(e.id)
   for (const q of queue.list(e.id)) queue.remove(q.id, true)
   for (const s of all<Session>('sessions').filter((x) => x.employee === e.id)) {
@@ -409,8 +428,7 @@ route('DELETE', '/api/employees/:id', (c) => {
   }
   del1('employees', e.id)
   audit({ via: '—', action: 'employee.delete', target: e.name, level: '写', result: '成功', how: '本人' })
-  return { ok: true }
-})
+}
 // ---------- 换会话（开新会话接着做 / 换执行器）、历史会话、记忆仓库 ----------
 const empOf = (id: string) => { const e = get<Employee>('employees', id); if (!e) throw new HttpError(404, '没有这个员工'); return e }
 const day = () => new Date().toLocaleDateString('zh-CN')
@@ -421,7 +439,7 @@ function nextWork(e: Employee, reason: string): Employee['works'] {
   works.unshift({ no: (works[0]?.no ?? 0) + 1, from: day(), reason, host: runner.hostOf(e) === LOCAL_ID ? 'Opero 这台' : (get<Server>('servers', runner.hostOf(e))?.name ?? '') })
   return works.slice(0, 30)
 }
-/** 交接草稿：最近你说的、员工最后说的、工作空间现在的样子 */
+/** 交接草稿：最近你说的、员工最后说的、项目现在的样子 */
 async function handoffDraft(e: Employee, sid: string): Promise<string> {
   const msgs = listMessages(sid, 400)
   const asks = msgs.filter((m) => m.from === 'me' && m.kind === 'text' && m.text).slice(-5).map((m) => `- ${m.text!.replace(/\s+/g, ' ').slice(0, 160)}`)
@@ -432,7 +450,7 @@ async function handoffDraft(e: Employee, sid: string): Promise<string> {
     const st = await git(['status', '--short'], { host: w.server, cwd: w.dir }).catch(() => ({ code: 1, out: '' }))
     const lg = await git(['log', '-3', '--format=%h %s'], { host: w.server, cwd: w.dir }).catch(() => ({ code: 1, out: '' }))
     const n = st.out.split('\n').filter(Boolean).length
-    wsLine = `工作空间「${w.name}」：${n ? `还有 ${n} 个文件没提交` : '没有未提交的改动'}${lg.out ? `；最近提交：\n${lg.out.split('\n').map((l) => `  - ${l}`).join('\n')}` : ''}`
+    wsLine = `项目「${w.name}」：${n ? `还有 ${n} 个文件没提交` : '没有未提交的改动'}${lg.out ? `；最近提交：\n${lg.out.split('\n').map((l) => `  - ${l}`).join('\n')}` : ''}`
   }
   return [
     '接着上一个会话做（上一个会话已归档，上下文清空了）。先读你记忆仓库的 CLAUDE.md 和 docs/交接.md 最上面几条。',
@@ -489,13 +507,17 @@ route('PUT', '/api/employees/:id/memory/file', async (c) => {
   try { return { result: await memory.writeFile(e, runner.hostOf(e), String(c.body?.path ?? ''), String(c.body?.text ?? '')) } } catch (err) { throw bad((err as Error).message) }
 })
 
+// 预设角色（新建员工时点一个就把名字、职责、提示词、菜单都填好）
+route('GET', '/api/presets', () => ({ presets: Object.entries(PRESETS).map(([key, p]) => ({ key, ...p })) }))
 route('POST', '/api/setup/employees', (c) => {
   const { presets = [], executor = 'Claude Code', model = 'Opus 5.5' } = c.body ?? {}
   const made: Employee[] = []
   for (const k of presets as string[]) {
     const p = PRESETS[k]
     if (!p) continue
-    made.push(createEmployee(cleanEmp({ ...p, id: k, executor, model: /codex/i.test(executor) ? '执行器默认' : model })))
+    // 按角色先勾好：这几类凭证现在有的直接给，以后新加的也自动给（员工那边能改）
+    const creds = all<Credential>('credentials').filter((x) => x.aiAllowed && (p.credGroups ?? []).includes(x.group)).map((x) => x.id)
+    made.push(createEmployee(cleanEmp({ ...p, id: k, executor, model: /codex/i.test(executor) ? '执行器默认' : model, creds })))
   }
   return made
 })
@@ -604,7 +626,7 @@ route('POST', '/api/sessions/:id/stop', (c) => { const s = sess(c.params.id); re
 route('POST', '/api/sessions/:id/new-topic', (c) => {
   const s = sess(c.params.id)
   const reason = String(c.body?.reason ?? '')
-  runner.newTopic(s.employee, reason ? `—— 新的 work（${reason}）：上下文已清空，目录和工作空间都还在 ——` : undefined)
+  runner.newTopic(s.employee, reason ? `—— 新的 work（${reason}）：上下文已清空，目录和项目都还在 ——` : undefined)
   return { ok: true }
 })
 
@@ -653,9 +675,9 @@ function inlineCred(name: string, group: string, kind: string, env: any, user: s
 }
 route('POST', '/api/servers', async (c) => {
   const b = c.body ?? {}
-  const name = String(b.name ?? '').trim()
   const ip = String(b.ip ?? '').trim()
-  if (!name || !ip) throw bad('名字和地址都要填')
+  if (!ip) throw bad('地址要填')
+  const name = String(b.name ?? '').trim() || ip // 不起名就用地址，连上后能改成主机名
   if (all<Server>('servers').some((s) => s.name === name)) throw bad('已经有同名的服务器')
   const env = envOf(b.env, '测试')
   const user = String(b.user || 'root')
@@ -679,11 +701,14 @@ route('PUT', '/api/servers/:id', (c) => {
   if (changes.length) audit({ via: '—', action: 'server.update', target: `${old.name} · ${changes.join(' · ')}`, level: '写', result: '成功', how: '本人' })
   if (b.policy !== undefined) audit({ via: '—', action: 'server.policy', target: old.name, level: '写', result: '成功', how: '本人' })
   if (b.dirs !== undefined) {
-    needVerify(c)
     const dirs = cleanDirs(b.dirs)
     applyDirs(old, dirs).catch(() => {})
-    audit({ via: '—', action: 'server.dirs', target: `${old.name}：${dirs.map((d) => `${d.path}（${d.mode}）`).join('、') || '清空'}`, level: '危险', result: '成功', how: '本人（已验证）' })
+    audit({ via: '—', action: 'server.dirs', target: `${old.name}：${dirs.map((d) => `${d.path}（${d.mode}）`).join('、') || '清空'}`, level: '危险', result: '成功', how: '本人' })
     old.dirs = dirs.map((d) => ({ ...d, ok: undefined, error: '在设权限…' }))
+  }
+  if (b.logSrc !== undefined) {
+    old.logSrc = cleanLogs(b.logSrc)
+    audit({ via: '—', action: 'server.logs', target: `${old.name}：${old.logSrc.map((l) => l.path).join('、') || '清空'}`, level: '写', result: '成功', how: '本人' })
   }
   const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.policy !== undefined ? { policy: cleanPolicy(b.policy, old.policy) } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
   return pub('servers', put1('servers', next))
@@ -697,6 +722,16 @@ function cleanDirs(list: unknown): ServerDir[] {
     if (!/^\/[\w./@+-]+$/.test(p) || p.includes('..') || p.split('/').length < 3 && !/^\/(srv|opt|data|home|www|var)\/?/.test(p)) throw bad(`目录不对：${p}（要绝对路径，至少两层，比如 /srv/app）`)
     if (SYS.test(p) && x?.mode !== 'read') throw bad(`${p} 是系统目录，只能登记成「只读」`)
     return { path: p, mode: ['read', 'write', 'deploy'].includes(x?.mode) ? x.mode : 'read', note: String(x?.note ?? '').slice(0, 80) || undefined }
+  })
+}
+/** 登记的日志：文件（可带 *）/ 目录 / 系统服务，最多 30 个 */
+function cleanLogs(list: unknown): LogSource[] {
+  if (!Array.isArray(list)) return []
+  return list.slice(0, 30).map((x: any) => {
+    const kind: LogSource['kind'] = ['file', 'dir', 'service'].includes(x?.kind) ? x.kind : 'file'
+    const p = String(x?.path ?? '').trim().replace(/(.)\/+$/, '$1')
+    if (kind === 'service' ? !/^[\w@.:-]+$/.test(p) : (!/^\/[\w./*@+-]+$/.test(p) || p.includes('..'))) throw bad(kind === 'service' ? `服务名不对：${p}` : `日志路径不对：${p}（要绝对路径，可以带 *）`)
+    return { kind, path: p, note: String(x?.note ?? '').slice(0, 80) || undefined }
   })
 }
 /** 按登记的目录给 AI 用户开权限（ACL）：只读 = r-X，读写 = rwX（连默认 ACL，新文件也跟着），能部署的由 Agent 以 root 部署、不用开。去掉的收回 */
@@ -747,19 +782,41 @@ route('GET', '/api/servers/:id/logs', async (c) => {
   const lines = Math.max(20, Math.min(Number(q.get('lines')) || 200, 2000))
   const svc = q.get('service') ?? ''
   const file = q.get('file') ?? ''
+  const dir = (q.get('dir') ?? '').replace(/(.)\/+$/, '$1')
+  // 目录 / 带 * 的路径：看最新的那个文件
+  const newest = (glob: string) => `f=$(ls -t ${glob} 2>/dev/null | head -n 1); if [ -n "$f" ]; then echo "== $f =="; tail -n ${lines} "$f" 2>&1; else echo "没有匹配的日志文件：${glob.replace(/'/g, '')}"; fi`
   let cmd: string
   if (svc) { if (!/^[\w@.:-]+$/.test(svc)) throw bad('服务名不对'); cmd = `journalctl -u '${svc}' -n ${lines} --no-pager -o short-iso 2>&1` }
-  else if (file) { if (!/^\/[\w./@+-]+$/.test(file) || file.includes('..')) throw bad('日志路径要是绝对路径'); cmd = `tail -n ${lines} '${file}' 2>&1` }
+  else if (dir) { if (!/^\/[\w./@+-]+$/.test(dir) || dir.includes('..')) throw bad('目录要是绝对路径'); cmd = newest(`${shq(dir)}/*.log`) }
+  else if (file) {
+    if (!/^\/[\w./*@+-]+$/.test(file) || file.includes('..')) throw bad('日志路径要是绝对路径')
+    cmd = file.includes('*') ? newest(file) : `tail -n ${lines} '${file}' 2>&1`
+  }
   else throw bad('选一个服务或日志文件')
   const r = await execOn(sv, cmd, 20_000)
   return { text: r.out, code: r.code }
+})
+// 选目录 / 选文件（网页上所有填服务器路径的地方）：列一层，只读。Agent 那台以 root 看，所以能看到 AI 用户看不到的
+route('GET', '/api/servers/:id/ls', async (c) => {
+  const sv = get<Server>('servers', c.params.id)
+  if (!sv) throw new HttpError(404, '没有')
+  const p = (c.url.searchParams.get('path') || '/').trim().replace(/(.)\/+$/, '$1')
+  if (!p.startsWith('/') || p.split('/').includes('..') || /[\0\n\r]/.test(p)) throw bad('路径要是绝对路径')
+  const r = await execOn(sv, `cd -- ${shq(p)} || exit 3; find . -mindepth 1 -maxdepth 1 -printf '%Y\\t%s\\t%TY-%Tm-%Td %TH:%TM\\t%f\\n' 2>/dev/null | head -n 3000`, 20_000)
+  if (r.code !== 0) throw bad(r.out.trim().split('\n').pop()?.replace(/^.*cd: /, '') || '打不开这个目录')
+  const entries = r.out.split('\n').filter(Boolean).map((l) => {
+    const [y, size, time, ...name] = l.split('\t')
+    return { name: name.join('\t'), dir: y === 'd', size: Number(size) || 0, time }
+  }).filter((e) => e.name && e.name !== '.' && e.name !== '..')
+  entries.sort((a, b) => Number(b.dir) - Number(a.dir) || Number(a.name.startsWith('.')) - Number(b.name.startsWith('.')) || a.name.localeCompare(b.name))
+  return { path: p, entries }
 })
 route('POST', '/api/servers/:id/exec', async (c) => {
   const sv = get<Server>('servers', c.params.id)
   if (!sv) throw new HttpError(404, '没有')
   const command = String(c.body?.command ?? '').trim()
   const ro = isReadOnly(command)
-  if (!ro) needVerify(c)
+  if (!ro && isProtected(sv)) needVerify(c) // 只有生产这类受保护的服务器上改东西才验证本人
   const r = await execOn(sv, command, 60_000)
   audit({ via: '—', action: 'server.exec', target: `${sv.name} · ${command.slice(0, 100)}`, level: ro ? '读' : '写', result: r.code === 0 ? '成功' : '失败', how: ro ? '本人（只读命令）' : '本人（已验证）' })
   return r
@@ -768,29 +825,121 @@ route('POST', '/api/servers/:id/exec', async (c) => {
 // ---------- 凭证 ----------
 route('POST', '/api/credentials', (c) => saveCred(c))
 route('PUT', '/api/credentials/:id', (c) => saveCred(c, c.params.id))
-function saveCred(c: Ctx, id?: string) {
-  needVerify(c)
+// 新增 / 改凭证不用验证本人（存进去不会泄露什么）；看明文、删才要
+async function saveCred(c: Ctx, id?: string) {
   const b = c.body ?? {}
   const old = id ? get<Credential>('credentials', id) : undefined
   if (id && !old) throw new HttpError(404, '没有')
-  const name = String(b.name ?? old?.name ?? '').trim()
-  if (!name) throw bad('先起个名字')
+  const group = CRED_GROUPS.includes(String(b.group)) ? String(b.group) : old?.group ?? '其它'
+  const kind = String(b.kind ?? old?.kind ?? '').trim().slice(0, 40) || '令牌'
+  const meta = cleanMeta(b.meta ?? old?.meta)
+  let user = b.user !== undefined ? String(b.user).trim() : old?.user
+  const secret = b.secret ? String(b.secret) : ''
+  if (!old && !secret) throw bad(group === '数据库' || group === '服务器' ? '密码要填' : '密钥 / 令牌要填')
+  // 存之前真的连一次：结果记在凭证上（连不上也存，网页上标红，方便以后再试）
+  const t = await testCred({ group, kind, meta, user }, secret || (old ? getSecret(old.id) ?? '' : ''))
+  if (group === '代码仓库' && t.ok && t.user && kind !== 'GitHub' && !user) user = t.user // git 走 HTTPS 时的用户名（GitHub 不用）
+  const name = String(b.name ?? '').trim() || old?.name || autoCredName(group, kind, meta, user ?? t.user)
   const cred: Credential = {
-    id: old?.id ?? uid('cr'), name, group: String(b.group ?? old?.group ?? '其它'), kind: String(b.kind ?? old?.kind ?? 'Token'), env: envOf(b.env, old?.env ?? '生产'),
-    scope: String(b.scope ?? old?.scope ?? ''), usedBy: Array.isArray(b.usedBy) ? b.usedBy : old?.usedBy ?? [], updated: now(), aiAllowed: b.aiAllowed ?? old?.aiAllowed ?? true,
-    user: b.user !== undefined ? String(b.user) : old?.user,
+    id: old?.id ?? uid('cr'), name, group, kind, env: envOf(b.env, old?.env ?? '生产'), meta, user,
+    test: { ok: t.ok, msg: t.msg, at: Date.now(), details: t.details }, updated: now(), aiAllowed: b.aiAllowed ?? old?.aiAllowed ?? true,
   }
-  if (b.secret) setSecret(cred.id, String(b.secret))
+  if (secret) setSecret(cred.id, secret)
   put1('credentials', cred)
-  audit({ via: '—', action: old ? 'credential.update' : 'credential.create', target: name, level: '危险', result: '成功', how: '本人（已验证）' })
+  // 数据库：同一份接进「数据」（员工查库用它）
+  if (group === '数据库' && isSqlKind(kind)) syncDataSource(cred, b.writable, t.ok)
+  // 新加的：按员工「以后新加的这类自动给它」勾好
+  if (!old && cred.aiAllowed) for (const e of all<Employee>('employees').filter((x) => x.credGroups?.includes(group))) put1('employees', { ...e, creds: [...(e.creds ?? []), cred.id] })
+  audit({ via: '—', action: old ? 'credential.update' : 'credential.create', target: `${name}（${group} · ${kind}）`, level: '危险', result: '成功', how: '本人' })
   return pub('credentials', cred)
 }
+const CRED_GROUPS = ['服务器', '数据库', '代码仓库', '云账号', 'AI', '签名证书', '消息渠道', '其它']
+/** 不是密码的字段：只留短字符串 */
+function cleanMeta(m: unknown): Record<string, string> | undefined {
+  if (!m || typeof m !== 'object') return undefined
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(m as Record<string, unknown>).slice(0, 20)) if (/^\w{1,30}$/.test(k) && v !== undefined && v !== null && String(v).trim()) out[k] = String(v).trim().slice(0, 300)
+  return Object.keys(out).length ? out : undefined
+}
+/** 没起名字就自动起：「MySQL · 10.0.0.5/shop」「GitHub · zhangsan」「阿里云 · LTAI…3xQ」 */
+function autoCredName(group: string, kind: string, m: Record<string, string> | undefined, user?: string) {
+  const x = m ?? {}
+  const tail = group === '数据库' ? [x.host, x.db].filter(Boolean).join('/') : group === '服务器' ? `${user ? user + '@' : ''}${x.host ?? ''}` : group === '云账号' ? (x.akId ? `${x.akId.slice(0, 6)}…${x.akId.slice(-3)}` : '') : group === '代码仓库' ? (user || x.site || '') : ''
+  return tail ? `${kind} · ${tail}` : kind
+}
+/** 数据库凭证 ↔ 「数据」里的库：一份 */
+function syncDataSource(cred: Credential, writable: unknown, connected: boolean) {
+  const m = cred.meta ?? {}
+  const old = all<DataSource>('dataSources').find((d) => d.credential === cred.id)
+  const ds: DataSource = {
+    id: old?.id ?? uid('ds'), name: cred.name, kind: cred.kind as DataSource['kind'], env: cred.env, ...(old?.protect !== undefined ? { protect: old.protect } : {}),
+    host: m.host ?? '', port: Number(m.port) || undefined, db: m.db ?? '', user: cred.user ?? '', credential: cred.id,
+    writable: typeof writable === 'boolean' ? writable : old?.writable ?? false, tables: old?.tables ?? [],
+  }
+  put1('dataSources', ds)
+  if (connected) loadSchema(ds).then((tables) => { const cur = get<DataSource>('dataSources', ds.id); if (cur) put1('dataSources', { ...cur, tables }) }).catch(() => {})
+}
+// 测试连接：新增时用填的值，编辑时没填新值就用存着的
+route('POST', '/api/credentials/test', async (c) => {
+  const b = c.body ?? {}
+  const old = b.id ? get<Credential>('credentials', String(b.id)) : undefined
+  const secret = b.secret ? String(b.secret) : old ? getSecret(old.id) ?? '' : ''
+  if (!secret) throw bad('先填密码 / 令牌')
+  const r = await testCred({ group: String(b.group ?? old?.group ?? ''), kind: String(b.kind ?? old?.kind ?? ''), meta: cleanMeta(b.meta ?? old?.meta), user: b.user !== undefined ? String(b.user) : old?.user }, secret)
+  if (old && !b.secret) put1('credentials', { ...old, test: { ok: r.ok, msg: r.msg, at: Date.now(), details: r.details } })
+  return r
+})
+// 能选的模型：用存着的 Key / 订阅令牌去问 Anthropic / OpenAI 有哪些（读不到就用内置的），缓存 12 小时
+const BUILTIN_CLAUDE = ['Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1']
+route('GET', '/api/ai/models', async (c) => {
+  const cache = kvGet<{ at: number; claude: string[]; codex: string[] }>('aiModels', { at: 0, claude: [], codex: [] })
+  if (Date.now() - cache.at < 12 * 3600_000 && !c.url.searchParams.get('refresh')) return cache
+  const conf = runner.aiConf()
+  const get1 = async (url: string, headers: Record<string, string>) => {
+    try { const r = await fetch(url, { headers, signal: AbortSignal.timeout(8000) }); return r.ok ? ((await r.json()) as any) : null } catch { return null }
+  }
+  let claude: string[] = []
+  const ck = conf.claudeCred ? getSecret(conf.claudeCred) : undefined
+  if (ck) {
+    const oat = ck.startsWith('sk-ant-oat')
+    const j = await get1('https://api.anthropic.com/v1/models?limit=100', oat ? { Authorization: `Bearer ${ck}`, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'oauth-2025-04-20' } : { 'x-api-key': ck, 'anthropic-version': '2023-06-01' })
+    claude = (j?.data ?? []).map((x: any) => String(x.id)).filter((id: string) => /^claude-/.test(id))
+  }
+  let codex: string[] = []
+  const xk = conf.codexCred ? getSecret(conf.codexCred) : undefined
+  if (xk) {
+    const j = await get1(`${(conf.codexBaseUrl || 'https://api.openai.com/v1').replace(/\/+$/, '')}/models`, { Authorization: `Bearer ${xk}` })
+    codex = (j?.data ?? []).map((x: any) => String(x.id)).filter((id: string) => /^(gpt-|o\d|codex)/.test(id) && !/(audio|realtime|tts|transcribe|image|embedding|search|moderation|instruct)/.test(id)).sort().reverse()
+  }
+  const out = { at: Date.now(), claude: [...BUILTIN_CLAUDE, ...claude.filter((id) => !Object.values({ a: 'claude-opus-5-5', b: 'claude-sonnet-5-5', c: 'claude-haiku-5-5', d: 'claude-fable-5-1' }).includes(id))], codex: ['执行器默认', ...codex] }
+  if (claude.length || codex.length) kvSet('aiModels', out)
+  return out
+})
+// 云账号下的域名（登记域名时点一个）
+route('GET', '/api/credentials/:id/zones', async (c) => {
+  const cr = get<Credential>('credentials', c.params.id)
+  if (!cr) throw new HttpError(404, '没有')
+  try { return await dns.zonesOf(cr) } catch (e) { throw bad((e as Error).message) }
+})
+// 仓库的分支（接入仓库时自动选默认分支）
+route('GET', '/api/repo-branches', async (c) => {
+  const url = String(c.url.searchParams.get('url') ?? '').trim()
+  const cred = c.url.searchParams.get('cred') || undefined
+  try { return await remoteBranches(url, cred) } catch (e) { throw bad((e as Error).message) }
+})
+// 代码仓库凭证能访问的仓库（新建项目时点一个就行）
+route('GET', '/api/credentials/:id/repos', async (c) => {
+  const cr = get<Credential>('credentials', c.params.id)
+  if (!cr || cr.group !== '代码仓库') throw new HttpError(404, '没有')
+  try { return { repos: await gitRepos(cr.kind, cr.meta ?? {}, getSecret(cr.id) ?? '') } } catch (e) { throw bad(`读不到仓库列表：${(e as Error).message}`) }
+})
 route('DELETE', '/api/credentials/:id', (c) => {
-  needVerify(c)
   const cr = get<Credential>('credentials', c.params.id)
   delSecret(c.params.id)
   del1('credentials', c.params.id)
-  audit({ via: '—', action: 'credential.delete', target: cr?.name ?? c.params.id, level: '危险', result: '成功', how: '本人（已验证）' })
+  for (const d of all<DataSource>('dataSources').filter((x) => x.credential === c.params.id)) del1('dataSources', d.id)
+  for (const e of all<Employee>('employees').filter((x) => x.creds?.includes(c.params.id))) put1('employees', { ...e, creds: e.creds!.filter((x) => x !== c.params.id) })
+  audit({ via: '—', action: 'credential.delete', target: cr?.name ?? c.params.id, level: '危险', result: '成功', how: '本人' })
   return { ok: true }
 })
 route('POST', '/api/credentials/:id/reveal', (c) => {
@@ -835,7 +984,7 @@ route('POST', '/api/data-sources/:id/query', async (c) => {
   const read = isReadSql(sql)
   if (!read) {
     if (!ds.writable) throw bad('这个库只接了只读账号，不能改数据')
-    needVerify(c)
+    if (isProtected(ds)) needVerify(c) // 生产库改数据才验证本人
   }
   try {
     const r = await runQuery(ds, sql, { write: !read })
@@ -899,30 +1048,75 @@ function saveKb(c: Ctx, id?: string) {
 }
 route('DELETE', '/api/kb/:id', (c) => { del1('kb', c.params.id); return { ok: true } })
 
-// ---------- 工作空间 ----------
+// ---------- 项目 ----------
 route('POST', '/api/workspaces', async (c) => {
   const b = c.body ?? {}
   const repo = String(b.repo ?? '').trim()
   if (!/^(https?:\/\/|git@|ssh:\/\/)/.test(repo)) throw bad('仓库地址要以 https:// 开头')
   const name = String(b.name || repo.replace(/\.git$/, '').split('/').pop() || '').trim()
   if (!name) throw bad('起个名字')
-  if (all<Workspace>('workspaces').some((w) => w.name === name)) throw bad('已经有同名的工作空间')
+  if (all<Workspace>('workspaces').some((w) => w.name === name)) throw bad('已经有同名的项目')
   const server = empHost(b.server)
   const svName = hosts.isLocal(server) ? '本机' : (get<Server>('servers', server)?.name ?? server)
   const w: Workspace = { id: uid('w'), name, provider: providerOf(repo), repo, branch: String(b.branch ?? '').trim(), host: svName, server, dir: workspaceDir(name, server), last: '拉取中…', employees: [], credential: b.credential || undefined, branches: [], commits: [], docs: [] }
   put1('workspaces', w)
   audit({ via: '—', action: 'workspace.add', target: `${name} · ${repo}`, level: '写', result: '成功', how: '本人' })
-  cloneWorkspace(w).then(async () => put1('workspaces', { ...w, ...(await inspect(w)) }))
+  cloneWorkspace(w).then(async () => { const next = put1('workspaces', { ...w, ...(await inspect(w)) }); await ensureBuild(next) })
     .catch((e) => put1('workspaces', { ...w, last: '拉取失败', error: String((e as Error).message).slice(-400) }))
+  // 建项目就有一个常驻员工（名字用项目名，能改），这个项目相关的权限都给它
+  projectEmployee(w)
   return w
 })
+/** 给项目建一个员工：跑在项目那台、工作目录就是项目、记忆用项目 docs/；仓库凭证、部署要用的服务器凭证、签名证书都给它 */
+function projectEmployee(w: Workspace): Employee {
+  const p = PRESETS.dev
+  const same = all<Employee>('employees').filter((e) => e.workspace === w.id).length
+  let name = same ? `${w.name} ${same + 1}` : w.name
+  while (all<Employee>('employees').some((e) => e.name === name)) name += '′'
+  const deploySrv = (w.deploys ?? []).flatMap((d) => d.servers ?? [])
+  const creds = [w.credential, ...deploySrv.map((id) => get<Server>('servers', id)?.credential), ...all<Credential>('credentials').filter((c) => c.group === '签名证书').map((c) => c.id)]
+    .filter((x): x is string => !!x && !!get('credentials', x))
+  // 执行器跟着最近建的员工（多半装好的是哪个就用哪个）
+  const last = all<Employee>('employees').slice(-1)[0]
+  return createEmployee(cleanEmp({
+    name, avatar: name.slice(0, 1), color: p.color, title: `${w.name} 项目的开发`, prompt: `你负责「${w.name}」这个项目（${w.repo}）：按主人说的改代码、查问题、发布。先读项目的 README / CLAUDE.md / docs/交接.md 了解规矩；改完自查（看 diff），提交说明写清楚；做完在 docs/交接.md 最上面加一条。`,
+    menus: p.menus, effort: 'high', approval: 'auto', executor: last?.executor ?? 'Claude Code', model: last?.model ?? 'Opus 5.5',
+    host: w.server ?? 'local', workspace: w.id, creds: [...new Set(creds)],
+  }))
+}
+// 项目再加一个员工（点一下就建，名字「项目名 2」，能改）
+route('POST', '/api/workspaces/:id/employees', (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  if (!w) throw new HttpError(404, '没有')
+  return projectEmployee(w)
+})
+/** 项目还没有编译设置：认出类型、建好流水线（默认「自动」：本地资源够就本地编，不够走流水线） */
+const building = new Set<string>()
+async function ensureBuild(w: Workspace) {
+  if (w.buildCfg || w.error || building.has(w.id)) return
+  building.add(w.id)
+  try { await ensureBuild1(w) } finally { building.delete(w.id) }
+}
+async function ensureBuild1(w: Workspace) {
+  // 云效用的令牌：项目自己的凭证是 Codeup 的就用它，不然找第一个 Codeup 凭证
+  const own = w.credential ? get<Credential>('credentials', w.credential) : undefined
+  const codeup = own && /codeup/i.test(own.kind) ? own.id : all<Credential>('credentials').find((x) => x.group === '代码仓库' && /codeup/i.test(x.kind))?.id
+  try {
+    const cfg = await build.autoConfig(w, codeup)
+    const cur = get<Workspace>('workspaces', w.id)
+    if (cur && !cur.buildCfg) put1('workspaces', { ...cur, buildCfg: cfg })
+    audit({ via: '—', action: 'build.auto', target: `${w.name} · ${build.providerName(cfg)}${cfg.pipelineError ? `（流水线没建成：${cfg.pipelineError.slice(0, 80)}）` : ''}`, level: '写', result: cfg.pipelineError ? '失败' : '成功', how: '接入项目时自动' })
+  } catch { /* 认不出来也不挡 */ }
+}
 route('POST', '/api/workspaces/:id/refresh', async (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   if (!w) throw new HttpError(404, '没有')
   if (w.error && !fs.existsSync(path.join(w.dir, '.git'))) {
     try { await cloneWorkspace(w) } catch (e) { return put1('workspaces', { ...w, error: String((e as Error).message).slice(-400) }) }
   }
-  return put1('workspaces', { ...w, ...(await inspect(w)) })
+  const next = put1('workspaces', { ...w, ...(await inspect(w)) })
+  void ensureBuild(next)
+  return next
 })
 route('PUT', '/api/workspaces/:id', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
@@ -936,20 +1130,25 @@ route('PUT', '/api/workspaces/:id', (c) => {
 function cleanBuild(b: any, old?: build.BuildCfg): build.BuildCfg | undefined {
   if (!b) return undefined
   const kind = ['node', 'go', 'android', 'spring', 'custom'].includes(b.kind) ? b.kind : 'custom'
-  const provider = ['yunxiao', 'github', 'local'].includes(b.provider) ? b.provider : 'local'
+  const provider = ['yunxiao', 'github', 'gitlab', 'jenkins', 'local'].includes(b.provider) ? b.provider : 'local'
   const s = (v: unknown, n = 200) => String(v ?? '').trim().slice(0, n) || undefined
   const out: build.BuildCfg = { kind, provider, subdir: s(b.subdir, 100), cmd: s(b.cmd, 8000), versionFile: s(b.versionFile), versionRe: s(b.versionRe), service: s(b.service, 80)?.replace(/[^A-Za-z0-9@._-]/g, ''), file: s(b.file, 100) }
   if (kind === 'custom' && !out.cmd) throw bad('自定义模板要写编译命令（把产物放进 out/）')
   if (kind === 'spring') out.spring = { tool: b.spring?.tool === 'gradle' ? 'gradle' : 'maven', jdk: Number(b.spring?.jdk) === 21 ? 21 : 17, task: s(b.spring?.task), jar: s(b.spring?.jar), dirs: Array.isArray(b.spring?.dirs) ? b.spring.dirs.map(String).slice(0, 10) : [] }
   if (provider === 'yunxiao') {
-    if (!get<Credential>('credentials', String(b.yunxiao?.cred ?? ''))) throw bad('选一个放着云效个人访问令牌的凭证')
+    if (!get<Credential>('credentials', String(b.yunxiao?.cred ?? ''))) throw bad('选一个 Codeup 凭证（个人访问令牌，要有流水线读写）')
     out.yunxiao = { cred: String(b.yunxiao.cred), org: s(b.yunxiao?.org, 64), pipelineId: s(b.yunxiao?.pipelineId, 32) ?? old?.yunxiao?.pipelineId, image: s(b.yunxiao?.image), at: old?.yunxiao?.at }
   }
   if (provider === 'github') out.github = { workflow: s(b.github?.workflow, 80)?.replace(/[^\w.-]/g, '') ?? old?.github?.workflow, at: old?.github?.at }
-  if (provider === 'local') {
-    if (!get<Server>('servers', String(b.local?.server ?? ''))) throw bad('选一台编译的服务器')
-    out.local = { server: String(b.local.server) }
+  if (provider === 'gitlab') out.gitlab = { at: old?.gitlab?.at }
+  if (provider === 'jenkins') {
+    if (!get<Credential>('credentials', String(b.jenkins?.cred ?? ''))) throw bad('选一个 Jenkins 凭证（凭证 → 其它 → Jenkins：地址、用户名、API Token）')
+    out.jenkins = { cred: String(b.jenkins.cred), job: s(b.jenkins?.job, 80)?.replace(/[^\w.-]/g, '-') ?? old?.jenkins?.job, at: old?.jenkins?.at }
   }
+  // 本地编在哪台：不选就用项目所在那台
+  if (b.local?.server && get<Server>('servers', String(b.local.server))) out.local = { server: String(b.local.server) }
+  out.where = ['auto', 'local', 'pipeline'].includes(b.where) ? b.where : provider === 'local' ? 'local' : old?.where ?? 'auto'
+  if (out.where === 'pipeline' && provider === 'local') throw bad('「总是流水线」要先选一个打包工具（云效 / GitHub Actions）')
   return out
 }
 route('POST', '/api/workspaces/:id/build/generate', async (c) => {
@@ -961,6 +1160,25 @@ route('POST', '/api/workspaces/:id/build/generate', async (c) => {
     return put1('workspaces', { ...get<Workspace>('workspaces', w.id)!, buildCfg: next })
   } catch (e) { throw bad((e as Error).message) }
 })
+// 打包工具（GitLab / Jenkins…）来拿源码、传产物：地址里带一次性令牌，不用登录
+route('GET', '/api/build-src/:token', (c) => {
+  const f = pipes.takeSource(c.params.token)
+  if (!f || !fs.existsSync(f)) throw new HttpError(404, '地址过期了')
+  c.res.writeHead(200, { 'Content-Type': 'application/gzip', 'Content-Length': fs.statSync(f).size })
+  fs.createReadStream(f).pipe(c.res)
+}, { auth: 'none' })
+route('PUT', '/api/build-upload/:token', (c) => {
+  if (!c.raw?.length) throw bad('没收到产物')
+  if (!pipes.receiveUpload(c.params.token, c.raw)) throw new HttpError(404, '地址过期了')
+  return { ok: true }
+}, { auth: 'none', raw: true, max: 600 * 1024 * 1024 })
+// 网页上的「试编译」：只编不发
+route('POST', '/api/workspaces/:id/build/try', (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  if (!w) throw new HttpError(404, '没有')
+  try { return buildjobs.start(w, '主人') } catch (e) { throw bad((e as Error).message) }
+})
+route('GET', '/api/workspaces/:id/build/try', (c) => buildjobs.lastOf(c.params.id) ?? null)
 route('GET', '/api/workspaces/:id/build/script', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   if (!w?.buildCfg) throw bad('先存好编译设置')
@@ -982,7 +1200,7 @@ function cleanDeploys(list: any[], old: Deploy[] = []): Deploy[] {
     if (health && !/^https?:\/\/\S+$/.test(health)) throw bad('检查地址要以 http:// 或 https:// 开头')
     return {
       id: prev?.id ?? uid('dp'), name, servers, dir: dir || undefined, script: String(d.script ?? '').trim().replace(/[^\w./-]/g, '') || undefined, command: command || undefined, sign, health: health || undefined,
-      keep: Math.max(1, Math.min(Number(d.keep) || 5, 30)), ai: ['auto', 'ask', 'off'].includes(d.ai) ? d.ai : 'ask', autoRollback: d.autoRollback !== false,
+      keep: Math.max(1, Math.min(Number(d.keep) || 5, 30)), ai: ['auto', 'ask', 'off'].includes(d.ai) ? d.ai : servers.some((id: string) => isProtected(get<Server>('servers', id)!)) ? 'ask' : 'auto', autoRollback: d.autoRollback !== false,
       last: prev?.last, lastOk: prev?.lastOk,
     }
   })
@@ -991,7 +1209,7 @@ route('POST', '/api/workspaces/:id/deploys/:did/run', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   const d = w?.deploys?.find((x) => x.id === c.params.did)
   if (!w || !d) throw new HttpError(404, '没有这个发布环境')
-  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c)
+  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c) // 发到生产（受保护的服务器）：验证本人
   try { return releases.start(w, d.id, { by: '主人', note: c.body?.note ? String(c.body.note) : undefined }) } catch (e) { throw bad((e as Error).message) }
 })
 
@@ -1004,7 +1222,7 @@ route('POST', '/api/releases/:id/rollback', (c) => {
   const d = w?.deploys?.find((x) => x.id === r!.target)
   if (!r || !w || !d) throw new HttpError(404, '这次发布或它的目标不在了')
   if (r.status !== 'success') throw bad('只能回滚到发成功的版本')
-  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c)
+  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c) // 发到生产（受保护的服务器）：验证本人
   try { return releases.start(w, d.id, { by: '主人', rollbackOf: r, note: `回滚到 ${r.version}` }) } catch (e) { throw bad((e as Error).message) }
 })
 // 发布产物在服务器之间搬（Agent 调）
@@ -1022,8 +1240,22 @@ route('GET', '/api/agent/blob/:key', (c) => {
   fs.createReadStream(f).pipe(c.res)
 }, { auth: 'agent' })
 route('DELETE', '/api/workspaces/:id', (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
   del1('workspaces', c.params.id) // 目录留着（里面可能有没推的改动），要删去服务器上删
+  // 这个项目的员工：一起删（withEmployees）或者留着变成普通员工
+  for (const e of all<Employee>('employees').filter((x) => x.workspace === c.params.id)) {
+    if (c.url.searchParams.get('withEmployees') === '1') { runner.stop(e.id); deleteEmployee(e) } else put1('employees', { ...e, workspace: '' })
+  }
+  if (w) audit({ via: '—', action: 'workspace.delete', target: w.name, level: '写', result: '成功', how: '本人' })
   return { ok: true }
+})
+// 切分支：所有员工一起换（有员工在干活就等它做完）
+route('POST', '/api/workspaces/:id/branch', async (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  if (!w) throw new HttpError(404, '没有')
+  const busy = all<Employee>('employees').filter((e) => e.workspace === w.id && runner.isWorking(e.id))
+  if (busy.length) throw bad(`${busy.map((e) => e.name).join('、')} 正在干活，等它做完再切`)
+  try { return await switchAndTell(w, String(c.body?.branch ?? '').trim(), '主人') } catch (e) { throw bad((e as Error).message) }
 })
 
 // ---------- 问题清单 ----------
@@ -1048,12 +1280,11 @@ route('DELETE', '/api/domains/:id', (c) => { del1('domains', c.params.id); retur
 const domOf = (id: string) => { const d = get<dns.Domain>('domains', id); if (!d) throw new HttpError(404, '没有这个域名'); return d }
 route('GET', '/api/domains/:id/records', async (c) => { try { return await dns.list(domOf(c.params.id)) } catch (e) { throw bad((e as Error).message) } })
 route('POST', '/api/domains/:id/records', async (c) => {
-  needVerify(c)
   const d = domOf(c.params.id)
   const b = c.body ?? {}
   try {
     const x = await dns.set(d, { rr: String(b.rr ?? '').trim(), type: String(b.type ?? '').toUpperCase(), value: String(b.value ?? '').trim(), ttl: b.ttl ? Number(b.ttl) : undefined, priority: b.priority ? Number(b.priority) : undefined })
-    audit({ via: '—', action: 'dns.set', target: `${b.rr}.${d.domain} ${b.type} ${b.value}`, level: '危险', result: '成功', how: '本人（已验证）' })
+    audit({ via: '—', action: 'dns.set', target: `${b.rr}.${d.domain} ${b.type} ${b.value}`, level: '危险', result: '成功', how: '本人' })
     return x
   } catch (e) { throw bad((e as Error).message) }
 })
@@ -1067,9 +1298,11 @@ route('DELETE', '/api/domains/:id/records/:rid', async (c) => {
 route('POST', '/api/channels', async (c) => {
   const b = c.body ?? {}
   const kind = b.kind === 'slack' ? 'slack' : 'email'
-  const name = String(b.name ?? '').trim().slice(0, 40)
+  const name = String(b.name ?? '').trim().slice(0, 40) || (kind === 'slack' ? 'Slack' : String(b.user ?? '邮箱'))
+  // 直接贴的密码 / 令牌：存成一个「消息渠道」凭证
+  if (!b.cred && b.secret) b.cred = inlineCred(`${kind === 'slack' ? 'Slack 用户令牌' : '邮箱授权码'} · ${name}`, '消息渠道', kind === 'slack' ? 'Slack 用户令牌' : '邮箱（IMAP / SMTP）', '生产', String(b.user ?? ''), String(b.secret), '')
   const cred = get<Credential>('credentials', String(b.cred ?? ''))
-  if (!name || !cred) throw bad('名字和凭证都要有')
+  if (!cred) throw bad(kind === 'slack' ? '贴上 Slack 用户令牌（xoxp- 开头）' : '贴上邮箱的授权码 / 应用专用密码')
   const ch: inbox.Channel = { id: inbox.newChannelId(), kind, name, cred: cred.id, enabled: true }
   if (kind === 'email') {
     ch.imapHost = String(b.imapHost ?? '').trim()
@@ -1105,16 +1338,28 @@ route('POST', '/api/inbox/:id/draft', async (c) => { try { return await inbox.dr
 
 // ---------- 提醒发到哪（外部渠道） ----------
 const KINDS = ['email', 'telegram', 'slack', 'wecom', 'dingtalk', 'feishu', 'webhook']
-route('POST', '/api/notifiers', (c) => {
+route('POST', '/api/notifiers', async (c) => {
   const b = c.body ?? {}
   if (!KINDS.includes(b.kind)) throw bad('不认识的渠道')
-  if (!get<Credential>('credentials', String(b.cred ?? ''))) throw bad('选一个凭证（机器人令牌 / 地址 / SMTP 密码）')
+  const LABEL: Record<string, string> = { telegram: 'Telegram 机器人', slack: 'Slack Webhook', wecom: '企业微信群机器人', dingtalk: '钉钉群机器人', feishu: '飞书群机器人', email: '邮箱（IMAP / SMTP）', webhook: 'Webhook' }
+  // 直接贴的令牌 / 地址：存成一个「消息渠道」凭证（加签密钥放用户名）
+  if (!b.cred && b.secret) b.cred = inlineCred(`${LABEL[b.kind]} · ${String(b.name ?? '').trim() || '提醒'}`, '消息渠道', LABEL[b.kind], '生产', String(b.secretUser || b.smtpUser || ''), String(b.secret).trim(), '')
+  const nc = get<Credential>('credentials', String(b.cred ?? ''))
+  if (!nc) throw bad('贴上机器人令牌 / Webhook 地址 / 邮箱授权码')
+  // Telegram：没填 chat_id 就去机器人最近收到的消息里找（先给机器人发一句话）
+  if (b.kind === 'telegram' && !b.chatId) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${getSecret(nc.id) ?? ''}/getUpdates`, { signal: AbortSignal.timeout(10_000) }).then((x) => x.json()) as any
+      const last = (r?.result ?? []).map((u: any) => u.message ?? u.channel_post ?? u.my_chat_member).filter(Boolean).pop()
+      if (last?.chat?.id) b.chatId = String(last.chat.id)
+    } catch { /* 连不上 Telegram：下面报要填 */ }
+  }
   const events = (Array.isArray(b.events) ? b.events : ['decide', 'error']).filter((x: string) => ['decide', 'error', 'all'].includes(x))
   const n: notify.Notifier = {
     id: uid('nt'), kind: b.kind, name: String(b.name ?? b.kind).slice(0, 40), events: events.length ? events : ['decide', 'error'], enabled: true, cred: String(b.cred),
     chatId: b.chatId ? String(b.chatId) : undefined, smtpHost: b.smtpHost ? String(b.smtpHost) : undefined, smtpPort: Number(b.smtpPort) || undefined, smtpUser: b.smtpUser ? String(b.smtpUser) : undefined, to: b.to ? String(b.to) : undefined,
   }
-  if (n.kind === 'telegram' && !n.chatId) throw bad('Telegram 要填 chat_id（给机器人发一句话后，用 getUpdates 看）')
+  if (n.kind === 'telegram' && !n.chatId) throw bad('没找到 chat_id：先在 Telegram 里给你的机器人发一句话（群里用就把机器人拉进群、在群里发一句），再点「加上」')
   if (n.kind === 'email' && (!n.smtpHost || !n.to)) throw bad('邮件要填 SMTP 服务器和收件人')
   audit({ via: '—', action: 'notifier.add', target: `${n.kind} · ${n.name}`, level: '写', result: '成功', how: '本人' })
   put('notifiers', n)
@@ -1216,10 +1461,9 @@ route('POST', '/api/agents/join', (c) => {
   return { token, url, cmd, cmdCn: cmd + ' --cn', expiresIn: 1800, since: Date.now() }
 })
 route('DELETE', '/api/agents/:id', (c) => {
-  needVerify(c)
   const sv = get<Server>('servers', c.params.id)
   agents.remove(c.params.id)
-  audit({ via: '—', action: 'agent.remove', target: sv?.name ?? c.params.id, level: '危险', result: '成功', how: '本人（已验证）' })
+  audit({ via: '—', action: 'agent.remove', target: sv?.name ?? c.params.id, level: '危险', result: '成功', how: '本人' })
   return { ok: true }
 })
 // Agent 自己调的
@@ -1231,8 +1475,8 @@ route('POST', '/api/agent/register', (c) => {
   try { return agents.register(b, c.ip, signedOk) } catch (e) { throw new HttpError(403, (e as Error).message, 'JOIN') }
 }, { auth: 'none' })
 // 待接入的机器：核对指纹后接受 / 拒绝
-route('POST', '/api/agents/:id/accept', (c) => { needVerify(c); try { return agents.pub(agents.decide(c.params.id, true)) } catch (e) { throw bad((e as Error).message) } })
-route('POST', '/api/agents/:id/reject', (c) => { needVerify(c); try { return agents.pub(agents.decide(c.params.id, false)) } catch (e) { throw bad((e as Error).message) } })
+route('POST', '/api/agents/:id/accept', (c) => { try { return agents.pub(agents.decide(c.params.id, true)) } catch (e) { throw bad((e as Error).message) } })
+route('POST', '/api/agents/:id/reject', (c) => { try { return agents.pub(agents.decide(c.params.id, false)) } catch (e) { throw bad((e as Error).message) } })
 // Opero 换地址（迁移）：让所有在线的 Agent 改连新地址（Opero 的指纹不变，Agent 就无痕接上）
 route('POST', '/api/agents/move', (c) => {
   needVerify(c)
@@ -1245,11 +1489,10 @@ route('POST', '/api/agents/move', (c) => {
 })
 // 一键升级 Agent：让那台在 systemd 里另起一个单元跑 opero update（不在 Agent 自己的进程里，升级时 Agent 重启也不会把它带走）
 route('POST', '/api/agents/:id/upgrade', async (c) => {
-  needVerify(c)
   const sv = get<Server>('servers', c.params.id)
   if (!sv || !agents.agentOnline(sv)) throw bad('这台的 Agent 不在线')
   const r = await agents.exec(sv.id, 'systemd-run --unit=opero-agent-upgrade --collect --quiet /usr/local/bin/opero update && echo STARTED', { timeoutMs: 30_000 })
-  audit({ via: '—', action: 'agent.upgrade', target: `${sv.name}：${sv.agentVersion ?? '?'} → ${cfg.version}`, level: '写', result: r.out.includes('STARTED') ? '成功' : '失败', how: '本人（已验证）' })
+  audit({ via: '—', action: 'agent.upgrade', target: `${sv.name}：${sv.agentVersion ?? '?'} → ${cfg.version}`, level: '写', result: r.out.includes('STARTED') ? '成功' : '失败', how: '本人' })
   if (!r.out.includes('STARTED')) throw bad(`没能开始升级：${r.out.slice(-300)}`)
   return { ok: true, from: sv.agentVersion, to: cfg.version }
 })
@@ -1303,3 +1546,9 @@ export function expireStaleCards() {
   for (const s of all<Session>('sessions')) if (s.working || s.waiting) { const { working: _w, waiting: _x, ...rest } = s; put('sessions', rest) }
 }
 
+
+/** 以前没有「员工能用哪些凭证」（谁都能用全部允许 AI 的凭证）：第一次启动按原样写下来，之后在员工档案里收放 */
+export function migrateEmployeeCreds() {
+  const ids = all<Credential>('credentials').filter((c) => c.aiAllowed).map((c) => c.id)
+  for (const e of all<Employee>('employees')) if (!Array.isArray(e.creds)) put('employees', { ...e, creds: ids, credGroups: e.credGroups ?? PRESETS[e.id]?.credGroups ?? [] })
+}

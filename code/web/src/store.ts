@@ -423,7 +423,7 @@ export function saveEmployee(e: Employee) {
   toast(exists ? '已保存' : `员工「${e.name}」建好了`)
 }
 
-// ---------- 工作空间 / 问题 ----------
+// ---------- 项目 / 问题 ----------
 export function addWorkspace(w: Workspace) {
   set((s) => ({ workspaces: [...s.workspaces, w] }))
   audit({ via: '—', action: 'workspace.add', target: w.name, level: '写', result: '成功', how: '本人添加' })

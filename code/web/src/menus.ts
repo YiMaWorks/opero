@@ -5,7 +5,7 @@ import type { Route } from './types'
 import { LIVE } from './mode'
 
 export interface MenuDef {
-  /** 点了打开哪一页；拿得到员工 id 和它的工作空间 */
+  /** 点了打开哪一页；拿得到员工 id 和它的项目 */
   route: (ctx: { employeeId: string; workspace: string }) => Route
   /** 一句话说明（编辑员工时给人看） */
   desc: string
@@ -19,8 +19,8 @@ export const MENU_REGISTRY: Record<string, MenuDef> = {
   查生产库: { plugin: 'data', desc: '查询台（只读账号）', route: () => (LIVE ? { page: 'data' } : { page: 'query', params: { source: 'shop-prod' } }) },
   发布记录: { plugin: 'release', desc: '最近的发布', route: () => ({ page: 'releases' }) },
   应用: { plugin: 'release', desc: '应用和环境、AI 发版设置', route: () => ({ page: 'releases', params: { tab: 'apps' } }) },
-  改动记录: { plugin: 'core', desc: '工作空间的提交和分支', route: ({ workspace }) => ({ page: 'workspace', params: { id: workspace } }) },
-  预览: { plugin: 'core', desc: '工作空间的预览环境', route: ({ workspace }) => ({ page: 'workspace', params: { id: workspace } }) },
+  改动记录: { plugin: 'core', desc: '项目的提交和分支', route: ({ workspace }) => ({ page: 'workspace', params: { id: workspace } }) },
+  预览: { plugin: 'core', desc: '项目的预览环境', route: ({ workspace }) => ({ page: 'workspace', params: { id: workspace } }) },
   服务器: { plugin: 'server', desc: '服务器列表和监控', route: () => ({ page: 'servers' }) },
   收件箱: { plugin: 'message', desc: '所有渠道的消息，分好类', route: () => ({ page: 'inbox' }) },
   消息渠道: { plugin: 'message', desc: '邮件、Slack、Telegram… 的接入', route: () => ({ page: 'channels' }) },

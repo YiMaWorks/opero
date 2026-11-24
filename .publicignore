@@ -19,8 +19,7 @@
 /docs/界面草图/
 /docs/界面设计/
 /deploy/
-/CLAUDE.md
-/AGENTS.md
+/docs/开发规矩.md
 __pycache__/
 node_modules/
 dist/

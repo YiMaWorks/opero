@@ -36,7 +36,9 @@ export interface Employee {
   memRepo?: string // 记忆仓库远端（可选）
   memCred?: string
   canManage?: boolean // 能建 / 改别的员工
-  reads?: string[] // 只读参考的工作空间
+  reads?: string[] // 只读参考的项目
+  creds?: string[] // 能用哪些凭证（凭证 id）
+  credGroups?: string[] // 以后新加的这几类凭证自动给它
   budget?: number // 每月预算（美元）
   workBranch?: string // 在自己的分支上改，干完提合并请求
   dns?: string[] // 能改哪些域名的解析
@@ -129,7 +131,7 @@ export interface Session {
   draft?: string // 新会话输入框预填（交接）
 }
 
-// ---------- 工作空间 / 问题 ----------
+// ---------- 项目 / 问题 ----------
 export interface Workspace {
   id: string
   name: string
@@ -164,7 +166,13 @@ export interface Deploy {
 /** 编译设置：模板、在哪编 */
 export interface BuildCfg {
   kind: 'node' | 'go' | 'android' | 'spring' | 'custom'
-  provider: 'yunxiao' | 'github' | 'local'
+  /** 在哪编：auto = 本地资源够就本地、不够走流水线（默认）；local = 总是本地；pipeline = 总是流水线 */
+  where?: 'auto' | 'local' | 'pipeline'
+  /** 流水线用哪个打包工具（local = 没有流水线） */
+  provider: 'yunxiao' | 'github' | 'gitlab' | 'jenkins' | 'local'
+  gitlab?: { at?: number }
+  jenkins?: { cred: string; job?: string; at?: number }
+  pipelineError?: string
   subdir?: string; cmd?: string; versionFile?: string; versionRe?: string; service?: string; file?: string
   spring?: { tool?: 'maven' | 'gradle'; jdk?: 17 | 21; task?: string; jar?: string; dirs?: string[] }
   yunxiao?: { cred: string; org?: string; pipelineId?: string; image?: string; at?: number }
@@ -172,6 +180,8 @@ export interface BuildCfg {
   local?: { server: string }
 }
 /** 服务器上登记的目录 */
+/** 服务器上登记的日志：file = 文件（可带 *），dir = 目录（里面的 *.log），service = 系统服务（journalctl） */
+export interface LogSource { kind: 'file' | 'dir' | 'service'; path: string; note?: string }
 export interface ServerDir { path: string; mode: 'read' | 'write' | 'deploy'; note?: string; ok?: boolean; error?: string }
 export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
 /** 真的一套的一次发布 */
@@ -216,7 +226,7 @@ export interface LiveIssue {
 }
 
 /** 服务器给员工的规矩 */
-export interface Policy { allowBuild?: boolean; allowTest?: boolean; deny?: string[]; memPct?: number; maxConcurrent?: number }
+export interface Policy { allowBuild?: boolean; build?: 'auto' | 'on' | 'off'; cpuPct?: number; allowTest?: boolean; deny?: string[]; memPct?: number; maxConcurrent?: number }
 
 export type IssueStatus = 'new' | 'watching' | 'fixing' | 'fixed' | 'ignored'
 export interface Issue {
@@ -247,6 +257,8 @@ export interface Server {
   policy?: Policy
   /** 登记的本地目录：员工只读 / 读写、发布能部署进去 */
   dirs?: ServerDir[]
+  /** 登记的日志（可以多个）：日志扫描不指定就扫这些 */
+  logSrc?: LogSource[]
   os: string
   agent: string
   online: boolean
@@ -298,12 +310,18 @@ export interface Credential {
   hasSecret?: boolean
   name: string
   group: CredGroup
-  kind: '账号密码' | '密钥' | 'Token' | '证书' | '数据库'
+  /** 分类里的具体类型：MySQL、GitHub、阿里云、OpenAI、SSH 密码…（见 credmeta.ts） */
+  kind: string
   env: EnvTag
-  scope: string // 这个账号在公司那边能做什么（只读 / 读写 / 部署…），员工能做的不会超过它
-  usedBy: string[]
+  /** 不是密码的那些字段：地址、端口、库名、平台地址、AccessKey ID…… */
+  meta?: Record<string, string>
+  /** 最近一次「测试连接」 */
+  test?: { ok: boolean; msg: string; at: number; details?: { title: string; items: string[]; total?: number }[] }
   updated: string
   aiAllowed: boolean
+  /** 试用版假数据用：能做什么 / 谁在用（真的一套从员工那边算） */
+  scope?: string
+  usedBy?: string[]
 }
 
 /** 我的定制：这套 Opero 是官方底座的 fork，按自己的习惯二开 */
@@ -317,11 +335,12 @@ export interface Customization {
 export interface DataSource {
   id: string
   name: string
-  kind: 'MySQL' | 'PostgreSQL'
+  kind: 'MySQL' | 'MariaDB' | 'PostgreSQL' | 'SQL Server' | 'Oracle'
   env: EnvTag
   protect?: boolean
   host: string
   db: string
+  credential?: string
   writable: boolean
   tables: { name: string; rows: string; cols: string[] }[]
 }

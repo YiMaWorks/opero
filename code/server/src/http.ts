@@ -28,13 +28,13 @@ export interface Ctx {
 
 export type Auth = 'none' | 'owner' | 'device' | 'mcp' | 'agent'
 type Handler = (c: Ctx) => unknown
-interface Route { method: string; re: RegExp; keys: string[]; h: Handler; auth: Auth; raw?: boolean }
+interface Route { method: string; re: RegExp; keys: string[]; h: Handler; auth: Auth; raw?: boolean; max?: number }
 const routes: Route[] = []
 
-export function route(method: string, pattern: string, h: Handler, opts: { auth?: Auth; raw?: boolean } = {}) {
+export function route(method: string, pattern: string, h: Handler, opts: { auth?: Auth; raw?: boolean; max?: number } = {}) {
   const keys: string[] = []
   const re = new RegExp('^' + pattern.replace(/\/:(\w+)/g, (_, k) => { keys.push(k); return '/([^/]+)' }) + '/?$')
-  routes.push({ method, re, keys, h, auth: opts.auth ?? 'owner', raw: opts.raw })
+  routes.push({ method, re, keys, h, auth: opts.auth ?? 'owner', raw: opts.raw, max: opts.max })
 }
 
 export function match(method: string, path: string) {

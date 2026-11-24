@@ -60,9 +60,9 @@ export function SessionList({ sessions, current, mobile, onOpen, onPin, onMute, 
           </button>
         )}
         {!(canFold && folded) && pinned.map((s) => (
-          <Item key={s.id} s={s} mobile={mobile} active={s.id === current} onOpen={onOpen} onMenu={openMenu} />
+          <Item key={s.id} s={s} mobile={mobile} active={s.id === current} onOpen={onOpen} onMenu={openMenu} onPin={onPin} />
         ))}
-        {rest.map((s) => <Item key={s.id} s={s} mobile={mobile} active={s.id === current} onOpen={onOpen} onMenu={openMenu} />)}
+        {rest.map((s) => <Item key={s.id} s={s} mobile={mobile} active={s.id === current} onOpen={onOpen} onMenu={openMenu} onPin={onPin} />)}
       </div>
 
       {menu && menuSession && (
@@ -80,15 +80,18 @@ export function SessionList({ sessions, current, mobile, onOpen, onPin, onMute, 
   )
 }
 
-function Item({ s, mobile, active, onOpen, onMenu }: {
-  s: Session; mobile: boolean; active: boolean; onOpen: (id: string) => void; onMenu: (id: string, x: number, y: number) => void
+function Item({ s, mobile, active, onOpen, onMenu, onPin }: {
+  s: Session; mobile: boolean; active: boolean; onOpen: (id: string) => void; onMenu: (id: string, x: number, y: number) => void; onPin: (id: string) => void
 }) {
   const e = useStore((st) => st.employees.find((x) => x.id === s.employee))
   const press = useRef<number | null>(null)
   const long = useRef(false)
 
   // 长按 0.5 秒 = 打开菜单（手机）；右键同理（电脑）
+  // 手机左滑 = 打开「置顶 / 免打扰」（和微信一样）
+  const sx = useRef<number | null>(null)
   const start = (x: number, y: number) => {
+    sx.current = x
     long.current = false
     press.current = window.setTimeout(() => { long.current = true; onMenu(s.id, x, y) }, 500)
   }
@@ -97,13 +100,14 @@ function Item({ s, mobile, active, onOpen, onMenu }: {
   if (!e) return null
   const badge = badgeOf(s, e)
   return (
-    <button
+    <div role="button" tabIndex={0}
       className={'sitem' + (s.pinned ? ' pinned' : '') + (active ? ' active' : '')}
       onClick={() => { if (!long.current) onOpen(s.id) }}
+      onKeyDown={(ev) => ev.key === 'Enter' && onOpen(s.id)}
       onContextMenu={(ev) => { ev.preventDefault(); cancel(); onMenu(s.id, ev.clientX, ev.clientY) }}
       onTouchStart={(ev) => start(ev.touches[0].clientX, ev.touches[0].clientY)}
       onTouchEnd={cancel}
-      onTouchMove={cancel}
+      onTouchMove={(ev) => { cancel(); const x = ev.touches[0].clientX; if (sx.current !== null && sx.current - x > 60) { sx.current = null; long.current = true; onMenu(s.id, x, ev.touches[0].clientY) } }}
     >
       <span className="sitem-av">
         <Avatar id={e.id} size={mobile ? 48 : 44} />
@@ -123,6 +127,11 @@ function Item({ s, mobile, active, onOpen, onMenu }: {
           {e.notify === 'none' && <span className="muted-icon"><IconBellOff /></span>}
         </span>
       </span>
-    </button>
+      {!mobile && (
+        <button type="button" className={'sitem-pin' + (s.pinned ? ' on' : '')} title={s.pinned ? '取消置顶' : '置顶'} onClick={(ev) => { ev.stopPropagation(); onPin(s.id) }}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill={s.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 17v5M9 3h6l-1 6 4 3v2H6v-2l4-3z" /></svg>
+        </button>
+      )}
+    </div>
   )
 }

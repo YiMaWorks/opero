@@ -60,7 +60,7 @@ export function MeHeader({ onEdit, extra }: { onEdit: () => void; extra?: ReactN
         <button className="me-avatar" onClick={() => changeAvatar()} title="换头像"><Avatar id="me" size={76} /></button>
         <div className="me-name">
           <b>{me.name}</b>
-          <span>{me.signature || '写一句签名'}</span>
+          {me.signature && <span>{me.signature}</span>}
         </div>
         <button className="btn default sm" onClick={onEdit}>编辑资料</button>
       </div>

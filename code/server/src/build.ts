@@ -1,9 +1,9 @@
-// 编译：每个工作空间一份编译设置（Workspace.buildCfg）。在哪编：云效流水线 / GitHub Actions / 自己的某台服务器（local）。
+// 编译：每个项目一份编译设置（Workspace.buildCfg）。在哪编：云效流水线 / GitHub Actions / 自己的某台服务器（local）。
 // 产物约定（三种一样，也和以前在云效上用的一样）：编译脚本把要发的东西放进 out/，最后写 out/SHA256SUMS、out/COMMIT、out/VERSION；
 //   node / go 模板打一个 <名字>-<版本>.tgz，包里带 deploy.sh（部署时 Agent 以 root 跑：bash deploy.sh <包目录> <发布编号>，
 //   OPERO_DIR / KL_DIR = 部署目录）；android 模板出 *-unsigned.apk（签名在部署时做，证书不进流水线）；custom 自己的命令自己放。
 // 云效：用 Codeup 仓库那个组织，「一键生成流水线」按模板建 / 改 YAML；跑的时候带分支，轮询状态，拿产物下载地址。
-// GitHub：把工作流文件 .github/workflows/opero-build.yml 提交进仓库（用工作空间的令牌，要有 workflow 权限），workflow_dispatch 触发，产物是 zip。
+// GitHub：把工作流文件 .github/workflows/opero-build.yml 提交进仓库（用项目的令牌，要有 workflow 权限），workflow_dispatch 触发，产物是 zip。
 // 自己的服务器：在那台上拉一份干净的代码跑同一个脚本，out/ 打成 tgz 经 Opero 拿回来。
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -17,11 +17,17 @@ import { execOnEnv } from './ssh.ts'
 import * as agents from './agents.ts'
 import * as hosts from './hosts.ts'
 import type { Server, Workspace } from './types.ts'
+import { hostRes } from './resources.ts'
+import * as pipes from './pipelines.ts'
+import { resourceBlock } from './policy.ts'
 
 export type BuildKind = 'node' | 'go' | 'android' | 'spring' | 'custom'
 export interface BuildCfg {
   kind: BuildKind
-  provider: 'yunxiao' | 'github' | 'local'
+  /** 在哪编：auto = 编之前看本地资源，够就本地、不够走流水线（默认）；local = 总是本地；pipeline = 总是流水线 */
+  where?: 'auto' | 'local' | 'pipeline'
+  /** 流水线用哪个打包工具（local = 没有流水线，只能本地编） */
+  provider: 'yunxiao' | 'github' | 'gitlab' | 'jenkins' | 'local'
   /** 代码在仓库的哪个子目录（node / go / android / spring 用） */
   subdir?: string
   /** custom：在仓库根目录跑的命令，自己把产物放进 out/ */
@@ -39,9 +45,23 @@ export interface BuildCfg {
   yunxiao?: { cred: string; org?: string; pipelineId?: string; image?: string; at?: number }
   /** GitHub：工作流文件名（默认 opero-build.yml）、生成时间 */
   github?: { workflow?: string; at?: number }
-  /** 自己的服务器：在哪台编 */
+  /** GitLab CI：生成时间（流水线文件提交进仓库，令牌用项目的 GitLab 凭证） */
+  gitlab?: { at?: number }
+  /** Jenkins：凭证（「凭证 → 其它 → Jenkins」）、任务名、生成时间 */
+  jenkins?: { cred: string; job?: string; at?: number }
+  /** 本地编：在哪台编（默认项目所在那台） */
   local?: { server: string }
+  /** 自动建流水线没成功的原因（给主人看，能重新生成） */
+  pipelineError?: string
 }
+
+/** 在哪编（以前 provider = local 就是「总是本地」） */
+export const whereOf = (b: BuildCfg) => b.where ?? (b.provider === 'local' ? 'local' : 'auto')
+/** 流水线建好了没有 */
+export const pipelineReady = (b: BuildCfg) => (b.provider === 'yunxiao' ? !!b.yunxiao?.pipelineId : b.provider === 'github' ? !!b.github?.at : b.provider === 'gitlab' ? !!b.gitlab?.at : b.provider === 'jenkins' ? !!b.jenkins?.at : false)
+/** 各模板编译时大概要多少（拿一条代表命令去 policy 的表里查） */
+const KIND_CMD: Record<BuildKind, string> = { node: 'npm run build', go: 'go build', spring: 'mvn package', android: './gradlew assembleRelease', custom: 'make' }
+export const kindCmd = (k: BuildKind) => KIND_CMD[k]
 
 const sh = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const subdirOf = (b: BuildCfg) => (b.subdir ?? '').replace(/^\/+|\/+$/g, '') || '.'
@@ -50,7 +70,9 @@ export const codeOf = (w: Workspace) => w.name.replace(/[^\w.-]+/g, '-').toLower
 
 // ---------- 编译脚本（三种地方跑同一个） ----------
 function versionCmd(b: BuildCfg) {
-  if (!b.versionFile || !b.versionRe) return 'V=$(git rev-parse --short HEAD)'
+  const re = b.versionRe || guessVersionRe(b.versionFile)
+  if (!b.versionFile || !re) return 'V=$(git rev-parse --short HEAD)'
+  b = { ...b, versionRe: re }
   return `V=$(node -e ${sh(`const s=require("fs").readFileSync(${JSON.stringify(b.versionFile)},"utf8");const m=new RegExp(${JSON.stringify(b.versionRe)}).exec(s);process.stdout.write(m?m[1]:"")`)} 2>/dev/null || python3 -c ${sh(`import re;m=re.search(${JSON.stringify(b.versionRe)},open(${JSON.stringify(b.versionFile)}).read());print(m.group(1) if m else "",end="")`)})
 [ -n "$V" ] || V=$(git rev-parse --short HEAD)`
 }
@@ -76,6 +98,15 @@ echo "部署完成"
 OPERODEPLOY`
 }
 
+/** 版本号正则没填：按版本号文件猜（package.json / gradle versionName / pom.xml / VERSION） */
+function guessVersionRe(file?: string): string {
+  if (!file) return ''
+  if (/package\.json$/.test(file)) return '"version"\\s*:\\s*"([^"]+)"'
+  if (/\.gradle(\.kts)?$/.test(file)) return 'versionName\\s*=?\\s*"([^"]+)"'
+  if (/pom\.xml$/.test(file)) return '<modelVersion>[^<]*</modelVersion>(?:\\s*<parent>[\\s\\S]*?</parent>)?[\\s\\S]*?<version>([^<]+)</version>'
+  if (/(^|\/)VERSION$/.test(file)) return '^\\s*(\\S+)'
+  return ''
+}
 export function script(b: BuildCfg, code: string): string {
   const head = `set -euo pipefail
 ROOT=$(pwd); CACHE=\${OPERO_CACHE:-/root/.cache/opero}; mkdir -p "$CACHE" "$ROOT/out"`
@@ -204,7 +235,7 @@ const yxToken = (b: BuildCfg) => { const t = b.yunxiao?.cred ? getSecret(b.yunxi
 
 function yunxiaoYaml(w: Workspace, b: BuildCfg, repo: { path: string; https: string }, connection: string): string {
   const body = script(b, codeOf(w)).split('\n').map((l) => `                ${l}`).join('\n')
-  return `# Opero「发布」生成（工作空间 ${w.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
+  return `# Opero「发布」生成（项目 ${w.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
 sources:
   repo:
     type: codeup
@@ -244,6 +275,13 @@ ${body}
 
 /** 一键生成 / 更新流水线；返回更新后的编译设置 */
 export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
+  if (b.provider === 'gitlab') { await pipes.gitlabGenerate(w, script(b, codeOf(w))); return { ...b, gitlab: { at: Date.now() } } }
+  if (b.provider === 'jenkins') {
+    if (!b.jenkins?.cred) throw new Error('选一个 Jenkins 凭证（凭证 → 其它 → Jenkins）')
+    const job = pipes.jenkinsJob(w, b.jenkins.job)
+    await pipes.jenkinsGenerate(w, b.jenkins.cred, job, script(b, codeOf(w)))
+    return { ...b, jenkins: { ...b.jenkins, job, at: Date.now() } }
+  }
   if (b.provider === 'yunxiao') {
     const repo = codeupRepo(w.repo)
     if (!repo) throw new Error('云效流水线要用 Codeup 的仓库')
@@ -262,7 +300,7 @@ export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
   if (b.provider === 'github') {
     const file = b.github?.workflow || 'opero-build.yml'
     const yml = githubYaml(w, b)
-    // 用工作空间的令牌提交进仓库（要有 workflow 权限）：在 Opero 这台临时拉一份，改完推回去
+    // 用项目的令牌提交进仓库（要有 workflow 权限）：在 Opero 这台临时拉一份，改完推回去
     const tmp = path.join(cfg.data, 'tmp', `gh-${crypto.randomBytes(4).toString('hex')}`)
     fs.mkdirSync(tmp, { recursive: true })
     try {
@@ -285,7 +323,7 @@ export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
 
 function githubYaml(w: Workspace, b: BuildCfg): string {
   const body = script({ ...b }, codeOf(w)).replace(/\/root\/\.cache\/opero/g, '$HOME/.cache/opero').split('\n').map((l) => `          ${l}`).join('\n')
-  return `# Opero「发布」生成（工作空间 ${w.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
+  return `# Opero「发布」生成（项目 ${w.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
 name: Opero build
 on:
   workflow_dispatch:
@@ -322,10 +360,31 @@ type Step = (msg: string) => void
 export async function run(w: Workspace, b: BuildCfg, rid: string, sha: string, step: Step): Promise<BuildRun> {
   const dir = path.join(cfg.data, 'releases', rid)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  if (b.provider === 'yunxiao') await runYunxiao(w, b, dir, step)
+  const mode = await decideWhere(w, b, step)
+  if (mode === 'local') await runLocal(w, { ...b, local: { server: b.local?.server || w.server || 'local' } }, rid, sha, dir, step)
+  else if (b.provider === 'yunxiao') await runYunxiao(w, b, dir, step)
   else if (b.provider === 'github') await runGithub(w, b, rid, dir, step)
-  else await runLocal(w, b, rid, sha, dir, step)
+  else if (b.provider === 'gitlab') await pipes.gitlabRun(w, rid, dir, step, unpack)
+  else if (b.provider === 'jenkins') await pipes.jenkinsRun(w, b.jenkins!.cred, pipes.jenkinsJob(w, b.jenkins?.job), sha, rid, dir, step, unpack)
+  else throw new Error('没有可用的流水线')
   return verify(dir)
+}
+
+/** 这次在哪编：auto 时看本地那台现在的资源（编译要多少见 policy.ts buildNeed），够就本地，不够走流水线；都不行就说清楚 */
+export async function decideWhere(w: Workspace, b: BuildCfg, step: Step): Promise<'local' | 'pipeline'> {
+  const where = whereOf(b)
+  const ready = pipelineReady(b)
+  if (where === 'pipeline') {
+    if (!ready) throw new Error('设成了「总是流水线」，但流水线还没建好：在项目的编译设置里点「生成流水线」')
+    return 'pipeline'
+  }
+  if (where === 'local') return 'local'
+  const host = b.local?.server || w.server || 'local'
+  const r = await hostRes(hosts.isLocal(host) ? hosts.LOCAL : host)
+  const why = r ? resourceBlock(kindCmd(b.kind), r) : undefined
+  if (!why) { step(`本地资源够，在 ${hosts.isLocal(host) ? 'Opero 这台' : get<Server>('servers', host)?.name ?? host} 上编`); return 'local' }
+  if (ready) { step(`本地不编（${why.replace(/。.*$/, '')}），走流水线`); return 'pipeline' }
+  throw new Error(`${why.replace(/。.*$/, '')}；流水线也还没建好（${b.pipelineError ?? '在编译设置里点「生成流水线」'}）`)
 }
 
 /** 核对产物：SHA256SUMS 里列的每个文件都要对得上；读 VERSION / COMMIT */
@@ -405,7 +464,7 @@ async function runYunxiao(w: Workspace, b: BuildCfg, dir: string, step: Step) {
   const token = yxToken(b)
   const org = b.yunxiao?.org || codeupRepo(w.repo)?.org
   const id = b.yunxiao?.pipelineId
-  if (!org || !id) throw new Error('还没生成云效流水线：在工作空间「编译」里点「生成流水线」')
+  if (!org || !id) throw new Error('还没生成云效流水线：在项目「编译」里点「生成流水线」')
   const repo = codeupRepo(w.repo)
   const params = repo && w.branch ? { params: JSON.stringify({ runningBranchs: { [repo.https]: w.branch } }) } : {}
   const run = Number(await yx(token, 'POST', `/oapi/v1/flow/organizations/${org}/pipelines/${id}/runs`, params))
@@ -447,7 +506,7 @@ async function runGithub(w: Workspace, b: BuildCfg, rid: string, dir: string, st
   if (!m) throw new Error('GitHub Actions 要用 GitHub 的仓库')
   const repo = m[1]
   const token = w.credential ? getSecret(w.credential) : undefined
-  if (!token) throw new Error('工作空间没配 GitHub 令牌')
+  if (!token) throw new Error('项目没配 GitHub 令牌')
   const file = b.github?.workflow || 'opero-build.yml'
   const h = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Opero' }
   const gh = async (method: string, p: string, body?: unknown) => {
@@ -523,4 +582,46 @@ async function runLocal(w: Workspace, b: BuildCfg, rid: string, sha: string, dir
 export const pendingBlobs = new Map<string, { from: string; to: string; file: string; exp: number }>()
 function expectBlob(key: string, from: string, file: string) { pendingBlobs.set(key, { from, to: '', file, exp: Date.now() + 2 * 3600_000 }) }
 
-export const providerName = (b?: BuildCfg) => (!b ? '不编译' : b.provider === 'yunxiao' ? '云效' : b.provider === 'github' ? 'GitHub Actions' : `服务器 ${get<Server>('servers', b.local?.server ?? '')?.name ?? ''}`)
+const PIPE: Record<string, string> = { yunxiao: '云效', github: 'GitHub Actions', gitlab: 'GitLab CI', jenkins: 'Jenkins' }
+/** 给人看的「在哪编」：自动（本地 / 云效）、总是本地、总是云效… */
+export const providerName = (b?: BuildCfg) => {
+  if (!b) return '不编译'
+  const pipe = PIPE[b.provider]
+  const where = whereOf(b)
+  return where === 'local' || !pipe ? '本地编' : where === 'pipeline' ? `${pipe}流水线` : `自动（本地资源够就本地，不够走${pipe}）`
+}
+
+// ---------- 接入项目时自动配好：认出项目类型，按仓库平台建流水线（在哪编默认「自动」） ----------
+async function lsDir(w: Workspace, rel = ''): Promise<string[]> {
+  const dir = rel ? path.posix.join(w.dir, rel) : w.dir
+  try {
+    if (hosts.isLocal(w.server)) return fs.readdirSync(dir)
+    const r = await agents.exec(w.server!, `ls -1A ${q(dir)} 2>/dev/null`, { timeoutMs: 15_000 })
+    return r.out.split('\n').map((x) => x.trim()).filter(Boolean)
+  } catch { return [] }
+}
+/** 按仓库里的文件猜：项目类型、版本号文件 */
+export async function detectKind(w: Workspace): Promise<Pick<BuildCfg, 'kind' | 'versionFile' | 'spring' | 'cmd'>> {
+  const top = await lsDir(w)
+  const has = (n: string) => top.includes(n)
+  const gb = (l: string[]) => l.find((n) => /^build\.gradle(\.kts)?$/.test(n))
+  if (has('go.mod')) return { kind: 'go', ...(has('VERSION') ? { versionFile: 'VERSION' } : {}) }
+  if (has('pom.xml')) return { kind: 'spring', spring: { tool: 'maven', jdk: 17 }, versionFile: 'pom.xml' }
+  if (gb(top) || top.some((n) => /^settings\.gradle(\.kts)?$/.test(n))) {
+    const app = has('app') ? await lsDir(w, 'app') : []
+    if (gb(app)) return { kind: 'android', versionFile: `app/${gb(app)}` }
+    return { kind: 'spring', spring: { tool: 'gradle', jdk: 17 }, versionFile: gb(top) }
+  }
+  if (has('package.json')) return { kind: 'node', versionFile: 'package.json' }
+  return { kind: 'custom', cmd: has('deploy') ? 'bash deploy/build.sh' : 'mkdir -p out && echo "写好编译命令，把要发的东西放进 out/"' }
+}
+/** 第一次：认出类型、选打包工具（Codeup → 云效，GitHub → Actions，别的先只能本地）、建流水线。失败不挡，记下原因 */
+export async function autoConfig(w: Workspace, codeupCred?: string): Promise<BuildCfg> {
+  const k = await detectKind(w)
+  const provider: BuildCfg['provider'] = codeupRepo(w.repo) && codeupCred ? 'yunxiao' : /github\.com/i.test(w.repo) && w.credential ? 'github' : /gitlab/i.test(w.repo) && w.credential ? 'gitlab' : 'local'
+  let b: BuildCfg = { ...k, provider, where: 'auto', ...(provider === 'yunxiao' ? { yunxiao: { cred: codeupCred! } } : {}) }
+  if (provider !== 'local') {
+    try { b = { ...(await generate(w, b)), pipelineError: undefined } } catch (e) { b = { ...b, pipelineError: (e as Error).message.slice(0, 300) } }
+  }
+  return b
+}

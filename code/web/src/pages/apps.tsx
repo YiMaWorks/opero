@@ -19,7 +19,7 @@ export function AppsPage({ nav }: PageProps) {
   const tiles: { page: any; name: string; desc: string; n: string; letter: string }[] = [
     { page: 'servers', name: '服务器', desc: 'Agent、监控、日志、只读命令', n: `${s.servers.length} 台`, letter: '服' },
     { page: 'releases', name: '发布', desc: '应用、环境、发布记录、回滚', n: `${s.apps.length} 个应用`, letter: '发' },
-    { page: 'credentials', name: '权限和凭证', desc: '你在公司有的权限，带进来就有', n: `${s.credentials.length} 个账号`, letter: '权' },
+    { page: 'credentials', name: '凭证', desc: '你在公司有的权限，带进来就有', n: `${s.credentials.length} 个账号`, letter: '权' },
     { page: 'channels', name: '消息渠道', desc: '邮件、Slack、Telegram… 交给消息助理', n: `${s.channels.filter((c) => c.inbound).length} 个在收`, letter: '信' },
     { page: 'knowledge', name: '知识库', desc: '所有员工共用的资料，按需查', n: `${s.kb.length} 份`, letter: '知' },
     { page: 'flows', name: '流程', desc: '做过的事存成步骤，下次不经过 AI', n: `${s.flows.length} 个`, letter: '流' },
@@ -239,7 +239,7 @@ export function ReleasePage({ params, nav }: PageProps) {
   )
 }
 
-// ---------- 权限和凭证：你在公司有什么权限就带进来，没有的这里也没有 ----------
+// ---------- 凭证：你在公司有什么权限就带进来，没有的这里也没有 ----------
 const GROUPS: CredGroup[] = ['服务器', '数据库', '代码仓库', '云账号', 'AI', '消息渠道', '其它']
 const GROUP_HINT: Record<CredGroup, string> = {
   服务器: '装 Agent 时生成的令牌；员工在这台机器上能做的 = 你在这台机器上能做的',
@@ -255,8 +255,8 @@ export function CredentialsPage({ nav }: PageProps) {
   const list = useStore((s) => s.credentials)
   return (
     <div className="page">
-      <PageHeader title="权限和凭证" sub={`${list.length} 个账号`} {...headNav(nav)}
-        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'credentialEdit' })}><IconPlus /> 带进来</button>} />
+      <PageHeader title="凭证" sub={`${list.length} 个账号`} {...headNav(nav)}
+        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'credentialEdit' })}><IconPlus /> 新增凭证</button>} />
       <div className="page-body">
         <div className="pad"><div className="banner b-info">你在公司有什么权限就带进来，员工就能用；没有的这里也没有。AI 只拿编号，拿不到明文。</div></div>
         {GROUPS.map((g) => {
@@ -267,7 +267,7 @@ export function CredentialsPage({ nav }: PageProps) {
               {items.map((c) => (
                 <Row key={c.id} chevron onClick={() => nav.push({ page: 'credentialEdit', params: { id: c.id } })}
                   title={<>{c.name} <Tag tone={envTone(c.env)}>{c.env}</Tag> {!c.aiAllowed && <Tag>只有你能用</Tag>}</>}
-                  sub={`能做：${c.scope} · 用在：${c.usedBy.map((u) => empName(u)).join('、') || '还没员工用'}`} />
+                  sub={`能做：${c.scope} · 用在：${(c.usedBy ?? []).map((u) => empName(u)).join('、') || '还没员工用'}`} />
               ))}
             </Section>
           )
@@ -291,10 +291,10 @@ export function CredentialEditPage({ params, nav }: PageProps) {
       nav.back()
     })
   }
-  const toggleUser = (id: string) => setC({ ...c, usedBy: c.usedBy.includes(id) ? c.usedBy.filter((x) => x !== id) : [...c.usedBy, id] })
+  const toggleUser = (id: string) => setC({ ...c, usedBy: (c.usedBy ?? []).includes(id) ? (c.usedBy ?? []).filter((x) => x !== id) : [...(c.usedBy ?? []), id] })
   return (
     <div className="page">
-      <PageHeader title={existing ? existing.name : '带进来一个权限'} {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>保存</button>} />
+      <PageHeader title={existing ? existing.name : '新增凭证'} {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>保存</button>} />
       <div className="page-body form">
         <Field label="是什么"><Segmented value={c.group} onChange={(v) => setC({ ...c, group: v })} options={GROUPS.map((g) => ({ value: g, label: g }))} /></Field>
         <p className="field-hint">{GROUP_HINT[c.group]}</p>
@@ -311,7 +311,7 @@ export function CredentialEditPage({ params, nav }: PageProps) {
           <span className="field-label">哪些员工用它</span>
           <div className="chips">
             {employees.map((e) => (
-              <button key={e.id} className={'chip' + (c.usedBy.includes(e.id) ? ' on' : '')} onClick={() => toggleUser(e.id)}>{e.name}</button>
+              <button key={e.id} className={'chip' + ((c.usedBy ?? []).includes(e.id) ? ' on' : '')} onClick={() => toggleUser(e.id)}>{e.name}</button>
             ))}
           </div>
         </div>
@@ -561,7 +561,7 @@ export function ChannelsPage({ nav }: PageProps) {
         <div className="pad row-actions">
           <button className="btn default" onClick={() => nav.openChat('inbox')}>去找消息助理</button>
         </div>
-        <p className="hint">默认只读：消息助理查、整理、告诉你为什么要看，每条都能一键到原处自己回；要回复建议时点「给我个回复建议」（能选语言），复制过去自己发。账号、令牌在「权限和凭证 → 消息渠道」，用的是你自己的账号。</p>
+        <p className="hint">默认只读：消息助理查、整理、告诉你为什么要看，每条都能一键到原处自己回；要回复建议时点「给我个回复建议」（能选语言），复制过去自己发。账号、令牌在「凭证 → 消息渠道」，用的是你自己的账号。</p>
       </div>
       {adding && (
         <Sheet title="接入一个渠道" onClose={() => setAdding(false)}>
@@ -573,7 +573,7 @@ export function ChannelsPage({ nav }: PageProps) {
               }}><span className="ws-icon">{k.slice(0, 1)}</span>{k}</button>
             ))}
           </div>
-          <p className="field-hint">原型里点了就算接上；正式版会走各家的登录 / 授权，令牌存进「权限和凭证」。</p>
+          <p className="field-hint">原型里点了就算接上；正式版会走各家的登录 / 授权，令牌存进「凭证」。</p>
         </Sheet>
       )}
     </div>

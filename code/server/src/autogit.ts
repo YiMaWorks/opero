@@ -1,6 +1,6 @@
-// 工作空间的自动 git（工作空间「干完自动提交推送」开着时，默认开）：
+// 项目的自动 git（项目「干完自动提交推送」开着时，默认开）：
 //   派活前：拉远端、带着没提交的改动变基到最新（--autostash）；有冲突就撤回，告诉员工先解决。
-//   干完：有改动就提交（这一轮出错的标「[未完成]」，你点停止的不提交），再推送；被拒（别人先推了）就变基一次再推。
+//   干完：有改动就提交（出错的、你点停止的都标「[未完成]」照样提交），再推送；被拒（别人先推了）就变基一次再推。
 // 令牌只在 Opero 这边用（git.ts），员工拿不到。
 import { git, handBackDir, inspect } from './git.ts'
 import { get, put } from './db.ts'
@@ -47,17 +47,19 @@ export async function preSync(w: Workspace, emp?: Employee): Promise<string> {
 
 /** 干完提交推送；返回给聊天看的一句话（没东西可提交 / 推送就返回空） */
 export async function postSync(w: Workspace, emp: Employee, o: { ok: boolean; stopped: boolean; ask: string }): Promise<string> {
-  if (!autoOn(w) || o.stopped) return ''
+  // 停下的也提交推送（标「[未完成]」），和 KidLock 一样：远端随时是最新，做了一半的也不丢
+  if (!autoOn(w)) return ''
+  const done = o.ok && !o.stopped
   const lines: string[] = []
   try {
     await git(['add', '-A'], on(w))
     const st = await git(['status', '--porcelain'], on(w))
     if (st.out.trim()) {
       const subject = (o.ask.replace(/\s+/g, ' ').trim() || '按主人的要求修改').slice(0, 72)
-      const msg = `${o.ok ? '' : '[未完成] '}${subject}\n\n${emp.name} · Opero`
+      const msg = `${done ? '' : '[未完成] '}${subject}\n\n${emp.name} · Opero`
       const c = await git(['-c', `user.name=${emp.name}`, '-c', `user.email=${emp.id}@opero.local`, 'commit', '-q', '-m', msg], on(w))
       if (c.code !== 0) return `自动提交失败：${c.out.slice(-200)}`
-      lines.push(`已提交${o.ok ? '' : '（这一轮没做完，标了「[未完成]」）'}`)
+      lines.push(`已提交${done ? '' : `（这一轮${o.stopped ? '你让停下了' : '没做完'}，标了「[未完成]」）`}`)
     }
     if (!w.credential) return lines.length ? `${lines[0]}（没配仓库令牌，没推送）` : ''
     const up = await git(['rev-parse', '--abbrev-ref', '@{u}'], on(w))
@@ -80,5 +82,20 @@ export async function postSync(w: Workspace, emp: Employee, o: { ok: boolean; st
     await handBackDir(w.server, w.dir)
     const cur = get<Workspace>('workspaces', w.id)
     if (cur) inspect(cur).then((info) => { const next = { ...cur, ...info }; put('workspaces', next); emit({ t: 'put', coll: 'workspaces', item: next }) }).catch(() => {})
+  }
+}
+
+/** 只读参考的项目：派活前也拉到最新（只快进，不动本地改动），员工每次看到的都是远端最新的代码。出错不挡派活 */
+export async function refreshRead(w: Workspace): Promise<string> {
+  if (!w.credential) return ''
+  try {
+    const f = await git(['fetch', '--all', '--prune'], withCred(w))
+    if (f.code !== 0) return `（Opero：只读参考的「${w.name}」拉不到远端最新：${f.out.slice(-120)}）`
+    const dirty = (await git(['status', '--porcelain'], on(w))).out.trim()
+    const up = await git(['rev-parse', '--abbrev-ref', '@{u}'], on(w))
+    if (!dirty && up.code === 0) await git(['merge', '--ff-only', '-q', '@{u}'], on(w))
+    return ''
+  } catch { return '' } finally {
+    await handBackDir(w.server, w.dir)
   }
 }

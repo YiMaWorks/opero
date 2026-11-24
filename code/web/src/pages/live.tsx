@@ -1,8 +1,8 @@
-// 真的一套（LIVE）用的页面：开机 / 登录、AI 执行器、服务器、凭证、数据、触发器、知识库、工作空间、员工档案、账号安全。
+// 真的一套（LIVE）用的页面：开机 / 登录、AI 执行器、服务器、凭证、数据、触发器、知识库、项目、员工档案、账号安全。
 // 演示（/demo）还是用原来那些页面和假数据；没做完的功能在真的一套里显示「还在做」。
 import { useEffect, useState, type ReactNode } from 'react'
-import type { Credential, CredGroup, DataSource, EnvTag, KbDoc, Trigger, Workspace } from '../types'
-import { empName, getState, logout, requireVerify, SOON, toast, toggleTrigger, useStore } from '../store'
+import type { Credential, CredGroup, DataSource, Employee, EnvTag, KbDoc, Trigger, Workspace } from '../types'
+import { empName, getState, logout, requireVerify, saveEmployee, SOON, toast, togglePin, toggleTrigger, useStore } from '../store'
 import { api, boot, call } from '../live'
 import { Avatar } from '../components/Avatar'
 import { Mark, Wordmark } from '../components/brand'
@@ -17,16 +17,17 @@ import { useLang } from '../i18n'
 import { CUR } from '../mode'
 import { headNav, type PageProps } from './nav'
 import { DirsSection, EmployeeWorkSections, PolicySection, WorkspaceAutoSections } from './live2'
-import { LogViewer, SignCertFields } from './live3'
+import { LogViewer } from './live3'
+import { EmployeeCredsSection } from './creds'
 import { getPasskey, passkeySupported, createPasskey } from '../webauthn'
 
 // 环境是标签：随便起名、要几个都行；「改东西先确认」是单独的开关，没设过按标签猜（和后台 env.ts 一样）
 const PROD_RE = /生产|正式|線上|线上|prod|production|live/i
 const isProtected = (x: { env: string; protect?: boolean }) => x.protect ?? PROD_RE.test(x.env)
-const envTone = (e: EnvTag) => (PROD_RE.test(e) ? 'danger' : /测试|測試|test|uat|staging|预发|預發/i.test(e) ? 'warn' : 'mute')
+export const envTone = (e: EnvTag) => (PROD_RE.test(e) ? 'danger' : /测试|測試|test|uat|staging|预发|預發/i.test(e) ? 'warn' : 'mute')
 
 /** 选环境标签：点已有的，或者写一个新的 */
-function EnvPicker({ value, onChange }: { value: EnvTag; onChange: (v: EnvTag) => void }) {
+export function EnvPicker({ value, onChange }: { value: EnvTag; onChange: (v: EnvTag) => void }) {
   // 只选 store 里本来就有的数组（选出新数组会让订阅一直重画）
   const servers = useStore((s) => s.servers)
   const sources = useStore((s) => s.dataSources)
@@ -49,10 +50,10 @@ const copy = (t: string) => { navigator.clipboard?.writeText(t).catch(() => {});
 // ======================= 登录 / 设主人 =======================
 export function LiveLogin() {
   const a = useStore((s) => s.auth)
-  const [email, setEmail] = useState('')
-  const [name, setName] = useState('')
+  // 记住上次登录的账号：下次只输密码
+  const [email, setEmail] = useState(() => localStorage.getItem('opero.email') ?? '')
   const [pwd, setPwd] = useState('')
-  const [pwd2, setPwd2] = useState('')
+  const [showPwd, setShowPwd] = useState(false)
   const [busy, setBusy] = useState(false)
   // 开了两步验证：输完密码还要输一个码
   const [ticket, setTicket] = useState<string | null>(null)
@@ -61,20 +62,20 @@ export function LiveLogin() {
   const go = async () => {
     if (!email.trim() || !pwd) { toast('账号和密码都要填'); return }
     if (first && pwd.length < 8) { toast('密码至少 8 位'); return }
-    if (first && pwd !== pwd2) { toast('两次密码不一样'); return }
     setBusy(true)
     try {
-      const r = await api<{ mfa?: boolean; ticket?: string }>('POST', first ? '/api/auth/setup' : '/api/auth/login', first ? { email: email.trim(), name: name.trim() || '主人', password: pwd } : { email: email.trim(), password: pwd })
+      const r = await api<{ mfa?: boolean; ticket?: string }>('POST', first ? '/api/auth/setup' : '/api/auth/login', first ? { email: email.trim(), name: email.trim().split('@')[0] || '主人', password: pwd } : { email: email.trim(), password: pwd })
+      localStorage.setItem('opero.email', email.trim())
       if (r.mfa && r.ticket) { setTicket(r.ticket); return }
       await boot()
     } catch (e) {
       toast((e as Error).message)
     } finally { setBusy(false) }
   }
-  const sendCode = async () => {
-    if (!ticket || !code.trim()) return
+  const sendCode = async (v = code) => {
+    if (!ticket || !v.trim()) return
     setBusy(true)
-    try { await api('POST', '/api/auth/mfa', { ticket, code: code.trim() }); await boot() } catch (e) { toast((e as Error).message); if (/过期|太多/.test((e as Error).message)) setTicket(null) } finally { setBusy(false) }
+    try { await api('POST', '/api/auth/mfa', { ticket, code: v.trim() }); await boot() } catch (e) { toast((e as Error).message); if (/过期|太多/.test((e as Error).message)) setTicket(null) } finally { setBusy(false) }
   }
   const withPasskey = async () => {
     setBusy(true)
@@ -85,8 +86,8 @@ export function LiveLogin() {
       <div className="auth-box">
         <div className="auth-logo"><Wordmark size={40} /></div>
         <p className="sub center">输入验证器 App 里的 6 位动态码（或者一个恢复码）</p>
-        <Field label="动态码"><input autoFocus value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" onKeyDown={(e) => e.key === 'Enter' && sendCode()} /></Field>
-        <button className="btn primary block" disabled={busy || !code.trim()} onClick={sendCode}>{busy ? '…' : '登录'}</button>
+        <Field label="动态码"><input autoFocus value={code} onChange={(e) => { const v = e.target.value; setCode(v); if (/^\d{6}$/.test(v.trim())) void sendCode(v) }} inputMode="numeric" autoComplete="one-time-code" onKeyDown={(e) => e.key === 'Enter' && sendCode()} /></Field>
+        <button className="btn primary block" disabled={busy || !code.trim()} onClick={() => sendCode()}>{busy ? '…' : '登录'}</button>
         <button className="btn ghost block" onClick={() => { setTicket(null); setCode('') }}>返回</button>
       </div>
     </div>
@@ -98,12 +99,11 @@ export function LiveLogin() {
         <p className="sub center">{first ? '第一次打开：设一个主人账号（这套 Opero 只有你一个人用）' : '你自己部署的 AI 开发团队'}</p>
         {a.error && <div className="banner b-warn">连不上后台：{a.error}</div>}
         <Field label="账号（邮箱）"><input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" placeholder="you@example.com" /></Field>
-        {first && <Field label="怎么称呼你"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="主人" /></Field>}
         <Field label={first ? '密码（至少 8 位）' : '密码'}>
-          <input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} autoComplete={first ? 'new-password' : 'current-password'}
-            onKeyDown={(e) => !first && e.key === 'Enter' && go()} />
+          <input type={showPwd ? 'text' : 'password'} value={pwd} autoFocus={!!email} onChange={(e) => setPwd(e.target.value)} autoComplete={first ? 'new-password' : 'current-password'}
+            onKeyDown={(e) => e.key === 'Enter' && go()} />
         </Field>
-        {first && <Field label="再输一次"><input type="password" value={pwd2} onChange={(e) => setPwd2(e.target.value)} autoComplete="new-password" onKeyDown={(e) => e.key === 'Enter' && go()} /></Field>}
+        {first && <label className="nowrap sub"><input type="checkbox" checked={showPwd} onChange={(e) => setShowPwd(e.target.checked)} /> 显示密码（看清楚再创建）</label>}
         <button className="btn primary block lg" onClick={go} disabled={busy}>{busy ? '稍等…' : first ? '创建并进入' : '登录'}</button>
         {!first && passkeySupported() && <button className="btn default block" onClick={withPasskey} disabled={busy}>用通行密钥登录</button>}
         {!first && <p className="hint center">忘了密码：在服务器上运行 <span className="mono">opero reset-password</span></p>}
@@ -166,7 +166,7 @@ export function ExecutorsPage({ params, nav }: PageProps) {
 // ======================= 开机向导 =======================
 const PRESETS: { key: string; name: string; desc: string }[] = [
   { key: 'butler', name: '系统管家', desc: '管 Opero 本身：怎么设置、整理知识库、转派' },
-  { key: 'dev', name: '开发', desc: '在工作空间里改代码、提交、推送' },
+  { key: 'dev', name: '开发', desc: '在项目里改代码、提交、推送' },
   { key: 'ops', name: '运维', desc: '看服务器、查问题；改之前先问你' },
   { key: 'logwatch', name: '日志值班', desc: '配个触发器定时巡检日志，有问题发卡片' },
   { key: 'inbox', name: '消息助理', desc: '看邮件和 Slack，告诉你哪些要你看，写回复建议（不替你发）' },
@@ -300,7 +300,7 @@ export function ComingSoonPage({ params, nav }: PageProps) {
 // ======================= 应用首页 =======================
 export const LIVE_APPS: { page: any; name: string; desc: string; letter: string }[] = [
   { page: 'servers', name: '服务器和 Agent', desc: '装 Agent 让员工在上面干活；或 SSH 跑命令', letter: '服' },
-  { page: 'credentials', name: '权限和凭证', desc: '账号加密存着，AI 拿不到', letter: '权' },
+  { page: 'credentials', name: '凭证', desc: '代码仓库、数据库、服务器、云账号、AI 的账号和令牌，加密存着', letter: '凭' },
   { page: 'data', name: '数据', desc: 'MySQL / PostgreSQL，默认只读', letter: '数' },
   { page: 'releases', name: '发布', desc: '编译、签名、部署、检查，失败自动退回上一版', letter: '发' },
   { page: 'issues', name: '问题清单', desc: '日志巡检记下来的线上问题', letter: '问' },
@@ -350,7 +350,7 @@ export function LiveServersPage({ nav }: PageProps) {
   const ssh = list.filter((x) => x.id !== 'local' && x.via !== 'agent' && x.via !== 'pending' && x.via !== 'rejected')
   const [fp, setFp] = useState('')
   const [moving, setMoving] = useState(false)
-  const [newUrl, setNewUrl] = useState('')
+  const [newUrl, setNewUrl] = useState(() => location.origin)
   useEffect(() => { call<{ fingerprint: string }>('GET', '/api/agents/fingerprint').then((r) => r && setFp(r.fingerprint)) }, [])
   const decide = (id: string, ok: boolean) => call('POST', `/api/agents/${id}/${ok ? 'accept' : 'reject'}`, undefined, ok ? '已接受，这台马上连上' : '已拒绝')
   const move = async () => {
@@ -444,7 +444,6 @@ function AgentJoin({ nav, again }: { nav: PageProps['nav']; again?: { name: stri
             <li>登录那台服务器，用 root（或有 sudo 权限的账号）把命令粘贴进去回车</li>
             <li>等几秒，这里会显示「已接入」</li>
           </ol>
-          <Field label="叫什么（可选）" hint="不填就用那台机器的主机名"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="比如：prod-web-1" /></Field>
           <Field label="环境标签" hint="随便起名，要几个都行；像生产的（生产 / prod…）默认改东西先确认，接入后能改"><EnvPicker value={env} onChange={setEnv} /></Field>
           <button className="btn primary block" disabled={busy} onClick={make}>{busy ? '生成中…' : '生成安装命令'}</button>
         </>
@@ -477,11 +476,14 @@ function AgentJoin({ nav, again }: { nav: PageProps['nav']; again?: { name: stri
 
 function SshAdd({ nav }: { nav: PageProps['nav'] }) {
   const creds = useStore((s) => s.credentials.filter((c) => c.group === '服务器'))
-  const [f, setF] = useState({ name: '', ip: '', port: '22', user: 'root', env: '测试' as EnvTag, authKind: 'password' as 'password' | 'key' | 'cred', secret: '', credential: '' })
+  const servers = useStore((s) => s.servers)
+  const [f, setF] = useState({ name: '', ip: '', port: '22', user: 'root', env: '测试' as EnvTag, authKind: (creds.length ? 'cred' : 'password') as 'password' | 'key' | 'cred', secret: '', credential: creds[0]?.id ?? '' })
+  // 常用的登录用户 + 已经接过的 SSH 服务器用过的
+  const users = [...new Set(['root', 'ubuntu', 'ec2-user', 'admin', ...servers.map((x) => x.user).filter((x): x is string => !!x)])].slice(0, 6)
   const [busy, setBusy] = useState(false)
   const up = (p: Partial<typeof f>) => setF((x) => ({ ...x, ...p }))
   const save = async () => {
-    if (!f.name.trim() || !f.ip.trim()) { toast('名字和地址都要填'); return }
+    if (!f.ip.trim()) { toast('地址要填'); return }
     setBusy(true)
     const r = await call<any>('POST', '/api/servers', { ...f, secret: f.authKind === 'cred' ? undefined : f.secret, credential: f.authKind === 'cred' ? f.credential : undefined })
     setBusy(false)
@@ -490,25 +492,34 @@ function SshAdd({ nav }: { nav: PageProps['nav'] }) {
   return (
     <>
       <p className="field-hint">只用 SSH 的服务器，员工能经 Opero 在上面跑命令（server_exec），但不能在上面干活（跑 Claude Code）。要在上面干活就装 Agent。</p>
-      <Field label="名字"><input value={f.name} onChange={(e) => up({ name: e.target.value })} placeholder="比如：prod-db-1" /></Field>
-      <Field label="地址（IP 或域名）"><input value={f.ip} onChange={(e) => up({ ip: e.target.value })} placeholder="203.0.113.10" /></Field>
-      <div className="inline-form">
-        <Field label="SSH 端口"><input value={f.port} onChange={(e) => up({ port: e.target.value })} inputMode="numeric" /></Field>
-        <Field label="用户"><input value={f.user} onChange={(e) => up({ user: e.target.value })} /></Field>
-      </div>
+      <Field label="地址（IP 或域名）" hint="名字先用地址，接入后能改"><input value={f.ip} onChange={(e) => up({ ip: e.target.value })} placeholder="203.0.113.10" /></Field>
+      <Field label="登录用户"><div className="chips">{users.map((u) => <button key={u} type="button" className={'chip' + (f.user === u ? ' on' : '')} onClick={() => up({ user: u })}>{u}</button>)}</div></Field>
+      <Field label="SSH 端口"><div className="chips">{['22', '2222', '22022'].map((x) => <button key={x} type="button" className={'chip' + (f.port === x ? ' on' : '')} onClick={() => up({ port: x })}>{x}</button>)}<input className="chip-input" value={['22', '2222', '22022'].includes(f.port) ? '' : f.port} onChange={(e) => up({ port: e.target.value || '22' })} placeholder="别的" inputMode="numeric" /></div></Field>
       <Field label="环境标签" hint="随便起名；像生产的默认改东西先确认，接入后能改"><EnvPicker value={f.env} onChange={(v) => up({ env: v })} /></Field>
       <Field label="登录方式"><Segmented value={f.authKind} onChange={(v) => up({ authKind: v })} options={[{ value: 'password', label: '密码' }, { value: 'key', label: '私钥' }, ...(creds.length ? [{ value: 'cred' as const, label: '已带进来的' }] : [])]} /></Field>
       {f.authKind === 'password' && <Field label="密码"><input type="password" value={f.secret} onChange={(e) => up({ secret: e.target.value })} autoComplete="new-password" /></Field>}
-      {f.authKind === 'key' && <Field label="私钥（整段粘贴）"><textarea className="mono code-edit" rows={6} value={f.secret} onChange={(e) => up({ secret: e.target.value })} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></Field>}
+      {f.authKind === 'key' && <label className="btn ghost sm">从文件读私钥<input type="file" hidden onChange={async (e) => { const file = e.target.files?.[0]; e.target.value = ''; if (file && file.size < 64 * 1024) up({ secret: await file.text() }) }} /></label>}
+      {f.authKind === 'key' && <Field label="私钥（整段粘贴，或者点上面从文件读）"><textarea className="mono code-edit" rows={6} value={f.secret} onChange={(e) => up({ secret: e.target.value })} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></Field>}
       {f.authKind === 'cred' && (
         <Field label="用哪个账号"><select value={f.credential} onChange={(e) => up({ credential: e.target.value })}><option value="">选一个</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
       )}
       <button className="btn primary block" disabled={busy} onClick={save}>{busy ? '连接中…' : '接入'}</button>
-      <p className="field-hint">密码 / 私钥加密存进「权限和凭证」；第一次连上会记下主机指纹，之后对不上就拒绝。</p>
+      <p className="field-hint">密码 / 私钥加密存进「凭证」；第一次连上会记下主机指纹，之后对不上就拒绝。</p>
     </>
   )
 }
 
+// 服务器上常看的：点一下就跑（都是只读命令，不用确认）
+const CMD_PRESETS: [string, string][] = [
+  ['概况', 'uptime && df -h / && free -m'],
+  ['磁盘', 'df -h'],
+  ['占内存最多', 'ps aux --sort=-%mem | head -n 15'],
+  ['占 CPU 最多', 'ps aux --sort=-%cpu | head -n 15'],
+  ['在跑的服务', 'systemctl list-units --type=service --state=running --no-legend --plain | head -n 60'],
+  ['开着的端口', 'ss -ltnp | head -n 40'],
+  ['Docker 容器', 'docker ps --format "table {{.Names}}\\t{{.Status}}\\t{{.Ports}}"'],
+  ['最近登录', 'last -n 15'],
+]
 export function LiveServerPage({ params, nav }: PageProps) {
   const s = useStore((x) => x.servers.find((v) => v.id === params.id))
   const emps = useStore((x) => x.employees)
@@ -522,12 +533,13 @@ export function LiveServerPage({ params, nav }: PageProps) {
   if (!s) return <div className="page"><PageHeader title="服务器" {...headNav(nav)} /><Empty>找不到</Empty></div>
   const agent = s.via === 'agent'
   const work = agent || s.id === 'local'
-  const run = async () => {
+  const run = async (c = cmd) => {
+    setCmd(c)
     setBusy(true)
     setOut('…')
-    const r = await call<{ code: number; out: string; ms: number }>('POST', `/api/servers/${s.id}/exec`, { command: cmd })
+    const r = await call<{ code: number; out: string; ms: number }>('POST', `/api/servers/${s.id}/exec`, { command: c })
     setBusy(false)
-    setOut(r ? `$ ${cmd}\n${r.out}\n[退出码 ${r.code} · ${r.ms} ms]` : null)
+    setOut(r ? `$ ${c}\n${r.out}\n[退出码 ${r.code} · ${r.ms} ms]` : null)
   }
   const remove = () => { if (confirm(`从 Opero 里去掉「${s.name}」？（服务器本身不受影响）`)) call('DELETE', `/api/servers/${s.id}`, undefined, '已去掉').then(() => nav.back()) }
   const removeAgent = () => { if (confirm(`移除「${s.name}」的 Agent？那台的 Agent 会被拒绝连接，跑在上面的员工会停；以后可以重新接入`)) call('DELETE', `/api/agents/${s.id}`, undefined, '已移除 Agent') }
@@ -590,13 +602,14 @@ export function LiveServerPage({ params, nav }: PageProps) {
             {onIt.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={32} />} title={e.name} chevron onClick={() => nav.openChat(e.id)} />)}
           </Section>
         )}
-        {s.online && <LogViewer serverId={s.id} />}
+        {s.online && <LogViewer s={s} />}
         <Section title="跑命令" right={<span className="sub">只读命令直接跑；会改东西的要先验证本人</span>}>
           <div className="pad">
             <div className="inline-form">
               <input className="mono" value={cmd} onChange={(e) => setCmd(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && run()} />
-              <button className="btn primary" onClick={run} disabled={busy}>{busy ? '运行中…' : '运行'}</button>
+              <button className="btn primary" onClick={() => run()} disabled={busy}>{busy ? '运行中…' : '运行'}</button>
             </div>
+            <div className="chips">{CMD_PRESETS.map(([label, c]) => <button key={label} type="button" className="chip" disabled={busy} onClick={() => run(c)}>{label}</button>)}</div>
             {out && <pre className="console">{out}</pre>}
           </div>
         </Section>
@@ -604,76 +617,12 @@ export function LiveServerPage({ params, nav }: PageProps) {
         <div className="pad row-actions wrap">
           <button className="btn default" onClick={() => nav.openChat(getState().employees.find((e) => e.id === 'ops')?.id ?? getState().employees[0]?.id ?? '')}>让员工看看</button>
           {agent && s.online && s.agentVersion && opVer && s.agentVersion !== opVer && (
-            <button className="btn primary" onClick={() => requireVerify(`把「${s.name}」的 Agent 升级到 ${opVer}`, () => call('POST', `/api/agents/${s.id}/upgrade`, undefined, '已开始升级：一两分钟后 Agent 会重新连上来'))}>升级 Agent（{s.agentVersion} → {opVer}）</button>
+            <button className="btn primary" onClick={() => (call('POST', `/api/agents/${s.id}/upgrade`, undefined, '已开始升级：一两分钟后 Agent 会重新连上来'))}>升级 Agent（{s.agentVersion} → {opVer}）</button>
           )}
           {agent && !rejoin && <button className="btn ghost" onClick={() => setRejoin(true)}>重新接入（重装 / 换机器后用）</button>}
           {agent && <button className="btn ghost" onClick={removeAgent}>移除 Agent</button>}
           {s.id !== 'local' && <button className="btn ghost" onClick={remove}>去掉这台</button>}
         </div>
-      </div>
-    </div>
-  )
-}
-
-// ======================= 凭证 =======================
-const GROUPS: CredGroup[] = ['服务器', '数据库', '代码仓库', '云账号', '签名证书', 'AI', '消息渠道', '其它']
-const KINDS: Credential['kind'][] = ['账号密码', '密钥', 'Token', '证书', '数据库']
-export function LiveCredentialEditPage({ params, nav }: PageProps) {
-  const existing = useStore((s) => s.credentials.find((x) => x.id === params.id))
-  const employees = useStore((s) => s.employees)
-  const [c, setC] = useState<Credential & { user?: string }>(() => existing ?? { id: '', name: '', group: params.group ?? '代码仓库', kind: 'Token', env: '生产', scope: '', usedBy: [], updated: '', aiAllowed: true, user: '' })
-  const [secret, setSecret] = useState('')
-  const [shown, setShown] = useState<string | null>(null)
-  const save = async () => {
-    if (!c.name.trim()) { toast('先起个名字'); return }
-    if (!existing && !secret) { toast('值要填'); return }
-    const r = await call(existing ? 'PUT' : 'POST', existing ? `/api/credentials/${c.id}` : '/api/credentials', { ...c, secret: secret || undefined }, '已加密保存，AI 拿不到明文')
-    if (r) nav.back()
-  }
-  const reveal = async () => {
-    if (shown !== null) { setShown(null); return }
-    const r = await call<{ value: string }>('POST', `/api/credentials/${c.id}/reveal`)
-    if (r) setShown(r.value)
-  }
-  const remove = async () => {
-    if (!confirm(`删掉「${c.name}」？用到它的服务器 / 库 / 仓库会连不上`)) return
-    if (await call('DELETE', `/api/credentials/${c.id}`, undefined, '已删除')) nav.back()
-  }
-  const toggleUser = (id: string) => setC({ ...c, usedBy: c.usedBy.includes(id) ? c.usedBy.filter((x) => x !== id) : [...c.usedBy, id] })
-  return (
-    <div className="page">
-      <PageHeader title={existing ? existing.name : '带进来一个账号'} {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>保存</button>} />
-      <div className="page-body form">
-        <Field label="是什么"><Segmented value={c.group as CredGroup} onChange={(v) => setC({ ...c, group: v })} options={GROUPS.map((g) => ({ value: g, label: g }))} /></Field>
-        <Field label="名字"><input value={c.name} onChange={(e) => setC({ ...c, name: e.target.value })} placeholder={c.group === '代码仓库' ? '比如：GitHub 个人令牌' : '比如：prod 只读账号'} /></Field>
-        {c.group === '签名证书' ? <SignCertFields onChange={setSecret} /> : <>
-        <Field label="类型"><Segmented value={c.kind} onChange={(v) => setC({ ...c, kind: v })} options={KINDS.map((k) => ({ value: k, label: k }))} /></Field>
-        <Field label="用户名（可选）" hint={c.group === '代码仓库' ? 'GitHub 不用填；Codeup / Gitee 填你的用户名' : '账号密码类填这里'}>
-          <input value={c.user ?? ''} onChange={(e) => setC({ ...c, user: e.target.value })} autoComplete="off" />
-        </Field>
-        <Field label={existing ? '新的值（留空 = 不改）' : '值'} hint="直接加密存起来；员工要用时由 Opero 代它去连，值不给 AI">
-          {c.kind === '密钥' || c.kind === '证书'
-            ? <textarea className="mono code-edit" rows={5} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="-----BEGIN …" />
-            : <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="••••••••" autoComplete="new-password" />}
-        </Field>
-        </>}
-        <Field label="它在那边能做什么" hint="照实写（只读 / 读写 / 能部署…），给你自己看"><input value={c.scope} onChange={(e) => setC({ ...c, scope: e.target.value })} placeholder="只读" /></Field>
-        <Field label="环境标签"><EnvPicker value={c.env} onChange={(v) => setC({ ...c, env: v })} /></Field>
-        <div className="field">
-          <span className="field-label">哪些员工用它（给你自己看的标记）</span>
-          <div className="chips">{employees.map((e) => <button key={e.id} className={'chip' + (c.usedBy.includes(e.id) ? ' on' : '')} onClick={() => toggleUser(e.id)}>{e.name}</button>)}</div>
-        </div>
-        <div className="lrow boxed">
-          <span className="row-main"><span className="row-title">允许 AI 员工使用</span><span className="row-sub">关掉后员工用它连服务器 / 查库会被拒绝，只有你本人能用</span></span>
-          <Toggle on={c.aiAllowed} onChange={(v) => setC({ ...c, aiAllowed: v })} />
-        </div>
-        {existing && (
-          <Section title="明文">
-            <Row title={shown !== null ? <span className="mono small">{shown || '（空）'}</span> : '••••••••••••'} right={<button className="btn default sm" onClick={reveal}>{shown !== null ? '隐藏' : '查看'}</button>} />
-            <Row title="删掉这个账号" danger onClick={remove} />
-          </Section>
-        )}
-        <p className="hint">看明文、改、删都要先验证本人，并记进操作记录。</p>
       </div>
     </div>
   )
@@ -686,7 +635,7 @@ export function LiveDataPage({ nav }: PageProps) {
   return (
     <div className="page">
       <PageHeader title="数据" sub="查库走只读事务；改数据要库是可写的、并且你验证本人" {...headNav(nav)}
-        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'dataSourceAdd' })}><IconPlus /> 接入</button>} />
+        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'credentialEdit', params: { group: '数据库' } })}><IconPlus /> 接入数据库</button>} />
       <div className="page-body">
         <Section title="数据库">
           {sources.length === 0 && <Empty>还没有：点「接入」加一个 MySQL / PostgreSQL</Empty>}
@@ -700,42 +649,6 @@ export function LiveDataPage({ nav }: PageProps) {
             {queries.map((q) => <Row key={q.id} title={q.name} sub={<span className="mono small">{q.sql}</span>} chevron onClick={() => nav.push({ page: 'query', params: { source: q.source, sql: q.sql } })} />)}
           </Section>
         )}
-      </div>
-    </div>
-  )
-}
-
-export function DataSourceAddPage({ nav }: PageProps) {
-  const [f, setF] = useState({ name: '', kind: 'MySQL' as DataSource['kind'], host: '', port: '', db: '', user: '', password: '', env: '生产' as EnvTag, writable: false })
-  const [busy, setBusy] = useState(false)
-  const up = (p: Partial<typeof f>) => setF((x) => ({ ...x, ...p }))
-  const save = async () => {
-    setBusy(true)
-    const r = await call<any>('POST', '/api/data-sources', f)
-    setBusy(false)
-    if (r) { toast(r.error ? `已加上，但${r.error}` : `已接入，读到 ${r.tables.length} 张表`); nav.back() }
-  }
-  return (
-    <div className="page">
-      <PageHeader title="接入数据库" {...headNav(nav)} right={<button className="btn primary sm" disabled={busy} onClick={save}>{busy ? '连接中…' : '接入'}</button>} />
-      <div className="page-body form">
-        <Field label="名字"><input value={f.name} onChange={(e) => up({ name: e.target.value })} placeholder="比如：shop 生产库" /></Field>
-        <Field label="类型"><Segmented value={f.kind} onChange={(v) => up({ kind: v })} options={[{ value: 'MySQL', label: 'MySQL' }, { value: 'PostgreSQL', label: 'PostgreSQL' }]} /></Field>
-        <div className="inline-form">
-          <Field label="地址"><input value={f.host} onChange={(e) => up({ host: e.target.value })} placeholder="10.0.0.5" /></Field>
-          <Field label="端口"><input value={f.port} onChange={(e) => up({ port: e.target.value })} placeholder={f.kind === 'MySQL' ? '3306' : '5432'} inputMode="numeric" /></Field>
-        </div>
-        <Field label="库名"><input value={f.db} onChange={(e) => up({ db: e.target.value })} /></Field>
-        <div className="inline-form">
-          <Field label="用户"><input value={f.user} onChange={(e) => up({ user: e.target.value })} autoComplete="off" /></Field>
-          <Field label="密码"><input type="password" value={f.password} onChange={(e) => up({ password: e.target.value })} autoComplete="new-password" /></Field>
-        </div>
-        <Field label="环境标签" hint="随便起名；像生产的，改数据的确认卡片标成红色"><EnvPicker value={f.env} onChange={(v) => up({ env: v })} /></Field>
-        <div className="lrow boxed">
-          <span className="row-main"><span className="row-title">允许改数据</span><span className="row-sub">关着 = 只能查（推荐给生产库接只读账号）；开着员工改数据也要你点确认</span></span>
-          <Toggle on={f.writable} onChange={(v) => up({ writable: v })} />
-        </div>
-        <p className="field-hint">账号加密存进「权限和凭证」。员工查库由 Opero 代它连：只读事务、15 秒超时、最多 200 行，手机号 / 密码这类列自动打码。</p>
       </div>
     </div>
   )
@@ -779,7 +692,7 @@ export function LiveQueryPage({ params, nav }: PageProps) {
             <textarea className="mono code-edit" rows={4} value={sql} onChange={(e) => setSql(e.target.value)} placeholder="SELECT …" />
             <div className="chips">{queries.filter((q) => q.source === d.id).map((q) => <button key={q.id} className="chip" onClick={() => setSql(q.sql)}>{q.name}</button>)}</div>
             <div className="row-actions">
-              <button className="btn ghost" onClick={() => { const name = prompt('起个名字', sql.slice(0, 18)); if (name) call('POST', '/api/saved-queries', { source: d.id, name, sql }, '已存成常用查询') }}>存成常用</button>
+              <button className="btn ghost" onClick={() => { const name = sql.replace(/\s+/g, ' ').trim().slice(0, 24); if (name) call('POST', '/api/saved-queries', { source: d.id, name, sql }, '已存成常用查询') }}>存成常用</button>
               <button className="btn primary" onClick={run} disabled={busy}>{busy ? '运行中…' : '运行'}</button>
             </div>
           </div>
@@ -850,19 +763,34 @@ function RulePicker({ rule, onChange }: { rule: string; onChange: (r: string) =>
         <option value="workday">工作日（周一到周五）</option>
         <option value="week">每周</option>
       </select>
-      {(v.kind === 'min' || v.kind === 'hour') && <input type="number" min={v.kind === 'min' ? 5 : 1} value={v.n} onChange={(e) => emit({ n: e.target.value })} style={{ width: 90 }} />}
+      {(v.kind === 'min' || v.kind === 'hour') && <div className="chips">{(v.kind === 'min' ? ['5', '10', '15', '30'] : ['1', '2', '6', '12']).map((n) => <button key={n} type="button" className={'chip' + (v.n === n ? ' on' : '')} onClick={() => emit({ n })}>{n} {v.kind === 'min' ? '分钟' : '小时'}</button>)}</div>}
       {v.kind === 'week' && <select value={v.day} onChange={(e) => emit({ day: e.target.value })}>{Object.keys(WEEKLY).map((d) => <option key={d} value={d}>{d}</option>)}</select>}
-      {v.kind !== 'min' && v.kind !== 'hour' && <input type="time" value={v.hm} onChange={(e) => emit({ hm: e.target.value })} style={{ width: 130 }} />}
+      {v.kind !== 'min' && v.kind !== 'hour' && <div className="chips">{['09:00', '12:00', '18:00', '22:00'].map((h) => <button key={h} type="button" className={'chip' + (v.hm === h ? ' on' : '')} onClick={() => emit({ hm: h })}>{h}</button>)}<input type="time" value={v.hm} onChange={(e) => emit({ hm: e.target.value })} style={{ width: 120 }} /></div>}
     </div>
   )
 }
 
+/** 触发器常用的活：按员工角色先填好，点一下换 */
+const TRIGGER_TPL: { key: string; label: string; text: string }[] = [
+  { key: 'logwatch', label: '巡检日志', text: '扫一遍所有登记了日志的服务器（log_scan 只给 server，会扫那台登记的全部日志）。新出现的错误合并同类、记进问题清单，严重的发卡片给我；没有新问题就回一句「正常」。' },
+  { key: 'ops', label: '看服务器健康', text: '看一下所有服务器的磁盘、内存、负载和关键服务是不是都在跑。有异常发卡片给我（写清楚哪台、什么问题、建议怎么处理）；都正常就一句话汇总。' },
+  { key: 'inbox', label: '整理收件箱', text: '看收件箱里新来的消息，把要我看的列出来（谁、什么事、急不急），知道就行的归类，不用回复。' },
+  { key: 'dev', label: '每日构建检查', text: '拉最新代码，跑一遍构建和测试。有失败就查原因并修好、提交推送，告诉我改了什么；都通过就说「正常」。' },
+  { key: 'butler', label: '每日小结', text: '总结一下今天各员工做了什么、还有什么在等我决定，列成几条发给我。' },
+]
 export function LiveTriggerEditPage({ params, nav }: PageProps) {
   const existing = useStore((s) => s.triggers.find((x) => x.id === params.id)) as (Trigger & { prompt?: string; hookPath?: string }) | undefined
   const employees = useStore((s) => s.employees)
-  const [t, setT] = useState<Trigger & { prompt?: string }>(() => existing ?? { id: '', name: '', kind: '定时', rule: '每 30 分钟', employee: params.employee ?? employees[0]?.id ?? '', enabled: true, last: '还没触发', prompt: '' })
+  const servers = useStore((s) => s.servers)
+  const tplFor = (empId: string) => TRIGGER_TPL.find((x) => x.key === empId) ?? TRIGGER_TPL.find((x) => (employees.find((e) => e.id === empId)?.menus ?? []).includes('服务器') && x.key === 'ops')
+  const [t, setT] = useState<Trigger & { prompt?: string }>(() => {
+    if (existing) return existing
+    const emp = params.employee ?? employees[0]?.id ?? ''
+    return { id: '', name: '', kind: '定时', rule: '每 30 分钟', employee: emp, enabled: true, last: '还没触发', prompt: tplFor(emp)?.text ?? '' }
+  })
+  const autoName = `${empName(t.employee)} · ${t.kind === 'Webhook' ? 'Webhook' : t.rule}`
   const save = async () => {
-    const r = await call(existing ? 'PUT' : 'POST', existing ? `/api/triggers/${t.id}` : '/api/triggers', t, '触发器已保存')
+    const r = await call(existing ? 'PUT' : 'POST', existing ? `/api/triggers/${t.id}` : '/api/triggers', { ...t, name: t.name.trim() || autoName }, '触发器已保存')
     if (r) nav.back()
   }
   const hook = existing?.hookPath ? `${location.origin}${existing.hookPath}` : ''
@@ -870,7 +798,6 @@ export function LiveTriggerEditPage({ params, nav }: PageProps) {
     <div className="page">
       <PageHeader title={existing ? existing.name : '新触发器'} {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>保存</button>} />
       <div className="page-body form">
-        <Field label="名字"><input value={t.name} onChange={(e) => setT({ ...t, name: e.target.value })} placeholder="比如：生产日志巡检" /></Field>
         <Field label="什么时候"><Segmented value={t.kind as '定时' | 'Webhook'} onChange={(v) => setT({ ...t, kind: v })} options={[{ value: '定时', label: '定时' }, { value: 'Webhook', label: 'Webhook' }]} /></Field>
         {t.kind === '定时'
           ? <Field label="规则"><RulePicker rule={t.rule} onChange={(rule) => setT({ ...t, rule })} /></Field>
@@ -878,12 +805,15 @@ export function LiveTriggerEditPage({ params, nav }: PageProps) {
               {hook ? <div className="cmd-box mono">{hook}<button className="btn ghost sm" onClick={() => copy(hook)}>复制</button></div> : <p className="sub">保存后生成（地址里带密钥，别外传）</p>}
             </Field>}
         <Field label="交给哪个员工">
-          <select value={t.employee} onChange={(e) => setT({ ...t, employee: e.target.value })}>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+          <div className="chips">{employees.map((e) => <button key={e.id} type="button" className={'chip' + (t.employee === e.id ? ' on' : '')} onClick={() => setT({ ...t, employee: e.id, prompt: !t.prompt || TRIGGER_TPL.some((x) => x.text === t.prompt) ? tplFor(e.id)?.text ?? t.prompt : t.prompt })}>{e.name}</button>)}</div>
         </Field>
-        <Field label="要它做什么" hint="每次触发都把这段话交给员工">
+        <Field label="要它做什么" hint="点一个常用的，或者自己改；每次触发都把这段话交给员工">
+          <div className="chips">{TRIGGER_TPL.map((x) => <button key={x.key} type="button" className={'chip' + (t.prompt === x.text ? ' on' : '')} onClick={() => setT({ ...t, prompt: x.text })}>{x.label}</button>)}</div>
           <textarea rows={5} value={t.prompt ?? ''} onChange={(e) => setT({ ...t, prompt: e.target.value })}
             placeholder={'比如：用 server_exec 看 prod-web-1 上 shop 服务最近 30 分钟的日志（journalctl -u shop --since "30 min ago"），有 ERROR 就合并同类、查原因，发卡片给我；没有就说「正常」。'} />
         </Field>
+        {servers.length > 1 && <div className="chips">{servers.map((x) => <button key={x.id} type="button" className="chip" title="把服务器名加进上面的话里" onClick={() => setT({ ...t, prompt: `${t.prompt ?? ''}${t.prompt ? ' ' : ''}「${srvName(x)}」` })}>+ {srvName(x)}</button>)}</div>}
+        <Field label="名字（可选）"><input value={t.name} onChange={(e) => setT({ ...t, name: e.target.value })} placeholder={autoName} /></Field>
         <div className="lrow"><span className="row-main"><span className="row-title">启用</span></span><Toggle on={t.enabled} onChange={(v) => setT({ ...t, enabled: v })} /></div>
         {existing && (
           <div className="row-actions wrap">
@@ -907,7 +837,9 @@ export function LiveKnowledgePage({ nav }: PageProps) {
   const blank = { id: '', name: '', kind: '规范' as KbDoc['kind'], updated: '', by: '', summary: '', body: '' }
   const save = async () => {
     if (!edit) return
-    const r = await call(edit.id ? 'PUT' : 'POST', edit.id ? `/api/kb/${edit.id}` : '/api/kb', edit, '已保存，所有员工马上能查到')
+    // 没起名字：用正文的第一个标题 / 第一行
+    const first = (edit.body ?? '').split('\n').map((l) => l.replace(/^#+\s*/, '').trim()).find(Boolean) ?? ''
+    const r = await call(edit.id ? 'PUT' : 'POST', edit.id ? `/api/kb/${edit.id}` : '/api/kb', { ...edit, name: edit.name.trim() || first.slice(0, 40) }, '已保存，所有员工马上能查到')
     if (r) setEdit(null)
   }
   return (
@@ -935,7 +867,7 @@ export function LiveKnowledgePage({ nav }: PageProps) {
       {edit && (
         <Sheet title={edit.id ? `改「${edit.name}」` : '加一份资料'} onClose={() => setEdit(null)} size="lg">
           <div className="form">
-            <Field label="名字"><input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="比如：退款流程说明" /></Field>
+            <Field label="名字（可选）" hint="不填就用正文的第一个标题"><input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="比如：退款流程说明" /></Field>
             <Field label="类型"><Segmented value={edit.kind} onChange={(v) => setEdit({ ...edit, kind: v })} options={KB_KINDS.map((k) => ({ value: k, label: k }))} /></Field>
             <Field label="内容（Markdown）"><textarea className="code-edit" rows={12} value={edit.body ?? ''} onChange={(e) => setEdit({ ...edit, body: e.target.value })} /></Field>
             <button className="btn primary block" onClick={save}>保存</button>
@@ -946,16 +878,16 @@ export function LiveKnowledgePage({ nav }: PageProps) {
   )
 }
 
-// ======================= 工作空间 =======================
+// ======================= 项目 =======================
 export function LiveWorkspacesPage({ nav }: PageProps) {
   const list = useStore((s) => s.workspaces)
   return (
     <div className="page">
-      <PageHeader title="工作空间" sub="员工干活的代码仓库（拉到这台服务器上）" {...headNav(nav)}
+      <PageHeader title="项目" sub="员工干活的代码仓库（拉到这台服务器上）" {...headNav(nav)}
         right={<button className="btn primary sm" onClick={() => nav.push({ page: 'workspaceAdd' })}><IconPlus /> 接入</button>} />
       <div className="page-body">
         <Section flush>
-          {list.length === 0 && <Empty>还没有。接一个 GitHub / Codeup / Gitee 仓库，再在员工设置里选它当工作空间</Empty>}
+          {list.length === 0 && <Empty>还没有。接一个 GitHub / Codeup / Gitee 仓库，再在员工设置里选它当项目</Empty>}
           {list.map((w) => (
             <Row key={w.id} icon={<span className="ws-icon">{w.name.slice(0, 1).toUpperCase()}</span>} chevron onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })}
               title={<>{w.name} {w.branch && <Tag>{w.branch}</Tag>} {(w as Workspace & { error?: string }).error && <Tag tone="danger">有问题</Tag>}</>} sub={`${w.provider} · ${w.repo} · ${w.last}`} />
@@ -966,39 +898,122 @@ export function LiveWorkspacesPage({ nav }: PageProps) {
   )
 }
 
-export function LiveWorkspaceAddPage({ nav }: PageProps) {
-  const creds = useStore((s) => s.credentials.filter((c) => c.group === '代码仓库'))
-  const [repo, setRepo] = useState('')
+type RepoItem = { name: string; url: string; branch?: string; private?: boolean; group?: string; short?: string; updated?: number }
+const agoText = (t?: number) => {
+  if (!t) return ''
+  const d = (Date.now() - t) / 60_000
+  return d < 60 ? `${Math.max(1, Math.round(d))} 分钟前` : d < 1440 ? `${Math.round(d / 60)} 小时前` : d < 43200 ? `${Math.round(d / 1440)} 天前` : new Date(t).toLocaleDateString('zh-CN')
+}
+const lastSeg = (u: string) => u.replace(/\.git$/, '').split('/').filter(Boolean).pop() ?? ''
+
+/** 接入仓库：点账号 → 点仓库 → 分支、名字、服务器都自动选好，点「接入」。仓库不在列表里才手填地址 */
+export function LiveWorkspaceAddPage({ params, nav }: PageProps) {
+  const creds = useStore((s) => s.credentials).filter((c) => c.group === '代码仓库')
+  const workHosts = useWorkHosts()
+  const [credential, setCredential] = useState<string>(params.credential ?? creds[0]?.id ?? '')
+  const [repos, setRepos] = useState<RepoItem[] | null>(null)
+  const [q, setQ] = useState('')
+  const [manual, setManual] = useState(false)
+  const [url, setUrl] = useState('')
+  const [br, setBr] = useState<{ def?: string; branches: string[] } | null>(null)
+  const [brErr, setBrErr] = useState('')
   const [branch, setBranch] = useState('')
   const [name, setName] = useState('')
-  const [credential, setCredential] = useState(creds[0]?.id ?? '')
-  const workHosts = useWorkHosts()
-  const [server, setServer] = useState('local')
-  const auto = repo.replace(/\.git$/, '').split('/').filter(Boolean).pop() ?? ''
+  const [editName, setEditName] = useState(false)
+  const [server, setServer] = useState(workHosts.find((x) => x.id === 'local')?.id ?? workHosts[0]?.id ?? 'local')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    setRepos(null); setUrl(''); setManual(false)
+    if (!credential) { setRepos([]); return }
+    call<{ repos: RepoItem[] }>('GET', `/api/credentials/${credential}/repos`).then((r) => setRepos(r?.repos ?? []))
+  }, [credential])
+  // 选了仓库：读分支，默认分支自动选上；名字用仓库名
+  useEffect(() => {
+    setBr(null); setBrErr(''); setBranch('')
+    if (!/^https:\/\/.+/.test(url)) return
+    if (!editName) setName(lastSeg(url))
+    const t = window.setTimeout(() => {
+      api<{ def?: string; branches: string[] }>('GET', `/api/repo-branches?url=${encodeURIComponent(url)}${credential ? `&cred=${credential}` : ''}`)
+        .then((r) => { setBr(r); setBranch(r.def ?? r.branches[0] ?? '') })
+        .catch((e) => setBrErr((e as Error).message))
+    }, manual ? 600 : 0)
+    return () => clearTimeout(t)
+  }, [url]) // eslint-disable-line react-hooks/exhaustive-deps
+  const picked = repos?.find((x) => x.url === url)
+  const shown = (repos ?? []).filter((x) => !q || x.name.toLowerCase().includes(q.toLowerCase()))
   const save = async () => {
-    const r = await call('POST', '/api/workspaces', { repo: repo.trim(), branch: branch.trim(), name: name.trim() || auto, credential, server }, '在拉代码，好了会显示分支和提交')
+    setBusy(true)
+    const r = await call('POST', '/api/workspaces', { repo: url.trim(), branch, name: name.trim() || lastSeg(url), credential, server }, '在拉代码，好了会显示分支和提交')
+    setBusy(false)
     if (r) nav.back()
   }
   return (
     <div className="page">
-      <PageHeader title="接入仓库" {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>接入</button>} />
-      <div className="page-body form">
-        <Field label="仓库地址（HTTPS）"><input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/you/app.git" /></Field>
-        <Field label="名字" hint="留空用仓库名"><input value={name} onChange={(e) => setName(e.target.value)} placeholder={auto} /></Field>
-        <Field label="分支" hint="留空用默认分支"><input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" /></Field>
-        {workHosts.length > 1 && (
-          <Field label="拉到哪台服务器" hint="要和用它的员工在同一台">
-            <select value={server} onChange={(e) => setServer(e.target.value)}>{workHosts.map((x) => <option key={x.id} value={x.id}>{hostLabel(x)}</option>)}</select>
-          </Field>
+      <PageHeader title="接入仓库" sub="点账号、点仓库，剩下的自动选好" {...headNav(nav)} />
+      <div className="page-body">
+        <Section title="用哪个账号">
+          <div className="pad chips">
+            {creds.map((c) => <button key={c.id} className={'chip' + (credential === c.id ? ' on' : '')} onClick={() => setCredential(c.id)}>{c.name}</button>)}
+            <button className={'chip' + (!credential ? ' on' : '')} onClick={() => setCredential('')}>公开仓库（不用账号）</button>
+            <button className="chip" onClick={() => nav.push({ page: 'credentialEdit', params: { group: '代码仓库' } })}>+ 新增账号</button>
+          </div>
+          {creds.length === 0 && <p className="pad hint">私有仓库先「新增账号」：GitHub、GitLab、Gitee、Codeup、Gitea 都有一步步的说明和直达链接，贴个令牌就行</p>}
+        </Section>
+
+        {credential && !manual && (
+          <Section title={repos === null ? '选仓库' : `选仓库 · ${repos.length}`} right={<button className="btn ghost sm" onClick={() => { setManual(true); setUrl('') }}>不在列表里？手填地址</button>}>
+            {repos === null && <div className="pad sub"><i className="spinner" /> 在读这个账号能访问的仓库…</div>}
+            {repos && repos.length > 6 && <div className="pad"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`搜 ${repos.length} 个仓库`} /></div>}
+            {repos && repos.length === 0 && <Empty>这个账号没读到仓库：检查令牌有没有勾读仓库的权限，或者手填地址</Empty>}
+            <div className="repo-list">
+              {shown.slice(0, 80).map((x) => {
+                const on = x.url === url
+                const short = x.short ?? lastSeg(x.url)
+                return (
+                  <button key={x.url} className={'repo-row' + (on ? ' on' : '')} onClick={() => setUrl(x.url)}>
+                    <span className="repo-ico">{on ? '✓' : short.slice(0, 1).toUpperCase()}</span>
+                    <span className="repo-main"><b data-no-i18n="">{short}</b><span className="sub" data-no-i18n="">{x.group || ' '}</span></span>
+                    <span className="repo-meta">{x.private && <Tag>私有</Tag>}<span className="sub">{agoText(x.updated)}</span></span>
+                  </button>
+                )
+              })}
+            </div>
+            {shown.length > 80 && <p className="pad hint">还有 {shown.length - 80} 个，搜一下名字</p>}
+          </Section>
         )}
-        <Field label="用哪个令牌" hint="公开仓库可以不选；私有仓库先在「权限和凭证 → 代码仓库」带进来">
-          <select value={credential} onChange={(e) => setCredential(e.target.value)}>
-            <option value="">不用（公开仓库）</option>
-            {creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </Field>
-        <div className="row-actions"><button className="btn ghost sm" onClick={() => nav.push({ page: 'credentialEdit', params: { group: '代码仓库' } })}>带进来一个令牌</button></div>
-        <p className="field-hint">令牌只在 Opero 拉取 / 推送时用（不写进仓库配置），员工要同步远端就调 git_sync，拿不到令牌。</p>
+
+        {(!credential || manual) && (
+          <Section title="仓库地址" right={credential ? <button className="btn ghost sm" onClick={() => { setManual(false); setUrl('') }}>回到列表</button> : undefined}>
+            <div className="pad"><input className="mono" value={url} onChange={(e) => setUrl(e.target.value.trim())} placeholder="https://github.com/you/app.git" autoFocus /></div>
+          </Section>
+        )}
+
+        {/^https:\/\/.+/.test(url) && (
+          <Section title="接入设置" right={<span className="sub">都自动选好了，要改再点</span>}>
+            <Row title="仓库" right={<span className="mono small" data-no-i18n="">{picked?.name ?? url.replace(/^https:\/\//, '')}</span>} />
+            <div className="pad">
+              <div className="field-label">分支</div>
+              {!br && !brErr && <span className="sub"><i className="spinner" /> 在读分支…</span>}
+              {brErr && <span className="sub">读不到分支（{brErr}），用仓库的默认分支</span>}
+              {br && (
+                <div className="chips">
+                  {br.branches.slice(0, 30).map((x) => <button key={x} className={'chip' + (branch === x ? ' on' : '')} onClick={() => setBranch(x)} data-no-i18n="">{x}{x === br.def ? ' · 默认' : ''}</button>)}
+                </div>
+              )}
+            </div>
+            {editName
+              ? <div className="pad"><Field label="名字"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setEditName(false)} /></Field></div>
+              : <Row title="名字" right={<span data-no-i18n="">{name || lastSeg(url)}</span>} chevron onClick={() => setEditName(true)} />}
+            {workHosts.length > 1 && (
+              <div className="pad">
+                <div className="field-label">拉到哪台（要和用它的员工在同一台）</div>
+                <div className="chips">{workHosts.map((x) => <button key={x.id} className={'chip' + (server === x.id ? ' on' : '')} onClick={() => setServer(x.id)}>{hostLabel(x)}</button>)}</div>
+              </div>
+            )}
+            <div className="pad"><button className="btn primary block" disabled={busy} onClick={save}>{busy ? '在接入…' : `接入「${name || lastSeg(url)}」`}</button></div>
+          </Section>
+        )}
+        <p className="pad hint">令牌只在 Opero 拉取 / 推送时用（不写进仓库配置），员工拿不到。</p>
       </div>
     </div>
   )
@@ -1009,35 +1024,77 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
   const emps = useStore((s) => s.employees)
   const creds = useStore((s) => s.credentials.filter((c) => c.group === '代码仓库'))
   const [busy, setBusy] = useState(false)
+  const [allCommits, setAllCommits] = useState(false)
+  const [brOpen, setBrOpen] = useState(false)
+  const [remote, setRemote] = useState<{ def?: string; branches: string[] } | null>(null)
+  const [switching, setSwitching] = useState('')
   const refresh = async () => { if (!w) return; setBusy(true); await call('POST', `/api/workspaces/${w.id}/refresh`); setBusy(false) }
   useEffect(() => { refresh() }, [params.id]) // eslint-disable-line react-hooks/exhaustive-deps
-  if (!w) return <div className="page"><PageHeader title="工作空间" {...headNav(nav)} /><Empty>找不到（员工没选工作空间时在它自己的目录里干活）</Empty></div>
+  if (!w) return <div className="page"><PageHeader title="项目" {...headNav(nav)} /><Empty>找不到这个项目</Empty></div>
   const users = emps.filter((e) => e.workspace === w.id)
+  const short = w.repo.replace(/^https?:\/\//, '').replace(/\.git$/, '').split('/').slice(-2).join('/')
+  const addEmp = async () => { const r = await call<Employee>('POST', `/api/workspaces/${w.id}/employees`, undefined); if (r) toast(`已加上「${r.name}」：点它改名、发消息`) }
+  const openBranches = () => {
+    setBrOpen(!brOpen)
+    if (!remote) api<{ def?: string; branches: string[] }>('GET', `/api/repo-branches?url=${encodeURIComponent(w.repo)}${w.credential ? `&cred=${w.credential}` : ''}`).then(setRemote).catch(() => setRemote({ branches: w.branches.map((x) => x.name.replace(/^origin\//, '')) }))
+  }
+  const switchTo = async (b: string) => {
+    if (b === w.branch) return
+    if (!confirm(`把「${w.name}」切到分支 ${b}？${users.length > 1 ? `这个项目的 ${users.length} 个员工都会一起切过去。` : ''}没提交的改动会先存进 stash。`)) return
+    setSwitching(b)
+    const r = await call<{ msg: string }>('POST', `/api/workspaces/${w.id}/branch`, { branch: b })
+    setSwitching('')
+    if (r) { toast(r.msg); setBrOpen(false) }
+  }
+  const remove = async () => {
+    if (!confirm(`从 Opero 里去掉「${w.name}」？（服务器上的目录留着）`)) return
+    const withEmps = users.length > 0 && confirm(`它的 ${users.length} 个员工（${users.map((e) => e.name).join('、')}）也一起删掉吗？\n\n确定 = 一起删（聊天记录也删）\n取消 = 留着，变成没有项目的普通员工`)
+    if (await call('DELETE', `/api/workspaces/${w.id}${withEmps ? '?withEmployees=1' : ''}`, undefined, '已去掉')) nav.back()
+  }
   return (
     <div className="page">
-      <PageHeader title={w.name} sub={`${w.provider} · ${w.repo}`} {...headNav(nav)} right={<button className="btn default sm" disabled={busy} onClick={refresh}>{busy ? '刷新中…' : '刷新'}</button>} />
+      <PageHeader title={w.name} sub={`${w.provider} · ${short}`} {...headNav(nav)} right={<span className="row-actions"><button className="btn ghost sm" onClick={() => copy(w.repo)}>复制地址</button><button className="btn default sm" disabled={busy} onClick={refresh}>{busy ? '刷新中…' : '刷新'}</button></span>} />
       <div className="page-body">
         {w.error && <div className="pad"><div className="banner b-warn">{w.error}</div></div>}
-        <div className="stats"><Stat label="分支" value={w.branches.length} /><Stat label="最近提交" value={w.commits.length} /><Stat label="员工" value={users.length} /></div>
-        <Section title="在这里干活的员工" right={<span className="sub">在员工的「编辑」里选工作空间</span>}>
-          {users.length === 0 && <Empty>还没有员工用它</Empty>}
-          {users.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={36} />} title={e.name} chevron onClick={() => nav.openChat(e.id)} />)}
+        <Section title={`员工 · ${users.length}`} right={<button className="btn ghost sm" onClick={addEmp}>+ 加一个员工</button>}>
+          {users.length === 0 && <Empty>还没有员工：点右上角「+ 加一个员工」，点了就建好</Empty>}
+          {users.map((e) => (
+            <Row key={e.id} icon={<Avatar id={e.id} size={36} />} title={e.name} sub={`${e.executor} · ${e.model}`} onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
+              right={<button className="btn primary sm" onClick={(ev) => { ev.stopPropagation(); nav.openChat(e.id) }}>发消息</button>} />
+          ))}
+          {users.length > 0 && <p className="hint">同一个项目的员工共用项目目录和 docs/ 里的交接；切分支大家一起切。</p>}
         </Section>
-        <Section title="分支">{w.branches.map((b) => <Row key={b.name} title={<span className="mono">{b.name}</span>} right={<span className="sub">{b.status}</span>} />)}</Section>
-        <Section title="最近提交">{w.commits.map((c) => <Row key={c.sha} title={c.msg} sub={<><span className="mono">{c.sha}</span> · {c.who} · {c.when}</>} />)}</Section>
-        {w.docs.length > 0 && <Section title="文档（docs/）">{w.docs.map((d) => <Row key={d.name} title={<span className="mono">{d.name}</span>} sub={`更新于 ${d.updated}`} />)}</Section>}
+        <Section title="分支" right={<button className="btn ghost sm" onClick={openBranches}>{brOpen ? '收起' : '切换分支'}</button>}>
+          <Row title={<span className="mono" data-no-i18n="">{w.branch || '…'}</span>} sub={`当前分支 · ${users.length ? '员工都在这个分支上干活' : ''}`} />
+          {brOpen && (
+            <div className="pad">
+              {!remote && <span className="sub"><i className="spinner" /> 在读分支…</span>}
+              {remote && <div className="chips">{remote.branches.slice(0, 40).map((b) => <button key={b} className={'chip mono' + (b === w.branch ? ' on' : '')} disabled={!!switching} onClick={() => switchTo(b)} data-no-i18n="">{switching === b ? '切换中…' : b}{b === remote.def ? ' · 默认' : ''}</button>)}</div>}
+              <p className="hint">也可以直接跟员工说「切到 xxx 分支」，它会自己切（所有员工一起换）。</p>
+            </div>
+          )}
+        </Section>
+        {w.docs.length > 0 && (
+          <Section title="文档（docs/）" right={users[0] ? <button className="btn ghost sm" onClick={() => nav.push({ page: 'memory', params: { id: users[0].id } })}>打开</button> : undefined}>
+            {w.docs.slice(0, 8).map((d) => <Row key={d.name} title={<span className="mono" data-no-i18n="">{d.name}</span>} chevron={!!users[0]} onClick={users[0] ? () => nav.push({ page: 'memory', params: { id: users[0].id, file: `docs/${d.name}` } }) : undefined} />)}
+          </Section>
+        )}
+        <Section title={`最近提交 · ${w.commits.length}`} right={w.commits.length > 3 ? <button className="btn ghost sm" onClick={() => setAllCommits(!allCommits)}>{allCommits ? '收起' : '全部'}</button> : undefined}>
+          {(allCommits ? w.commits : w.commits.slice(0, 3)).map((c) => <Row key={c.sha} title={c.msg} sub={<><span className="mono">{c.sha}</span> · {c.who} · {c.when}</>} />)}
+        </Section>
         <WorkspaceAutoSections w={w} nav={nav} />
         <Section title="预算">
-          <Row title="这个项目每月预算（美元）" sub="用满了在这个项目里干活的员工先停下；到 80% 提醒一次。0 = 不单独限" right={<input className="num-input" inputMode="decimal" defaultValue={String(w.budget ?? 0)} onBlur={(e) => call('PUT', `/api/workspaces/${w.id}`, { budget: Number(e.target.value) || 0 }, '已保存')} />} />
+          <Row title="这个项目每月预算（美元）" sub="用满了在这个项目里干活的员工先停下；到 80% 提醒一次" />
+          <div className="pad chips">{[0, 20, 50, 100, 300].map((n) => <button key={n} className={'chip' + ((w.budget ?? 0) === n ? ' on' : '')} onClick={() => call('PUT', `/api/workspaces/${w.id}`, { budget: n }, '已保存')}>{n ? `$${n}` : '不单独限'}</button>)}</div>
         </Section>
         <Section title="位置">
-          <Row title="目录" right={<span className="mono small">{w.dir}</span>} />
-          <Row title="令牌" right={
+          <Row title="目录" sub={<span className="mono small" data-no-i18n="">{w.dir}</span>} right={<button className="btn ghost sm" onClick={() => copy(w.dir)}>复制</button>} />
+          <Row title="仓库账号" right={
             <select value={w.credential ?? ''} onChange={(e) => call('PUT', `/api/workspaces/${w.id}`, { credential: e.target.value }, '已改')}>
-              <option value="">不用</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option value="">不用（公开仓库）</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>} />
         </Section>
-        <div className="pad row-actions"><button className="btn ghost" onClick={() => { if (confirm(`从 Opero 里去掉「${w.name}」？（服务器上的目录留着）`)) call('DELETE', `/api/workspaces/${w.id}`, undefined, '已去掉').then(() => nav.back()) }}>去掉</button></div>
+        <div className="pad row-actions"><button className="btn ghost danger" onClick={remove}>去掉这个项目</button></div>
       </div>
     </div>
   )
@@ -1050,14 +1107,18 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
   const triggers = useStore((s) => s.triggers)
   const ws = useStore((s) => s.workspaces.find((w) => w.id === e?.workspace))
   const servers = useStore((s) => s.servers)
+  const sess = useStore((s) => s.sessions.find((x) => x.employee === params.id))
   const [work, setWork] = useState(false)
+  // 在哪干活：工作目录、记忆放哪（后台算的）
+  const [where, setWhere] = useState<{ host: string; cwd: string; project?: string; mem: string } | null>(null)
+  useEffect(() => { if (params.id) call<{ host: string; cwd: string; project?: string; mem: string }>('GET', `/api/employees/${params.id}/where`).then((r) => r && setWhere(r)) }, [params.id, e?.host, e?.workspace])
   if (!e) return <div className="page"><PageHeader title="员工" {...headNav(nav)} /><Empty>找不到这个员工</Empty></div>
   const u = usage.find((x) => x.employee === e.id)
   const mine = triggers.filter((t) => t.employee === e.id)
   const sv = servers.find((x) => x.id === e.host)
   const hostName = !sv ? 'Opero 这台' : sv.id === 'local' ? srvName(sv) : `${sv.name}${sv.online ? '' : '（离线）'}`
   const remove = async () => {
-    if (!confirm(`删掉「${e.name}」？它的聊天记录也会删掉（工作空间里的代码不受影响）`)) return
+    if (!confirm(`删掉「${e.name}」？它的聊天记录也会删掉（项目里的代码不受影响）`)) return
     if (await call('DELETE', `/api/employees/${e.id}`, undefined, '已删除')) nav.back()
   }
   return (
@@ -1067,7 +1128,10 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
         <div className="hero">
           <Avatar id={e.id} size={64} />
           <div className="hero-main"><b>{e.name}</b><span className="sub">{e.title}</span></div>
-          <button className="btn primary" onClick={() => nav.openChat(e.id)}>发消息</button>
+          <div className="row-actions">
+            {sess && <button className="btn default" onClick={() => togglePin(sess.id)}>{sess.pinned ? '取消置顶' : '置顶'}</button>}
+            <button className="btn primary" onClick={() => nav.openChat(e.id)}>发消息</button>
+          </div>
         </div>
         {u && (
           <div className="stats">
@@ -1084,12 +1148,27 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
           <Row title="上下文" right={`${e.contextUsed ?? 0}%`} />
         </Section>
         <Section title="在哪干活">
-          <Row title="服务器" right={hostName} />
-          <Row title="工作空间" right={ws ? ws.name : '它自己的目录'} chevron={!!ws} onClick={ws ? () => nav.push({ page: 'workspace', params: { id: ws.id } }) : undefined} />
+          <Row title="服务器" sub="它在哪台机器上干活：Opero 这台，或装了 Agent 的服务器（那台要先装好 AI 执行器）" right={
+            <select className="row-select" value={sv ? sv.id : 'local'} aria-label={hostName} onChange={(ev) => {
+              const to = servers.find((x) => x.id === ev.target.value)
+              if (!to || to.id === (sv?.id ?? 'local')) return
+              if (!to.online && to.id !== 'local' && !confirm(`「${to.name}」现在离线，还是换过去？`)) return
+              if (!confirm(`让「${e.name}」换到「${to.id === 'local' ? 'Opero 这台' : to.name}」干活？\n\n会开一个新会话接着做，它的记忆仓库跟着搬过去。`)) return
+              saveEmployee({ ...e, host: to.id })
+            }}>
+              {servers.filter((x) => x.id === 'local' || x.via === 'agent').map((x) => (
+                <option key={x.id} value={x.id}>{x.id === 'local' ? srvName(x) : `${x.name}${x.online ? '' : '（离线）'}`}</option>
+              ))}
+            </select>
+          } />
+          <Row title="项目" right={ws ? ws.name : '没有（在它自己的目录里干活）'} chevron={!!ws} onClick={ws ? () => nav.push({ page: 'workspace', params: { id: ws.id } }) : undefined} />
+          {where && <Row title="工作目录" sub={<span className="mono small" data-no-i18n="">{where.cwd}</span>} right={<button className="btn ghost sm" onClick={() => copy(where.cwd)}>复制</button>} />}
+          {where && <Row title="记忆" sub={where.project ? '项目的 docs/（交接、规矩都在这里，同项目的员工共用）' : <span className="mono small" data-no-i18n="">{where.mem}</span>} chevron onClick={() => nav.push({ page: 'memory', params: { id: e.id } })} />}
         </Section>
         {e.prompt && <Section title="职责"><p className="prose">{e.prompt}</p></Section>}
         {(e.gender || e.persona) && <Section title="人设"><Row title="性别" right={e.gender || '—'} /><Row title="性格 / 说话风格" right={e.persona || '—'} /></Section>}
         <EmployeeWorkSections e={e} nav={nav} />
+        <EmployeeCredsSection e={e} nav={nav} />
         <Section title={`触发器 · ${mine.length}`} right={<button className="btn ghost sm" onClick={() => nav.push({ page: 'triggerEdit', params: { employee: e.id } })}>添加</button>}>
           {mine.length === 0 && <Empty>没有触发器：你叫它才干活</Empty>}
           {mine.map((t) => <Row key={t.id} title={t.name} sub={`${t.kind} · ${t.rule}`} chevron onClick={() => nav.push({ page: 'triggerEdit', params: { id: t.id } })} right={<Tag tone={t.enabled ? 'ok' : 'mute'}>{t.enabled ? '开' : '关'}</Tag>} />)}
@@ -1155,13 +1234,20 @@ function usePk() {
   useEffect(() => { load() }, [])
   return [info, load] as const
 }
+/** 这台设备叫什么（通行密钥的名字，不用你起）：「iPhone · Safari」「Mac · Chrome」 */
+function deviceName() {
+  const u = navigator.userAgent
+  const dev = /iPhone/.test(u) ? 'iPhone' : /iPad/.test(u) ? 'iPad' : /Android/.test(u) ? 'Android 手机' : /Mac OS X/.test(u) ? 'Mac' : /Windows/.test(u) ? 'Windows 电脑' : /Linux/.test(u) ? 'Linux 电脑' : '这台设备'
+  const br = /Edg\//.test(u) ? 'Edge' : /OPR\//.test(u) ? 'Opera' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : ''
+  return br ? `${dev} · ${br}` : dev
+}
 function PasskeySection() {
   const [info, load] = usePk()
   const add = () => requireVerify('加一个通行密钥', async () => {
     try {
       const o = await api('POST', '/api/auth/passkey/register-options', {})
       const cred = await createPasskey(o)
-      const name = prompt('给它起个名字（比如：我的 iPhone、MacBook 指纹）', '') ?? ''
+      const name = deviceName()
       await api('POST', '/api/auth/passkey/register', { credential: cred, name })
       toast('已加上：以后能用它登录、验证本人')
       load()
@@ -1184,14 +1270,19 @@ function MfaSection() {
   const [code, setCode] = useState('')
   const [codes, setCodes] = useState<string[] | null>(null)
   const start = () => requireVerify('开两步验证', () => call<{ secret: string; uri: string }>('POST', '/api/auth/mfa/setup').then((r) => r && setSetup(r)))
-  const enable = async () => { const r = await call<{ recovery: string[] }>('POST', '/api/auth/mfa/enable', { code: code.trim() }); if (r) { setCodes(r.recovery); setSetup(null); setCode(''); load() } }
-  const disable = () => { const c = prompt('输一个动态码或恢复码，才能关两步验证') ?? ''; if (c.trim()) requireVerify('关两步验证', () => call('POST', '/api/auth/mfa/disable', { code: c.trim() }, '已关').then(load)) }
-  const regen = () => { const c = prompt('输一个动态码，换一批恢复码（旧的作废）') ?? ''; if (c.trim()) requireVerify('换恢复码', () => call<{ recovery: string[] }>('POST', '/api/auth/mfa/recovery', { code: c.trim() }).then((r) => { if (r) { setCodes(r.recovery); load() } })) }
+  const enable = async (v = code) => { const r = await call<{ recovery: string[] }>('POST', '/api/auth/mfa/enable', { code: v.trim() }); if (r) { setCodes(r.recovery); setSetup(null); setCode(''); load() } }
+  // 关掉 / 换恢复码：在这里输动态码（输满 6 位自动提交），不弹框
+  const [ask, setAsk] = useState<'disable' | 'regen' | null>(null)
+  const [askCode, setAskCode] = useState('')
+  const sendAsk = (v: string) => { const c = v.trim(); if (!c || !ask) return; setAsk(null); setAskCode(''); if (ask === 'disable') disable(c); else regen(c) }
+  const disable = (c: string) => requireVerify('关两步验证', () => call('POST', '/api/auth/mfa/disable', { code: c }, '已关').then(load))
+  const regen = (c: string) => requireVerify('换恢复码', () => call<{ recovery: string[] }>('POST', '/api/auth/mfa/recovery', { code: c }).then((r) => { if (r) { setCodes(r.recovery); load() } }))
   return (
     <Section title="两步验证" right={<span className="sub">密码登录后还要输验证器 App 里的动态码</span>}>
       {info?.mfa.enabled
         ? <>
-            <Row title="已开" sub={`恢复码还剩 ${info.mfa.recoveryLeft} 个`} right={<span className="row-actions"><button className="btn ghost sm" onClick={regen}>换恢复码</button><button className="btn ghost sm" onClick={disable}>关掉</button></span>} />
+            <Row title="已开" sub={`恢复码还剩 ${info.mfa.recoveryLeft} 个`} right={<span className="row-actions"><button className="btn ghost sm" onClick={() => setAsk('regen')}>换恢复码</button><button className="btn ghost sm" onClick={() => setAsk('disable')}>关掉</button></span>} />
+            {ask && <div className="pad"><Field label={ask === 'disable' ? '输一个动态码或恢复码，关掉两步验证' : '输一个动态码，换一批恢复码（旧的作废）'}><input autoFocus value={askCode} onChange={(e) => { const v = e.target.value; setAskCode(v); if (/^\d{6}$/.test(v.trim())) sendAsk(v) }} onKeyDown={(e) => { if (e.key === 'Enter') sendAsk(askCode); if (e.key === 'Escape') setAsk(null) }} inputMode="numeric" autoComplete="one-time-code" /></Field></div>}
           </>
         : !setup && <Row title="开两步验证" sub="用 Google Authenticator、1Password、微软 Authenticator 这类 App" chevron onClick={start} />}
       {setup && (
@@ -1199,8 +1290,7 @@ function MfaSection() {
           <p className="field-hint">在验证器 App 里「手动输入密钥」，或者在手机上点下面的链接：</p>
           <div className="cmd-box mono" data-no-i18n="">{setup.secret}<button className="btn ghost sm" onClick={() => copy(setup.secret)}>复制</button></div>
           <a className="btn ghost sm" href={setup.uri}>在手机上打开验证器</a>
-          <Field label="输入 App 里现在显示的 6 位码"><input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
-          <button className="btn primary" disabled={code.trim().length < 6} onClick={enable}>开启</button>
+          <Field label="输入 App 里现在显示的 6 位码（输满自动开启）"><input value={code} onChange={(e) => { const v = e.target.value; setCode(v); if (/^\d{6}$/.test(v.trim())) void enable(v) }} inputMode="numeric" autoComplete="one-time-code" /></Field>
         </div>
       )}
       {codes && (

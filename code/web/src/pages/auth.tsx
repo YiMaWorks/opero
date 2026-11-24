@@ -102,7 +102,7 @@ export function Onboarding() {
           </StepCard>
         ))}
 
-        {step >= 3 && (step > 3 ? <DoneCard title="④ 带入你的权限" text={picked.length ? `带进来了：${picked.join('、')}（以后在「权限和凭证」里加减）` : '先跳过，以后在「权限和凭证」里加'} /> : (
+        {step >= 3 && (step > 3 ? <DoneCard title="④ 带入你的权限" text={picked.length ? `带进来了：${picked.join('、')}（以后在「凭证」里加减）` : '先跳过，以后在「凭证」里加'} /> : (
           <StepCard title="④ 带入你在公司的权限" desc="Opero 不另设权限：你有哪些账号就带进来，员工就能用；没有的这里也没有。值都加密存，AI 只拿编号。">
             <div className="chips">
               {PERMS.map((p) => (
@@ -117,7 +117,7 @@ export function Onboarding() {
           </StepCard>
         ))}
 
-        {step >= 4 && (step > 4 ? <DoneCard title="⑤ 拉 Opero 代码" text="已拉到 dev-1:/srv/opero/work/opero，成了工作空间「opero」" /> : (
+        {step >= 4 && (step > 4 ? <DoneCard title="⑤ 拉 Opero 代码" text="已拉到 dev-1:/srv/opero/work/opero，成了项目「opero」" /> : (
           <StepCard title="⑤ 把后台自己的代码拉到服务器" desc="填你 fork 的 Opero 仓库；以后「后台开发」员工就在这里给 Opero 加功能。">
             <Field label="仓库地址"><input value={repo} onChange={(e) => setRepo(e.target.value)} /></Field>
             <div className="row-actions"><button className="btn primary" disabled={busy} onClick={() => next(1100)}>{busy ? '拉代码中…' : '拉取'}</button></div>

@@ -12,9 +12,10 @@ import { MeEditPage } from './meEdit'
 import { DiffPage, PlaceholderPage, QueryResultPage } from './panels'
 import { LIVE } from '../mode'
 import {
-  ComingSoonPage, DataSourceAddPage, LiveServersPage, ExecutorsPage, LiveAppsPage, LiveCredentialEditPage, LiveDataPage, LiveEmployeePage, LiveKnowledgePage,
+  ComingSoonPage, LiveServersPage, ExecutorsPage, LiveAppsPage, LiveDataPage, LiveEmployeePage, LiveKnowledgePage,
   LiveQueryPage, LiveSecurityPage, LiveServerAddPage, LiveServerPage, LiveTriggerEditPage, LiveTriggersPage, LiveWorkspaceAddPage, LiveWorkspacePage, LiveWorkspacesPage,
 } from './live'
+import { LiveCredentialEditPage, LiveCredentialsPage } from './creds'
 import { LiveHistoryPage, LiveIssuePage, LiveIssuesPage, LiveMemoryPage } from './live2'
 import { DomainPage, DomainsPage, LiveReleasePage, LiveReleasesPage } from './live3'
 import { LiveChannelsPage, LiveInboxPage } from './live4'
@@ -32,9 +33,10 @@ function livePage(route: Route, p: { params: Record<string, any>; nav: Nav }) {
     case 'servers': return <LiveServersPage {...p} />
     case 'server': return <LiveServerPage {...p} />
     case 'serverAdd': return <LiveServerAddPage {...p} />
+    case 'credentials': return <LiveCredentialsPage {...p} />
     case 'credentialEdit': return <LiveCredentialEditPage {...p} />
     case 'data': return <LiveDataPage {...p} />
-    case 'dataSourceAdd': return <DataSourceAddPage {...p} />
+    case 'dataSourceAdd': return <LiveCredentialEditPage params={{ group: '数据库' }} nav={p.nav} />
     case 'query': return <LiveQueryPage {...p} />
     case 'triggers': return <LiveTriggersPage {...p} />
     case 'triggerEdit': return <LiveTriggerEditPage {...p} />

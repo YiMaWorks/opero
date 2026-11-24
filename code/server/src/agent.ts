@@ -16,7 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { sysInfo } from './sysinfo.ts'
-import { watchMemory } from './limits.ts'
+import { watchResources } from './limits.ts'
 
 const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')).version } catch { return '0.0.0' } })()
 const DIR = process.env.OPERO_AGENT_DIR || '/var/lib/opero-agent'
@@ -305,7 +305,12 @@ function doSpawn(t: any) {
   procs.set(id, p)
   // 内存上限（Opero 那边这台的规矩）：超了在 stderr 里说一句，Opero 转到聊天里
   const pct = Number(t.memPct) || 0
-  const unwatch = watchMemory(p.pid, pct, {
+  const cpuPct = Number(t.cpuPct) || 0
+  const unwatch = watchResources(p.pid, { memPct: pct, cpuPct }, {
+    warnCpu: (() => { let at = 0; return (u: number) => { if (Date.now() - at > 5 * 60_000) { at = Date.now(); emitOut(id, 'err', `[opero] ⚠ 员工的进程用了这台 ${u}% CPU（上限 ${cpuPct}%），一直这样会先暂停最占 CPU 的进程\n`) } } })(),
+    paused: (k, u) => emitOut(id, 'err', `[opero] ⏸ CPU 一直超过上限（${u}% > ${cpuPct}%），先暂停了：${k.cmd || k.pid}。机器降下来会自动继续\n`),
+    resumed: (k) => emitOut(id, 'err', `[opero] ▶ 机器降下来了，继续：${k.cmd || k.pid}\n`),
+    stoppedCpu: (k) => emitOut(id, 'err', `[opero] ⚠ 暂停了 10 分钟机器还是忙，停掉了：${k.cmd || k.pid}。要编译就交给流水线\n`),
     warn: (() => { let at = 0; return (u: number) => { if (Date.now() - at > 5 * 60_000) { at = Date.now(); emitOut(id, 'err', `[opero] ⚠ 员工的进程用了这台 ${u}% 内存（上限 ${pct}%），一直这样会停掉最大的那个进程\n`) } } })(),
     killed: (k, u) => emitOut(id, 'err', `[opero] ⚠ 内存超过上限（${u}% > ${pct}%），停掉了最大的进程：${k.cmd || k.pid}（${k.mb} MB）\n`),
   })

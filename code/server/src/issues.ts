@@ -52,7 +52,7 @@ function ask(emp: Employee, i: Issue) {
 
 const place = (i: Issue) => [i.server && get<Server>('servers', i.server)?.name, i.workspace && get<Workspace>('workspaces', i.workspace)?.name].filter(Boolean).join(' · ') || '—'
 
-/** 谁来修：指定的 > 用这个工作空间的员工 > 报问题的员工 */
+/** 谁来修：指定的 > 用这个项目的员工 > 报问题的员工 */
 function fixerOf(i: Issue, want?: string): Employee | undefined {
   const emps = all<Employee>('employees')
   if (want) return emps.find((e) => e.id === want || e.name === want)

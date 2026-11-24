@@ -1,6 +1,6 @@
-// 工作空间 = 一个 git 仓库拉到员工干活的目录。拉取 / 同步 / 推送由 Opero 用保险箱里的令牌做（经 GIT_ASKPASS 传，不写进 URL、不进 .git/config），
+// 项目 = 一个 git 仓库拉到员工干活的目录。拉取 / 同步 / 推送由 Opero 用保险箱里的令牌做（经 GIT_ASKPASS 传，不写进 URL、不进 .git/config），
 // AI 在里面改代码、commit，要同步远端就调 MCP 工具 git_sync，令牌永远不给它。
-// 工作空间可以在 Opero 这台（local），也可以在装了 Agent 的服务器上（经 Agent 以 root 跑 git，跑完把目录还给 AI 用户）。
+// 项目可以在 Opero 这台（local），也可以在装了 Agent 的服务器上（经 Agent 以 root 跑 git，跑完把目录还给 AI 用户）。
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -16,13 +16,14 @@ fs.writeFileSync(askpass, '#!/bin/sh\ncase "$1" in\n  Username*) printf "%s" "$O
 
 export const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
-export async function git(args: string[], opts: { cwd?: string; cred?: string; timeoutMs?: number; host?: string } = {}): Promise<{ code: number; out: string }> {
+/** user：临时换一个用户名（有的平台令牌配什么用户名都行，配错了退回 x-access-token 再试） */
+export async function git(args: string[], opts: { cwd?: string; cred?: string; timeoutMs?: number; host?: string; user?: string } = {}): Promise<{ code: number; out: string }> {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' }
   let secret: string | undefined
   if (opts.cred) {
     const c = get<Credential>('credentials', opts.cred)
     secret = getSecret(opts.cred)
-    if (secret) Object.assign(env, { OPERO_GIT_USER: c?.user || 'x-access-token', OPERO_GIT_PASS: secret })
+    if (secret) Object.assign(env, { OPERO_GIT_USER: opts.user || c?.user || 'x-access-token', OPERO_GIT_PASS: secret })
   }
   const all = ['-c', 'safe.directory=*', '-c', 'credential.helper=', ...args]
   if (!hosts.isLocal(opts.host)) {
@@ -42,7 +43,7 @@ export async function git(args: string[], opts: { cwd?: string; cred?: string; t
   })
 }
 
-/** 远程的工作空间：root 跑完 git 后把目录还给 AI 用户（不然它改不了） */
+/** 远程的项目：root 跑完 git 后把目录还给 AI 用户（不然它改不了） */
 async function handBack(w: Workspace) { await handBackDir(w.server, w.dir) }
 /** 远程目录：root 跑完 git 后交还给 AI 用户 */
 export async function handBackDir(host: string | undefined, dir: string) {
@@ -118,4 +119,43 @@ export async function syncWorkspace(w: Workspace, o: { rebase?: boolean; push?: 
   lines.push('远端分支：' + rb.out.split('\n').map((x) => x.trim()).filter((x) => x && !x.includes('->')).join('、'))
   await handBack(w)
   return lines.join('\n')
+}
+
+/** 仓库的分支和默认分支（git ls-remote，各家平台都一样）：接入仓库时自动选好默认分支 */
+export async function remoteBranches(url: string, cred?: string): Promise<{ def?: string; branches: string[] }> {
+  if (!/^https:\/\/[^\s'"]+$/.test(url)) throw new Error('仓库地址要是 https://…')
+  let r = await git(['ls-remote', '--symref', url, 'HEAD', 'refs/heads/*'], { cred, timeoutMs: 30_000 })
+  if (r.code !== 0 && cred && /auth|403|401|denied/i.test(r.out)) r = await git(['ls-remote', '--symref', url, 'HEAD', 'refs/heads/*'], { cred, timeoutMs: 30_000, user: 'x-access-token' })
+  if (r.code !== 0) throw new Error(r.out.split('\n').pop() || '读不到分支')
+  const def = r.out.match(/^ref: refs\/heads\/(\S+)\s+HEAD/m)?.[1]
+  const branches = [...r.out.matchAll(/^[0-9a-f]{40}\s+refs\/heads\/(\S+)$/gm)].map((m) => m[1])
+  return { def, branches: def ? [def, ...branches.filter((b) => b !== def)] : branches }
+}
+
+/** 切换项目分支：所有员工共用这个目录，切了大家一起换。有没提交的改动先存进 stash（能找回），远端有的分支自动建本地分支跟上 */
+export async function switchBranch(w: Workspace, branch: string): Promise<string> {
+  if (!/^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,120}$/.test(branch)) throw new Error('分支名不对')
+  const o = on(w)
+  await git(['fetch', '--prune', 'origin'], { ...o, cred: w.credential, timeoutMs: 120_000 })
+  const notes: string[] = []
+  const st = await git(['status', '--porcelain'], o)
+  if (st.out.trim()) {
+    const r = await git(['-c', 'user.name=Opero', '-c', 'user.email=opero@opero.local', 'stash', 'push', '-u', '-m', `opero：切到 ${branch} 前没提交的改动`], o)
+    if (r.code !== 0) throw new Error(`没提交的改动存不下来：${r.out.slice(-200)}`)
+    notes.push('没提交的改动先存进了 stash（git stash list 能找回）')
+  }
+  const local = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], o)
+  const r = local.code === 0
+    ? await git(['switch', branch], o)
+    : await git(['switch', '-c', branch, '--track', `origin/${branch}`], o)
+  if (r.code !== 0) {
+    // 远端也没有：从当前分支新建
+    const n = await git(['switch', '-c', branch], o)
+    if (n.code !== 0) throw new Error(`切不过去：${r.out.slice(-200)}`)
+    notes.push('远端没有这个分支：从原来的分支新建了一个（推送时会建到远端）')
+  } else if (local.code === 0) {
+    const pull = await git(['merge', '--ff-only', `origin/${branch}`], o)
+    if (pull.code === 0 && !/Already up to date|已经是最新/.test(pull.out)) notes.push('已拉到远端最新')
+  }
+  return [`已切到 ${branch}`, ...notes].join('；')
 }

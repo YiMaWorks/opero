@@ -11,7 +11,7 @@ export function WorkSheet({ emp, sid, onClose }: { emp: Employee; sid?: string; 
   return (
     <Sheet title={`${emp.name} 的 work`} onClose={onClose}>
       <div className="work-sheet">
-        <p className="sub">{emp.executor} · 跑在 {emp.host} · 工作空间 {emp.workspace}</p>
+        <p className="sub">{emp.executor} · 跑在 {emp.host} · 项目 {emp.workspace}</p>
 
         <div className="ws-group">
           <span className="ws-label">模型</span>
@@ -45,7 +45,7 @@ export function WorkSheet({ emp, sid, onClose }: { emp: Employee; sid?: string; 
         {sid && (
           <div className="ws-group">
             <Meter label="上下文" value={emp.contextUsed ?? 0} />
-            <span className="field-hint">满了就换一个 work：旧的写好交接提交到 {emp.repo}，新的读完接着干，什么都不丢。</span>
+            <span className="field-hint">快满时会提醒你，换不换由你定：可以压缩、开新话题，或者换一个 work（旧的写好交接，新的读完接着干）。不换也能继续用，执行器自己会压缩。</span>
             <div className="row-actions">
               <button className="btn default sm" onClick={() => { compactContext(sid, emp.id); onClose() }}>压缩上下文</button>
               <button className="btn default sm" onClick={() => { newTopic(sid, emp.id); onClose() }}>新话题</button>

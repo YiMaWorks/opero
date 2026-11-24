@@ -1,5 +1,6 @@
 // 接真的后台（code/server）：调接口、开机拉一次全部数据、开着 SSE 收变化。只在 LIVE（装好的一套）里用。
 import type { Card, CardAction, Message } from './types'
+import { setLiveModels } from './work'
 import { getState, requireVerify, set, setSettings, toast, type State } from './store'
 import { loadPref, normPref, resolve, setPref } from './i18n'
 
@@ -59,6 +60,7 @@ export async function boot() {
     }))
     syncLang(b.settings?.lang)
     connect()
+    api<{ claude: string[]; codex: string[] }>('GET', '/api/ai/models').then(setLiveModels).catch(() => {})
   } catch (e) {
     set((s) => ({ auth: { ...s.auth, booting: false, error: (e as Error).message } }))
   }
@@ -152,7 +154,9 @@ export async function upload(sid: string, file: Blob, name: string, meta: { w?: 
 const timers: Record<string, number> = {}
 const pendingBody: Record<string, Record<string, unknown>> = {}
 export function saveLater(path: string, patch: Record<string, unknown>) {
-  pendingBody[path] = { ...(pendingBody[path] ?? {}), ...patch }
+  // 清掉的字段（undefined）要发 null，不然 JSON 里没有这个键，后台以为没改（比如「不用图片」头像）
+  const p = Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v === undefined ? null : v]))
+  pendingBody[path] = { ...(pendingBody[path] ?? {}), ...p }
   clearTimeout(timers[path])
   timers[path] = window.setTimeout(() => { const b = pendingBody[path]; delete pendingBody[path]; call('PUT', path, b) }, 600)
 }

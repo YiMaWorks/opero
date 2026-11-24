@@ -18,7 +18,7 @@ export const cfg = {
   host: env.OPERO_HOST || '127.0.0.1',
   /** 数据目录（数据库、保险箱密钥、上传的文件）：只给 Opero 自己的系统用户读 */
   data,
-  /** 员工干活的目录（工作空间、员工自己的目录）：AI 用户能读写 */
+  /** 员工干活的目录（项目、员工自己的目录）：AI 用户能读写 */
   work: path.resolve(env.OPERO_WORK || path.join(data, 'work')),
   /** 网页（code/web 打包出来的 dist） */
   web: path.resolve(env.OPERO_WEB || path.join(ROOT, 'code/web/dist')),
