@@ -62,22 +62,61 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
   const [adv, setAdv] = useState(false)
   const [busy, setBusy] = useState('')
   const [test, setTest] = useState<{ ok: boolean; ms: number; out: string } | null>(null)
+  const autoTest = useRef<() => void>(() => {})
   const [job, setJob] = useJob(async (j) => {
     await reload()
-    toast(j.state === 'ok' ? (j.type === 'install' ? '装好了' : '登录成功') : (j.message ?? '没成功'))
+    toast(j.state === 'ok' ? (j.type === 'install' ? '装好了' : '登录成功，正在试一下') : (j.message ?? '没成功'))
+    if (j.state === 'ok' && j.type === 'login') autoTest.current() // 登录好了直接帮他把第 4 步跑了
   })
   const mine = job && job.executor === (codex ? 'codex' : 'claude') && (job.host ?? 'local') === host ? job : null
   const live = mine && (mine.state === 'running' || mine.state === 'waitCode' || mine.state === 'verifying')
 
   const install = async () => { setTest(null); const r = await call<{ job: Job }>('POST', '/api/ai/install', { executor: exec, host }); if (r) setJob(r.job) }
-  const login = async () => { setCode(''); const r = await call<{ job: Job }>('POST', '/api/ai/login', { host }); if (r) setJob(r.job) }
-  const sendCode = async () => { if (!code.trim()) { toast('先把授权码贴进来'); return } const r = await call<{ job: Job }>('POST', '/api/ai/login/code', { code: code.trim() }); if (r?.job) setJob(r.job) }
+  // 点登录时先同步开一个空白页（异步拿到网址后再开会被浏览器当弹窗拦掉），网址到了再跳过去
+  const pop = useRef<Window | null>(null)
+  const login = async () => {
+    setCode('')
+    const w = window.open('', '_blank')
+    if (w) { try { w.document.title = 'Claude'; w.document.body.innerHTML = '<p style="font:16px sans-serif;padding:24px">正在打开 Claude 登录页…</p>' } catch { /* 跨域 / 不让写 */ } }
+    pop.current = w
+    const r = await call<{ job: Job }>('POST', '/api/ai/login', { host })
+    if (r) setJob(r.job)
+    else { w?.close(); pop.current = null }
+  }
+  useEffect(() => {
+    const w = pop.current
+    if (!mine?.url || !w) return
+    pop.current = null
+    if (!w.closed) { try { w.opener = null } catch { /* 无所谓 */ } w.location.href = mine.url }
+  }, [mine?.url])
+  useEffect(() => {
+    if (mine?.type === 'login' && (mine.state === 'ok' || mine.state === 'fail')) { pop.current?.close(); pop.current = null }
+  }, [mine?.state])
+  // 一个框：贴的是 sk-ant-oat 令牌就直接验证保存；在等授权码时贴的就当授权码
+  const isTok = (v: string) => /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}$/.test(v)
+  const submit = async (raw: string) => {
+    const v = raw.trim()
+    if (!v) { toast('先把码贴进来'); return }
+    const waiting = mine?.type === 'login' && mine.state === 'waitCode'
+    if (!waiting && !isTok(v)) { toast('这不是令牌（令牌是 sk-ant-oat 开头的）。没有令牌就点「登录 Claude 账号」'); return }
+    const r = waiting
+      ? await call<{ job: Job }>('POST', '/api/ai/login/code', { code: v })
+      : await call<{ job: Job }>('POST', '/api/ai/login/token', { token: v, host })
+    if (r?.job) { setCode(''); setJob(r.job) }
+  }
+  const onPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const v = e.clipboardData.getData('text').trim()
+    if (!v) return
+    e.preventDefault()
+    setCode(v)
+    if (isTok(v) || (mine?.state === 'waitCode' && v.length >= 20)) void submit(v)
+  }
   const saveKey = async () => {
     if (!key.trim()) { toast('先把 Key 贴进来'); return }
     setBusy('save')
     const r = await call('PUT', '/api/ai', { host, ...(codex ? { codexKey: key.trim(), ...(adv ? { codexBaseUrl: base } : {}) } : { claudeKey: key.trim(), ...(adv ? { claudeBaseUrl: base } : {}) }) }, '已加密保存')
     setBusy('')
-    if (r) { setKey(''); await reload() }
+    if (r) { setKey(''); await reload(); void runTest() } // 存好了直接试一下
   }
   const runTest = async () => {
     setBusy('test')
@@ -86,6 +125,7 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
     setBusy('')
     if (r) { setTest(r); if (r.ok) onReady?.(exec) }
   }
+  autoTest.current = runTest
 
   return (
     <div className="form exec-setup">
@@ -114,32 +154,38 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
         {!codex && how === 'sub' && (
           !mine || mine.type !== 'login' || mine.state === 'ok' || mine.state === 'fail' ? (
             <>
-              <ol className="exec-howto">
-                <li>点下面的「开始登录」</li>
-                <li>点「打开登录页」，在浏览器里登录你的 Claude 账号，点 <b>Authorize（授权）</b></li>
-                <li>页面上会出现一串<b>授权码</b>，点它旁边的复制</li>
-                <li>回到这里，粘贴，点「提交」，等几秒就好</li>
-              </ol>
-              <button className="btn primary" disabled={!installed || !!live} onClick={login}>开始登录</button>
-              {!installed && <p className="field-hint">先完成第 1 步</p>}
               {mine?.type === 'login' && mine.state === 'fail' && <div className="banner b-warn">{mine.message}</div>}
+              <button className="btn primary block" disabled={!installed || !!live} onClick={login}>{loggedIn ? '换账号 / 重新登录' : '登录 Claude 账号'}</button>
+              <p className="field-hint">会自动打开 Claude 的登录页：登录 → 点 Authorize → 复制页面上的码 → 回来贴进框里，就好了。</p>
+              <Field label="已经有令牌（sk-ant-oat 开头）？贴这里" hint="贴进来自动保存，不用再登录。没有令牌就点上面的按钮。">
+                <input type="password" value={code} onChange={(e) => setCode(e.target.value)} onPaste={onPaste} placeholder="sk-ant-oat…" autoComplete="new-password" disabled={!installed || !!live} onKeyDown={(e) => e.key === 'Enter' && submit(code)} />
+              </Field>
+              {!installed && <p className="field-hint">先完成第 1 步</p>}
             </>
           ) : mine.state === 'running' && !mine.url ? (
-            <div className="banner b-info"><i className="spinner" /> 正在生成登录网址…</div>
+            <div className="banner b-info"><i className="spinner" /> 正在打开 Claude 登录页…</div>
           ) : mine.state === 'waitCode' ? (
             <>
-              <a className="btn primary block" href={mine.url} target="_blank" rel="noreferrer">打开登录页 ↗</a>
-              <p className="field-hint">在打开的页面里登录 Claude 账号 → 点 Authorize → 复制页面上的授权码</p>
-              <Field label="授权码"><input value={code} onChange={(e) => setCode(e.target.value)} placeholder="粘贴到这里" autoComplete="off" onKeyDown={(e) => e.key === 'Enter' && sendCode()} /></Field>
+              <ol className="exec-howto">
+                <li>在刚打开的 Claude 页面里登录你的账号，点 Authorize（授权）</li>
+                <li>页面上会出现一长串码，点旁边的复制</li>
+                <li>回到这里，贴进下面的框（贴进来会自动提交）</li>
+              </ol>
+              <div className="row-actions">
+                <a className="btn ghost" href={mine.url} target="_blank" rel="noreferrer">登录页没打开？点这里 ↗</a>
+                <button className="btn ghost" onClick={() => { navigator.clipboard?.writeText(mine.url ?? ''); toast('已复制登录链接，到登录了 Claude 的浏览器里打开') }}>复制链接</button>
+              </div>
+              {mine.message && <div className="banner b-warn">{mine.message}</div>}
+              <Field label="授权码"><input autoFocus value={code} onChange={(e) => setCode(e.target.value)} onPaste={onPaste} placeholder="在这里粘贴" autoComplete="off" onKeyDown={(e) => e.key === 'Enter' && submit(code)} /></Field>
               <div className="row-actions">
                 <button className="btn ghost" onClick={() => call<{ job: Job }>('POST', '/api/ai/job/cancel').then((r) => r && setJob(r.job))}>取消</button>
-                <button className="btn primary" onClick={sendCode}>提交</button>
+                <button className="btn primary" onClick={() => submit(code)}>提交</button>
               </div>
             </>
           ) : (
             <>
-              <div className="banner b-info"><i className="spinner" /> {mine.state === 'verifying' ? '正在验证能不能用…' : '正在向 Anthropic 确认（一般几秒钟）…'}</div>
-              {mine.screen && <pre className="console small">{mine.screen}</pre>}
+              <div className="banner b-info"><i className="spinner" /> {mine.state === 'verifying' ? '已拿到令牌，正在用它试跑一次 Claude Code（最多 2 分钟）…' : '授权码已提交，正在向 Anthropic 确认（一般几秒钟）…'}</div>
+              {mine.screen && mine.state !== 'verifying' && <pre className="console small">{mine.screen}</pre>}
               <button className="btn ghost sm" onClick={() => call<{ job: Job }>('POST', '/api/ai/job/cancel').then((r) => r && setJob(r.job))}>等太久了，重新来</button>
             </>
           )

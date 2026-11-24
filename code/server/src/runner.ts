@@ -159,7 +159,7 @@ async function shimEnv(host: string, p: Policy): Promise<Record<string, string>>
 const helpCache = new Map<string, boolean>()
 async function supportsEffort(host: string): Promise<boolean> {
   if (helpCache.has(host)) return helpCache.get(host)!
-  const r = await hosts.runAiOn(host, cfg.claudeBin, ['--help'], { timeoutMs: 20_000 })
+  const r = await hosts.runAiOn(host, hosts.claudeBin(host), ['--help'], { timeoutMs: 20_000 })
   const ok = r.out.includes('--effort')
   if (r.code === 0) helpCache.set(host, ok) // 没跑成（比如 Agent 刚好断了）不记，下次再问
   return ok
@@ -369,7 +369,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       if (MODEL_IDS[emp.model]) args.push('--model', MODEL_IDS[emp.model])
       if (emp.effort && (await supportsEffort(host))) args.push('--effort', emp.effort)
       if (emp.resumeId) args.push('--resume', emp.resumeId)
-      proc = hosts.spawnAiOn(host, cfg.claudeBin, args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
+      proc = hosts.spawnAiOn(host, hosts.claudeBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
     } else {
       const q = (v: string) => JSON.stringify(v)
       const args = ['exec',
@@ -391,7 +391,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       if (emp.model && emp.model !== '执行器默认') args.push('-m', emp.model)
       if (emp.resumeId) args.push('resume', emp.resumeId)
       args.push('-')
-      proc = hosts.spawnAiOn(host, cfg.codexBin, args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
+      proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
     }
     const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
       said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0 }

@@ -8,6 +8,10 @@ import * as agents from './agents.ts'
 export const LOCAL = 'local'
 export const isLocal = (host?: string) => !host || host === LOCAL
 
+/** 执行器命令：OPERO_CLAUDE_BIN / OPERO_CODEX_BIN 只是 Opero 这台的路径（比如自己打包的 claude）；别的服务器上一律用 AI 用户 PATH 里的（一键安装装在 ~/.local/bin） */
+export const claudeBin = (host?: string) => (isLocal(host) ? cfg.claudeBin : 'claude')
+export const codexBin = (host?: string) => (isLocal(host) ? cfg.codexBin : 'codex')
+
 /** 本机：以 AI 用户跑一个命令（登录 shell，PATH 里有它自己装的 claude / codex） */
 export function spawnAi(bin: string, args: string[], env: Record<string, string>, cwd: string): ChildProcess {
   // 一键安装的 Claude Code / Codex 在 AI 用户的 ~/.local/bin；npm 用 Opero 自己的 Node。登录 shell 的 PATH 不一定带这两个，补上

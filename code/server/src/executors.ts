@@ -82,7 +82,7 @@ export function startInstall(executor: 'claude' | 'codex', host = hosts.LOCAL): 
   const steps = executor === 'claude'
     ? [['用官方安装脚本装 Claude Code', CLAUDE_OFFICIAL], ['官方脚本没成功，改用 npm 装', NPM('@anthropic-ai/claude-code', 'claude')], ['再试国内镜像', NPM('@anthropic-ai/claude-code', 'claude', MIRROR)]]
     : [['用 npm 装 Codex', NPM('@openai/codex', 'codex')], ['再试国内镜像', NPM('@openai/codex', 'codex', MIRROR)]]
-  const bin = executor === 'claude' ? cfg.claudeBin : cfg.codexBin
+  const bin = executor === 'claude' ? hosts.claudeBin(host) : hosts.codexBin(host)
   ;(async () => {
     for (const [title, script] of steps) {
       log(`\n▶ ${title}\n`)
@@ -107,6 +107,8 @@ const URL_RE = /https:\/\/(claude\.ai|claude\.com|console\.anthropic\.com)\/[^\s
 const TOKEN_RE = /sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}/
 // 授权码贴回去以后屏幕上出现这些就算失败（措辞以后可能变：宽一点）
 const ERR_RE = /(OAuth error|Login failed|Authentication failed|Invalid (authorization )?code|invalid_grant|expired|Error:|failed)/i
+// 界面没收下这串码、还在等重新输入（比如贴的不是完整授权码）：回到「贴授权码」，不算失败
+const RETRY_RE = /(doesn't look like|does not look like|full code|Copy all of it)/i
 
 export function startLogin(host = hosts.LOCAL): Job {
   if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
@@ -117,7 +119,7 @@ export function startLogin(host = hosts.LOCAL): Job {
   let token = ''
   let tokenShort = '' // 没接下一行的那个（接错了时退回它）
   let fail = ''
-  const p = hosts.spawnAiOn(host, 'script', ['-qfec', `stty cols 500 rows 60 2>/dev/null; exec ${cfg.claudeBin} setup-token`, '/dev/null'],
+  const p = hosts.spawnAiOn(host, 'script', ['-qfec', `stty cols 500 rows 60 2>/dev/null; exec ${hosts.claudeBin(host)} setup-token`, '/dev/null'],
     { TERM: 'xterm-256color', NO_COLOR: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', ...runner.egressEnv('claude', host) }, hosts.workRoot(host))
   proc = p
   p.stdin!.on('error', () => {})
@@ -132,7 +134,17 @@ export function startLogin(host = hosts.LOCAL): Job {
       const t = c.endsWith(t0) && lines[i + 1] ? t0 + (clean(lines[i + 1]).match(/^[A-Za-z0-9_-]+/)?.[0] ?? '') : t0
       if (t.length > token.length) { token = t; tokenShort = t0 }
     })
-    if (j.codeAt) for (const l of lines.slice(-12)) if (ERR_RE.test(l) && !/https:\/\//.test(l)) fail = l.trim().replace(/^[✘✗×\s]+/, '').slice(0, 200)
+    if (j.codeAt && j.state === 'running') {
+      const tail = lines.slice(-12)
+      const retry = tail.filter((l) => RETRY_RE.test(l))
+      // 刚交上去的一两秒里屏幕上可能还是上一次的提示，过一会儿再认
+      if (retry.length && Date.now() - j.codeAt > 1500) {
+        j.state = 'waitCode'
+        j.codeAt = undefined
+        j.message = `授权码没被接受（${retry.map((l) => l.trim().replace(/^[✘✗×\s]+/, '')).join(' ').slice(0, 200)}）。要贴浏览器页面上那串完整的授权码（中间有个 #）；以前拿到过 sk-ant-oat 开头的令牌，也可以直接贴它`
+        log('授权码没被接受，等你重新贴\n')
+      } else if (!retry.length) for (const l of tail) if (ERR_RE.test(l) && !/https:\/\//.test(l)) fail = l.trim().replace(/^[✘✗×\s]+/, '').slice(0, 200)
+    }
     j.screen = lines.slice(-8).join('\n').replace(TOKEN_RE, '***').replace(/https:\/\/\S+/g, '（登录网址）').slice(-800)
     if (!j.url) {
       const u = raw.match(OSC8)?.[1] ?? lines.map((l) => l.match(URL_RE)?.[0]).find((u) => u && u.includes('oauth') && u.includes('state='))
@@ -153,6 +165,7 @@ export function startLogin(host = hosts.LOCAL): Job {
   // 授权码交上去 2 分钟还没结果：多半是界面换了说法认不出来，停下来把屏幕给人看
   const stuck = setInterval(() => {
     if (job !== j || finished) { clearInterval(stuck); return }
+    if (j.codeAt && j.state === 'running') scan() // 提示画完以后不再有输出：定时再认一次
     if (j.codeAt && Date.now() - j.codeAt > 120_000 && j.state === 'running') { clearInterval(stuck); finished = true; clearTimeout(timer); kill(); done('fail', `交了授权码 2 分钟没结果，登录界面最后显示：${j.screen || '（空）'}。重新点「开始登录」，拿到授权码马上贴`) }
   }, 5000)
   let finished = false
@@ -164,19 +177,36 @@ export function startLogin(host = hosts.LOCAL): Job {
     clearTimeout(timer)
     kill()
     if (!token) return done('fail', `没登录成功：${fail}（授权码只能用一次，重新点「开始登录」）`)
-    j.state = 'verifying'
-    log('已拿到令牌，正在验证能不能用…\n')
-    const check = (t: string) => hosts.runAiOn(j.host, cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env: { CLAUDE_CODE_OAUTH_TOKEN: t, ...runner.egressEnv('claude', j.host) }, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
-    let v = await check(token)
-    if ((v.code !== 0 || !/OK/.test(v.out)) && tokenShort && tokenShort !== token) { const v2 = await check(tokenShort); if (v2.code === 0 && /OK/.test(v2.out)) { v = v2; token = tokenShort } }
-    if (v.code !== 0 || !/OK/.test(v.out)) return done('fail', `登录成功了，但用它跑 Claude Code 被拒绝：${v.out.split(token).join('••••').slice(-300)}`)
-    saveClaudeToken(token)
-    log('验证通过，已加密保存\n')
-    done('ok', '已登录，员工可以干活了')
+    log('已拿到令牌，')
+    await verifyToken(j, token, tokenShort, '登录成功了，但')
   }
   p.on('close', () => { if (!finished) { scan(); if (token || fail) finish(); else if (j.state === 'running' || j.state === 'waitCode') { clearTimeout(timer); done('fail', `登录界面退出了：${vt.lines().slice(-4).join(' / ').replace(TOKEN_RE, '***').slice(0, 300) || '没有输出（服务器上可能没有 script 命令）'}`) } } })
   p.on('error', (e) => { clearTimeout(timer); done('fail', `启动不了：${e.message}`) })
   return j
+}
+
+/** 已经有 setup-token 拿到的订阅令牌（sk-ant-oat…）：不走浏览器授权，验证能用就保存 */
+export function useToken(token: string, host = hosts.LOCAL): Job {
+  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
+  const t = token.trim()
+  if (!TOKEN_RE.test(t) || t.match(TOKEN_RE)![0] !== t) throw new Error('这不是订阅令牌：应该是 sk-ant-oat 开头的一整串')
+  job = { id: uid('j'), type: 'login', executor: 'claude', host, state: 'verifying', log: '用现成的订阅令牌，', started: Date.now() }
+  void verifyToken(job, t, '', '这个令牌')
+  return job
+}
+
+/** 用令牌真跑一次 Claude Code，能用才加密保存（alt：令牌可能被折行接错时的另一种拼法） */
+async function verifyToken(j: Job, token: string, alt: string, failPrefix: string) {
+  j.state = 'verifying'
+  log('正在验证能不能用…\n')
+  const check = (t: string) => hosts.runAiOn(j.host, hosts.claudeBin(j.host), ['-p', '--max-turns', '1', '--output-format', 'text'], { env: { CLAUDE_CODE_OAUTH_TOKEN: t, ...runner.egressEnv('claude', j.host) }, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+  let v = await check(token)
+  if ((v.code !== 0 || !/OK/.test(v.out)) && alt && alt !== token) { const v2 = await check(alt); if (v2.code === 0 && /OK/.test(v2.out)) { v = v2; token = alt } }
+  if (job !== j || j.state !== 'verifying') return // 中途被取消了
+  if (v.code !== 0 || !/OK/.test(v.out)) return done('fail', `${failPrefix}用它跑 Claude Code 被拒绝：${v.out.split(token).join('••••').slice(-300) || `退出码 ${v.code}`}`)
+  saveClaudeToken(token)
+  log('验证通过，已加密保存\n')
+  done('ok', '已登录，员工可以干活了')
 }
 
 function kill() {
@@ -191,6 +221,18 @@ export function sendCode(code: string) {
   const c = code.trim()
   if (!job || job.type !== 'login' || job.state !== 'waitCode' || !proc) throw new Error('现在没有在登录，重新点「开始登录」')
   if (!c || c.length > 400 || /[\r\n\x1b]/.test(c)) throw new Error('授权码不对')
+  job.message = undefined
+  // 贴的是以前 setup-token 拿到的长期令牌（sk-ant-oat…）：不用再走浏览器授权，关掉登录界面直接验证它
+  const tok = c.match(TOKEN_RE)?.[0]
+  if (tok && tok === c) {
+    const j = job
+    kill()
+    proc = null
+    j.codeAt = undefined
+    log('贴的是现成的订阅令牌，直接用它，')
+    void verifyToken(j, tok, '', '这个令牌')
+    return
+  }
   const p = proc
   p.stdin!.write(c)
   setTimeout(() => p.stdin?.write('\r'), 400)

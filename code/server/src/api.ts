@@ -252,7 +252,7 @@ const hostParam = (v: unknown) => {
   return h
 }
 async function executors(host = hosts.LOCAL) {
-  const [cc, cx] = await Promise.all([hosts.runAiOn(host, cfg.claudeBin, ['--version'], { timeoutMs: 15_000 }), hosts.runAiOn(host, cfg.codexBin, ['--version'], { timeoutMs: 15_000 })])
+  const [cc, cx] = await Promise.all([hosts.runAiOn(host, hosts.claudeBin(host), ['--version'], { timeoutMs: 15_000 }), hosts.runAiOn(host, hosts.codexBin(host), ['--version'], { timeoutMs: 15_000 })])
   const c = runner.aiConf()
   const remote = !hosts.isLocal(host)
   return {
@@ -278,7 +278,8 @@ route('PUT', '/api/ai', async (c) => {
     const id = conf[field] ?? uid('cr')
     if (!v) { delSecret(id); return }
     setSecret(id, v)
-    put1('credentials', { id, name, group: 'AI', kind: 'Token', env: '生产', scope: '调模型（按量计费）', usedBy: [], updated: now(), aiAllowed: true } satisfies Credential)
+    const sub = v.startsWith('sk-ant-oat')
+    put1('credentials', { id, name: sub ? 'Claude Code 的登录令牌' : name, group: 'AI', kind: 'Token', env: '生产', scope: sub ? 'Claude 订阅（一年有效）' : '调模型（按量计费）', usedBy: [], updated: now(), aiAllowed: true } satisfies Credential)
     conf[field] = id
   }
   saveKey('claudeCred', 'Claude Code 的 API Key / 令牌', b.claudeKey)
@@ -305,6 +306,10 @@ route('POST', '/api/ai/install', (c) => {
 route('POST', '/api/ai/login', (c) => {
   const host = hostParam(c.body?.host)
   try { return { job: execs.startLogin(host) } } catch (e) { throw bad((e as Error).message) }
+})
+route('POST', '/api/ai/login/token', (c) => {
+  const host = hostParam(c.body?.host)
+  try { return { job: execs.useToken(String(c.body?.token ?? ''), host) } } catch (e) { throw bad((e as Error).message) }
 })
 route('POST', '/api/ai/login/code', (c) => {
   try { execs.sendCode(String(c.body?.code ?? '')); return { job: execs.currentJob() } } catch (e) { throw bad((e as Error).message) }
@@ -334,8 +339,8 @@ route('POST', '/api/ai/test', async (c) => {
   if (codex && c2.codexBaseUrl) env.OPENAI_BASE_URL = c2.codexBaseUrl
   Object.assign(env, runner.egressEnv(codex ? 'codex' : 'claude', host))
   const r = codex
-    ? await hosts.runAiOn(host, cfg.codexBin, ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
-    : await hosts.runAiOn(host, cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+    ? await hosts.runAiOn(host, hosts.codexBin(host), ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
+    : await hosts.runAiOn(host, hosts.claudeBin(host), ['-p', '--max-turns', '1', '--output-format', 'text'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
   const out = key ? r.out.split(key).join('••••') : r.out
   return { ok: r.code === 0 && /OK/.test(out), ms: r.ms, out: out.slice(-600) }
 })
@@ -457,7 +462,7 @@ route('POST', '/api/employees/:id/switch', async (c) => {
   const to = /codex/i.test(String(c.body?.executor ?? '')) ? 'Codex' : 'Claude Code'
   if (to === e.executor) throw bad(`已经是 ${to} 了`)
   const host = runner.hostOf(e)
-  const bin = to === 'Codex' ? cfg.codexBin : cfg.claudeBin
+  const bin = to === 'Codex' ? hosts.codexBin(host) : hosts.claudeBin(host)
   const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
   if (v.code !== 0) throw bad(`这台还没装好 ${to}：先到「我 → AI 执行器」装好、登录`)
   const draft = await handoffDraft(e, sessionFor(e.id).id)
