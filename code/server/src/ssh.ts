@@ -17,15 +17,23 @@ export interface ExecResult { code: number; out: string; ms: number }
 const MAX_OUT = 200_000
 
 export function execOn(sv: Server, command: string, timeoutMs = 60_000): Promise<ExecResult> {
-  if (sv.id === LOCAL_ID) return execLocal(command, timeoutMs)
-  if (agents.isAgent(sv)) return agents.exec(sv.id, command, { timeoutMs }) // 装了 Agent 的：经 Agent（root）跑，不用 SSH
-  return execSsh(sv, command, timeoutMs)
+  return execOnEnv(sv, command, {}, timeoutMs)
 }
 
-function execLocal(command: string, timeoutMs: number): Promise<ExecResult> {
+/** 带环境变量跑（密码这类放环境变量，不出现在命令行里）；SSH 的只能拼在命令前面，输出照样抹掉 */
+export function execOnEnv(sv: Server, command: string, env: Record<string, string>, timeoutMs = 60_000, cwd?: string): Promise<ExecResult> {
+  const secrets = Object.values(env).filter((v) => v.length >= 6)
+  const clean = (r: ExecResult) => (secrets.length ? { ...r, out: scrub(r.out, secrets) } : r)
+  if (sv.id === LOCAL_ID) return execLocal(command, timeoutMs, env, cwd).then(clean)
+  if (agents.isAgent(sv)) return agents.exec(sv.id, command, { timeoutMs, env, cwd }).then(clean) // 装了 Agent 的：经 Agent（root）跑，不用 SSH
+  const exp = Object.entries(env).map(([k, v]) => `export ${k}='${v.replace(/'/g, `'\\''`)}'; `).join('')
+  return execSsh(sv, `${exp}${cwd ? `cd '${cwd}' && ` : ''}${command}`, timeoutMs).then(clean)
+}
+
+function execLocal(command: string, timeoutMs: number, env: Record<string, string> = {}, cwd?: string): Promise<ExecResult> {
   const t0 = Date.now()
   return new Promise((resolve) => {
-    const p = spawn('sh', ['-c', command], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const p = spawn('sh', ['-c', command], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } as Record<string, string>, cwd })
     let out = ''
     const add = (b: Buffer) => { if (out.length < MAX_OUT) out += b.toString() }
     p.stdout.on('data', add)

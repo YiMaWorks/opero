@@ -1,4 +1,6 @@
 import type { SysInfo } from './sysinfo.ts'
+import type { Policy } from './policy.ts'
+import type { BuildCfg } from './build.ts'
 // 后台用到的数据结构：和网页 code/web/src/types.ts 一致（网页直接拿去用），这里只列后台要读写的字段。
 /** 环境标签：随便起名（见 env.ts） */
 export type EnvTag = string
@@ -29,6 +31,21 @@ export interface Employee {
   works?: { no: number; from: string; to?: string; reason: string; host: string }[]
   /** 执行器自己的会话编号（Claude Code session_id / Codex thread_id），下一轮 --resume 接着聊 */
   resumeId?: string
+  /** 人设：性别（写进记忆仓库「我的人设」） */
+  gender?: string
+  /** 记忆仓库的远端（可选）：git 地址 + 凭证；不配就只在干活那台机器上 */
+  memRepo?: string
+  memCred?: string
+  /** 能建 / 改别的员工（emp_create / emp_update，都要主人点确认） */
+  canManage?: boolean
+  /** 能只读看的别的工作空间（最多 8 个，要和员工在同一台机器上） */
+  reads?: string[]
+  /** 这个员工每月预算（美元，0 / 不填 = 不单独限） */
+  budget?: number
+  /** 在自己的分支上改（比如 opero/dev），干完提合并请求；不填 = 直接在工作空间的主分支上改 */
+  workBranch?: string
+  /** 能改哪些域名的解析（域名 id，见 dns.ts） */
+  dns?: string[]
 }
 
 export interface Session {
@@ -41,6 +58,12 @@ export interface Session {
   pinned?: boolean
   working?: string
   waiting?: string
+  /** 归档了（开了新会话接着做 / 换了执行器）：不在会话列表里，员工档案「历史会话」能看 */
+  archived?: number
+  /** 归档时记一句：为什么换、用的执行器 */
+  title?: string
+  /** 新会话的输入框预填（交接） */
+  draft?: string
 }
 
 export interface CardAction { id: string; label: string; style?: 'primary' | 'danger' | 'default' | 'ghost'; tool?: string; panel?: string; args?: Record<string, unknown> }
@@ -88,6 +111,10 @@ export interface Server {
   hostKey?: string
   /** 员工在上面改东西先出确认卡片；没设过按环境标签猜（env.ts isProtected） */
   protect?: boolean
+  /** 给员工的规矩（policy.ts）：能不能编译 / 自测、禁止的命令、内存上限、同时几个员工 */
+  policy?: Partial<Policy>
+  /** 这台上登记的本地目录：read = 员工能读，write = 员工能读写，deploy = 发布能部署进去（Agent 用 ACL 给 AI 用户开权限） */
+  dirs?: ServerDir[]
   /** 接入方式：local = Opero 自己这台；agent = 装了 Opero Agent（员工能在上面干活）；ssh = 只用 SSH 跑命令 */
   via?: 'local' | 'agent' | 'ssh' | 'pending' | 'rejected'
   /** Agent 自己的公钥（ed25519 原始 32 字节 base64）和指纹（SHA256:…）：Opero 按指纹认机器，换地址也认得 */
@@ -172,8 +199,93 @@ export interface Workspace {
   commits: { sha: string; msg: string; who: string; when: string }[]
   docs: { name: string; updated: string }[]
   error?: string
+  /** 干完自动提交推送、派活前自动拉最新（默认开） */
+  autoSync?: boolean
+  /** 发布：每个目标一台服务器 + 一条命令（deploy 工具 / 网页「发布」按钮跑） */
+  deploys?: Deploy[]
+  /** 这个项目每月预算（美元，0 / 不填 = 不单独限） */
+  budget?: number
+  /** 编译设置：在哪编（云效 / GitHub Actions / 自己的服务器）、用哪个模板（build.ts） */
+  buildCfg?: BuildCfg
+}
+
+/** 发布环境：发到哪几台、部署目录、包里的部署脚本 / 部署命令、签不签名、发完检查哪个地址、留几个版本、员工能不能自己发（编译设置在 Workspace.buildCfg） */
+export interface Deploy {
+  id: string
+  name: string
+  /** 发到哪几台（每台都要在「目录」里把部署目录登记成「能部署」） */
+  servers: string[]
+  /** 部署目录（OPERO_DIR = KL_DIR） */
+  dir?: string
+  /** 包里的部署脚本（默认 deploy.sh）：bash <脚本> <包目录> <发布编号> */
+  script?: string
+  /** 包里没有部署脚本时跑的命令（在部署目录里跑；没编译时就是「部署 = 跑这条命令」，OPERO_REF = 远端最新提交） */
+  command?: string
+  /** 给包里的 apk / aab 签名：用哪个签名证书（凭证） */
+  sign?: string
+  health?: string
+  keep?: number
+  ai?: 'auto' | 'ask' | 'off'
+  autoRollback?: boolean
+  last?: string
+  lastOk?: boolean
+}
+
+export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
+/** 一次发布 */
+export interface Release {
+  id: string
+  ws: string
+  target: string
+  targetName: string
+  version: string
+  sha: string
+  status: 'running' | 'success' | 'failed'
+  steps: ReleaseStep[]
+  note?: string
+  by: string
+  /** 员工发的：哪个员工、哪个会话、聊天里那张卡片 */
+  emp?: string
+  sid?: string
+  msgId?: string
+  rollbackOf?: string
+  /** 发到哪几台、发的是哪个包、编译的网页链接 */
+  servers?: string[]
+  pkgName?: string
+  buildUrl?: string
+  /** 每台上这个版本的包还留着（能回滚） */
+  kept?: boolean
+  started: number
+  ended?: number
+  error?: string
+  tail?: string
+}
+
+/** 问题清单：日志巡检记下来的线上问题 */
+export interface Issue {
+  id: string
+  title: string
+  /** 哪台服务器 / 哪个项目（工作空间） */
+  server?: string
+  workspace?: string
+  severity: 'high' | 'mid' | 'low'
+  status: 'new' | 'fixing' | 'fixed' | 'known' | 'ignored'
+  count: number
+  first: number
+  last: number
+  /** 同一个问题的标识（异常类型 + 出错位置），用来合并 */
+  key: string
+  sample: string
+  cause?: string
+  /** 谁报的、谁在修 */
+  reporter?: string
+  fixer?: string
+  ignoreUntil?: number
+  note?: string
 }
 
 export interface Device { id: string; name: string; platform: string; appVersion?: string; tokenHash: string; enabled: boolean; paired: number; seen?: number }
 
 export interface Owner { email: string; name: string; salt: string; hash: string }
+
+export interface ServerDir { path: string; mode: 'read' | 'write' | 'deploy'; note?: string; ok?: boolean; error?: string }

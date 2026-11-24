@@ -1,5 +1,7 @@
 package cn.yimakeji.opero.data
 
+import cn.yimakeji.opero.Tr
+import cn.yimakeji.opero.R
 import android.os.Build
 import cn.yimakeji.opero.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -38,10 +40,10 @@ object Api {
         server: String? = null,
         auth: Boolean = true,
     ): JSONObject = withContext(Dispatchers.IO) {
-        val base = server ?: store.server ?: throw ApiError(0, "NO_SERVER", "还没连接你的 Opero")
+        val base = server ?: store.server ?: throw ApiError(0, "NO_SERVER", Tr.s(R.string.no_server))
         val url = (base + path).toHttpUrlOrNull()?.newBuilder()?.apply {
             query.forEach { (k, v) -> if (v != null) addQueryParameter(k, v.toString()) }
-        }?.build() ?: throw ApiError(0, "BAD_URL", "地址不对：$base")
+        }?.build() ?: throw ApiError(0, "BAD_URL", Tr.s(R.string.bad_url, base))
         val req = Request.Builder().url(url)
             .header("X-Opero-Client", "app")
             .header("User-Agent", userAgent)
@@ -55,7 +57,7 @@ object Api {
                 val o = try { if (text.isBlank()) JSONObject() else JSONObject(text) } catch (_: Exception) { JSONObject() }
                 if (!r.isSuccessful) {
                     val code = o.optString("code").ifEmpty { null }
-                    val msg = o.optString("message").ifEmpty { o.optString("detail") }.ifEmpty { "出错了（${r.code}）" }
+                    val msg = o.optString("message").ifEmpty { o.optString("detail") }.ifEmpty { Tr.s(R.string.error_code, r.code.toString()) }
                     throw ApiError(r.code, code, msg)
                 }
                 o
@@ -63,7 +65,7 @@ object Api {
         } catch (e: ApiError) {
             throw e
         } catch (e: Exception) {
-            throw ApiError(0, "NETWORK", e.message ?: "网络不通")
+            throw ApiError(0, "NETWORK", e.message ?: Tr.s(R.string.no_network))
         }
     }
 

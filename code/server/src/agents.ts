@@ -146,7 +146,7 @@ export function sweep() {
 }
 
 // ---------- 派活：每台一个队列，Agent 长轮询来取 ----------
-export interface Task { t: 'spawn' | 'stdin' | 'kill' | 'write' | 'tconn' | 'tdata' | 'tclose' | 'tok' | 'move'; id: string; [k: string]: unknown }
+export interface Task { t: 'spawn' | 'stdin' | 'kill' | 'write' | 'tconn' | 'tdata' | 'tclose' | 'tok' | 'move' | 'push' | 'pull'; id: string; [k: string]: unknown }
 const queues = new Map<string, Task[]>()
 const waiters = new Map<string, () => void>()
 
@@ -208,7 +208,7 @@ class RemoteProc extends EventEmitter {
 }
 const procs = new Map<string, RemoteProc>()
 
-export interface SpawnOpts { as: 'ai' | 'root'; bin: string; args: string[]; env?: Record<string, string>; cwd: string; mkdirs?: string[] }
+export interface SpawnOpts { as: 'ai' | 'root'; bin: string; args: string[]; env?: Record<string, string>; cwd: string; mkdirs?: string[]; /** 内存上限 %（Agent 看着，超了停最大的进程） */ memPct?: number }
 
 /** 在那台服务器上起一个进程；返回的东西当 ChildProcess 用（stdin / stdout / stderr / close / kill） */
 export function spawnRemote(serverId: string, o: SpawnOpts): ChildProcess {
@@ -219,6 +219,23 @@ export function spawnRemote(serverId: string, o: SpawnOpts): ChildProcess {
   if (!agentOnline(sv)) setImmediate(() => p.fail(`「${sv?.name ?? serverId}」的 Agent 不在线：看一下那台机器上的 opero-agent 服务（systemctl status opero-agent）`))
   else send(serverId, { t: 'spawn', id, ...o })
   return p as unknown as ChildProcess
+}
+
+/** 发布产物在服务器之间搬：这台把文件传给 Opero（push）/ 从 Opero 拿（pull）；返回 Agent 的输出和退出码 */
+export function blobTask(serverId: string, task: { t: 'push' | 'pull'; key: string; path: string; sha256?: string }, timeoutMs = 30 * 60_000): Promise<{ code: number; out: string }> {
+  const id = uid('p')
+  const p = new RemoteProc(serverId, id)
+  procs.set(id, p)
+  return new Promise((resolve) => {
+    let out = ''
+    p.stdout.on('data', (b: Buffer) => { out += b })
+    p.stderr.on('data', (b: Buffer) => { out += b })
+    const t = setTimeout(() => { p.fail('传文件超时') }, timeoutMs)
+    p.on('close', (code: number | null) => { clearTimeout(t); resolve({ code: code ?? -1, out: out.trim() }) })
+    const sv = get<Server>('servers', serverId)
+    if (!agentOnline(sv)) setImmediate(() => p.fail(`「${sv?.name ?? serverId}」的 Agent 不在线`))
+    else send(serverId, { ...task, id })
+  })
 }
 
 /** Agent 交回来的输出 */

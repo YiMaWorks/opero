@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -73,6 +74,10 @@ class MainActivity : FragmentActivity(), Bridge.Host {
         pendingPermission = null
     }
     private val askNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val askVoice = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val text = r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: ""
+        web.evaluateJavascript("window.__operoNative && window.__operoNative.onVoice && window.__operoNative.onVoice(${JSONObject.quote(text)})", null)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -156,10 +161,10 @@ class MainActivity : FragmentActivity(), Bridge.Host {
             isClickable = true
             addView(ImageView(context).apply { setImageResource(R.drawable.ic_mark) })
             addView(TextView(context).apply {
-                text = "Opero 已锁定"; textSize = 17f; setTextColor(Color.parseColor(if (dark) "#F2F3F4" else "#101826"))
+                text = Tr.s(R.string.locked); textSize = 17f; setTextColor(Color.parseColor(if (dark) "#F2F3F4" else "#101826"))
                 gravity = Gravity.CENTER; setPadding(0, dp(16), 0, dp(24))
             })
-            addView(Button(context).apply { text = "解锁"; setOnClickListener { unlock() } })
+            addView(Button(context).apply { text = Tr.s(R.string.unlock); setOnClickListener { unlock() } })
         }
         lockView = box
         root.addView(box, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -168,7 +173,7 @@ class MainActivity : FragmentActivity(), Bridge.Host {
 
     private fun unlock() {
         if (AppLock.unavailable(this) != null) { AppLock.unlocked(); return } // 手机没设锁屏：不锁死人
-        AppLock.prompt(this, "解锁 Opero", null, onOk = { AppLock.unlocked() }, onFail = { })
+        AppLock.prompt(this, Tr.s(R.string.unlock_title), null, onOk = { AppLock.unlocked() }, onFail = { })
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -201,9 +206,9 @@ class MainActivity : FragmentActivity(), Bridge.Host {
                 PushService.start(this@MainActivity)
             } catch (e: ApiError) {
                 when {
-                    e.status == 401 -> { Api.store.clearPairing(); loadPair("这台手机已经在网页里断开了，重新配对一下") }
+                    e.status == 401 -> { Api.store.clearPairing(); loadPair(Tr.s(R.string.unpaired)) }
                     e.status == 404 -> web.loadUrl(server) // 后台还没有外壳接口（界面原型）：直接打开
-                    else -> loadPair("连不上 ${Uri.parse(server).host}：${e.message}")
+                    else -> loadPair(Tr.s(R.string.cant_reach, Uri.parse(server).host ?: server, e.message ?: ""))
                 }
             }
         }
@@ -244,7 +249,7 @@ class MainActivity : FragmentActivity(), Bridge.Host {
         }
         override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) {
             if (req == null || !req.isForMainFrame || req.url.toString().startsWith("file:")) return
-            loadPair("打不开 ${req.url.host}：${err?.description ?: "网络不通"}")
+            loadPair(Tr.s(R.string.cant_open, req.url.host ?: "", err?.description ?: Tr.s(R.string.no_network)))
         }
     }
 
@@ -310,6 +315,16 @@ class MainActivity : FragmentActivity(), Bridge.Host {
 
     override fun haptic() = runOnUiThread { web.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
 
+    override fun voice(lang: String) = runOnUiThread {
+        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang.ifBlank { "zh-CN" })
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, Tr.s(R.string.speak))
+        try { AppLock.skipNext(); askVoice.launch(i) } catch (_: Exception) {
+            web.evaluateJavascript("window.__operoNative && window.__operoNative.onVoice && window.__operoNative.onVoice('', 'none')", null)
+        }
+    }
+
     override fun unpair() = runOnUiThread {
         lifecycleScope.launch {
             PushClient.unregister()
@@ -332,13 +347,13 @@ class MainActivity : FragmentActivity(), Bridge.Host {
      */
     override fun pair(server: String, code: String) = runOnUiThread {
         val base = server.trim().trimEnd('/').let { if (it.startsWith("http")) it else "https://$it" }
-        if (Uri.parse(base).host.isNullOrBlank()) { pairResult(false, "地址不对"); return@runOnUiThread }
+        if (Uri.parse(base).host.isNullOrBlank()) { pairResult(false, Tr.s(R.string.bad_address)); return@runOnUiThread }
         lifecycleScope.launch {
             try {
                 val health = try { Api.call("GET", "/api/health", server = base, auth = false) } catch (e: ApiError) {
-                    throw ApiError(e.status, "NOT_OPERO", if (e.status == 0) "连不上 ${Uri.parse(base).host}：${e.message}" else "这个地址不是 Opero 后台（HTTP ${e.status}）")
+                    throw ApiError(e.status, "NOT_OPERO", if (e.status == 0) Tr.s(R.string.cant_reach, Uri.parse(base).host ?: base, e.message ?: "") else Tr.s(R.string.not_opero_http, e.status.toString()))
                 }
-                if (!health.optBoolean("ok")) throw ApiError(0, "NOT_OPERO", "这个地址不是 Opero 后台：填你自己服务器上装好的 Opero 的地址（官网和在线试用不能连）")
+                if (!health.optBoolean("ok")) throw ApiError(0, "NOT_OPERO", Tr.s(R.string.not_opero))
                 if (code.isNotBlank()) {
                     val r = Api.call("POST", "/api/app/pair", JSONObject().apply {
                         put("code", code.trim())
@@ -348,7 +363,7 @@ class MainActivity : FragmentActivity(), Bridge.Host {
                         put("appVersion", BuildConfig.VERSION_NAME)
                     }, server = base, auth = false)
                     val token = r.optString("deviceToken")
-                    if (token.isBlank()) throw ApiError(0, null, "配对码不对或者过期了")
+                    if (token.isBlank()) throw ApiError(0, null, Tr.s(R.string.bad_code))
                     Api.store.server = base
                     Api.store.deviceToken = token
                     if (Build.VERSION.SDK_INT >= 33) askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -359,7 +374,7 @@ class MainActivity : FragmentActivity(), Bridge.Host {
                     web.loadUrl(base)
                 }
             } catch (e: ApiError) {
-                pairResult(false, if (e.status == 404 && e.code != "NOT_OPERO") "这套 Opero 版本太旧，还不支持配对，先不填配对码直接连" else e.message ?: "连不上")
+                pairResult(false, if (e.status == 404 && e.code != "NOT_OPERO") Tr.s(R.string.too_old) else e.message ?: Tr.s(R.string.cant_connect))
             }
         }
     }
@@ -375,15 +390,15 @@ class MainActivity : FragmentActivity(), Bridge.Host {
         lifecycleScope.launch {
             val l = try { Updater.check() } catch (_: Exception) { null } ?: return@launch
             android.app.AlertDialog.Builder(this@MainActivity)
-                .setTitle("Opero App 有新版本 ${l.name}")
-                .setMessage(l.notes.ifBlank { "外壳更新（界面在网页里，平时不用更新 App）" })
-                .setPositiveButton("更新") { _, _ ->
+                .setTitle(Tr.s(R.string.update_title, l.name))
+                .setMessage(l.notes.ifBlank { Tr.s(R.string.update_note) })
+                .setPositiveButton(Tr.s(R.string.update)) { _, _ ->
                     lifecycleScope.launch {
                         try { val f = Updater.download(this@MainActivity, l); AppLock.skipNext(); Updater.install(this@MainActivity, f) }
-                        catch (e: Exception) { android.widget.Toast.makeText(this@MainActivity, e.message ?: "下载失败", android.widget.Toast.LENGTH_LONG).show() }
+                        catch (e: Exception) { android.widget.Toast.makeText(this@MainActivity, e.message ?: Tr.s(R.string.download_failed), android.widget.Toast.LENGTH_LONG).show() }
                     }
                 }
-                .apply { if (!l.must) setNegativeButton("以后再说", null) }
+                .apply { if (!l.must) setNegativeButton(Tr.s(R.string.later), null) }
                 .setCancelable(!l.must)
                 .show()
         }

@@ -80,11 +80,24 @@ The **Ops** employee watches your servers 24/7. Small things (clean old logs, re
 ## Features
 
 - **Chat like WeChat** — pinned chats, mute, red dots only for things that need your decision, voice input, image editor (crop / rotate / adjust) for every upload.
+- **Passkeys & 2FA** — sign in with a fingerprint / face (passkeys), optional TOTP two-step login with recovery codes; both also work to verify it's you before risky actions.
+- **Voice & logs** — dictate messages (phone's speech recognition in the app, Web Speech in browsers); a log viewer per server with filtering and error highlighting.
 - **Message assistant** — pulls email, Slack and Telegram into one place, tells you what needs your attention and why, and takes you to the original message. It never replies on your behalf; ask it for a reply suggestion (in any language) and copy it yourself.
 - **Per-employee work settings** — model, reasoning effort, approval mode (auto / ask before commands / ask every step / plan only), remembered per employee.
+- **Employees that remember** — every employee has its own git repo (role, persona, handoff notes, machine notes). Start a fresh session, switch between Claude Code and Codex, or move it to another server: it picks up from the handoff. Old sessions stay readable.
+- **Git on autopilot** — before a run the workspace is rebased onto the latest remote; after it, changes are committed (unfinished runs marked `[未完成]`) and pushed, retrying once on a rejected push. The AI never holds your git token.
+- **Directories per server** — register which local directories employees may read or change and where releases may deploy; the Agent grants exactly that with ACLs.
+- **Rules per server** — allow or forbid builds and self-testing, deny command prefixes, cap memory (the biggest process is stopped when it stays over), limit how many employees run at once.
+- **Log patrol → issue list** — `log_scan` (per-minute histograms, first/last occurrences, top errors, rotated `.gz` logs, journald), an issue list that merges repeats, and a card for new severe issues: fix (handed to the right employee) / known / ignore 7 days.
+- **Ops tools** — write files with automatic backup, `{{secret:name}}` placeholders so secrets never reach the AI.
+- **Releases** — build on Alibaba Cloud DevOps (Yunxiao) pipelines, GitHub Actions or one of your own servers from ready-made templates (pipelines generated for you); verified packages go to every server of an environment and install themselves with their own deploy script; health checks, automatic rollback, one-click rollback to kept versions. Sign APK/AAB on the way. Employees can release (auto / ask you / never); a failed auto release goes back to the employee to fix.
+- **Message assistant** — email (IMAP) and Slack in one inbox, sorted into needs-you / FYI / not important with a one-line summary; reply suggestions in the sender's language. It never sends on your behalf.
+- **Notifications anywhere** — decisions and errors also go to Telegram, Slack, WeCom, DingTalk, Feishu, email or a signed webhook.
+- **Pull requests & DNS** — employees can work on their own branch and open PRs/MRs on GitHub, GitLab, Gitee or Codeup; change DNS records on Cloudflare or Alibaba Cloud for the domains you grant.
 - **Knowledge base & flows** — save what an employee just did as a flow and rerun it without AI; trigger flows on a schedule or a webhook.
 - **Servers, releases, data** — server health and read-only commands, releases with rollback, read-only DB queries with snapshots for writes, credentials grouped by what they can do.
 - **14 themes + your own colors**, light / dark / follow system, personalized profile header.
+- **Desktop app** — your Opero in a window, a tray showing what's waiting for you, system notifications that open the right chat (Electron; pairs like the phone app).
 - **Android app** — native shell around the web UI with push, fingerprint, notification deep links and in-app updates. New features ship with the web UI, no app update needed.
 
 ## Status
@@ -153,6 +166,7 @@ cd ../server && npm install && npm start   # http://127.0.0.1:7300
 code/server          Backend (Node 22, TypeScript run directly, node:sqlite) + installer
 code/web             Web UI (React 19 + Vite + TypeScript)
 code/android         Android app shell (Kotlin, WebView + push + fingerprint)
+code/desktop         Desktop app (Electron: tray, notifications)
 code/design-mockups  Scripts that generate the design images and logo
 docs/                Specs and design docs (start with docs/设计.md)
 deploy/              Build and deploy scripts

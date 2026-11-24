@@ -20,6 +20,7 @@ class OperoApp : Application() {
     companion object {
         /** 开机广播、通知按钮、看门狗可能比 Application 先跑到：用之前先确保有 */
         fun ensureStore(ctx: Context) {
+            Tr.ctx = ctx.applicationContext
             val ready = try { Api.store; true } catch (_: UninitializedPropertyAccessException) { false }
             if (!ready) Api.store = Store(ctx.applicationContext)
         }

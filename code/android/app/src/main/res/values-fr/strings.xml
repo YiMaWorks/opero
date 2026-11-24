@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外壳界面文字（生成：见 docs/交接.md 第八十一轮）；网页里的文字在 code/web/src/i18n -->
+<resources>
+    <string name="locked">Opero est verrouillé</string>
+    <string name="unlock">Déverrouiller</string>
+    <string name="unlock_title">Déverrouiller Opero</string>
+    <string name="unpaired">Ce téléphone a été déconnecté sur le web. Associe-le à nouveau.</string>
+    <string name="cant_reach">Impossible de joindre %1$s : %2$s</string>
+    <string name="cant_open">Impossible d\'ouvrir %1$s : %2$s</string>
+    <string name="no_network">Pas de réseau</string>
+    <string name="speak">Parle</string>
+    <string name="bad_address">Adresse invalide</string>
+    <string name="not_opero_http">Cette adresse n\'est pas un serveur Opero (HTTP %1$s)</string>
+    <string name="not_opero">Cette adresse n\'est pas un serveur Opero : saisis l\'adresse de l\'Opero installé sur ton serveur (le site et la démo ne peuvent pas être connectés)</string>
+    <string name="bad_code">Code d\'association incorrect ou expiré</string>
+    <string name="too_old">Cet Opero est trop ancien pour l\'association. Connecte-toi d\'abord sans code.</string>
+    <string name="cant_connect">Connexion impossible</string>
+    <string name="update_title">Nouvelle version de l\'app Opero %1$s</string>
+    <string name="update_note">Mise à jour de l\'app (l\'interface est sur le web, mise à jour rarement nécessaire)</string>
+    <string name="update">Mettre à jour</string>
+    <string name="download_failed">Échec du téléchargement</string>
+    <string name="later">Plus tard</string>
+    <string name="no_server">Pas encore connecté à ton Opero</string>
+    <string name="bad_url">Adresse invalide : %1$s</string>
+    <string name="error_code">Une erreur s\'est produite (%1$s)</string>
+    <string name="no_lock">Aucun verrouillage, empreinte ou visage n\'est configuré. Configure-le d\'abord dans les réglages.</string>
+    <string name="bio_unavailable">Empreinte / visage indisponible sur ce téléphone pour l\'instant</string>
+    <string name="security_update">Le système doit d\'abord installer une mise à jour de sécurité</string>
+    <string name="bio_unsupported">Empreinte / visage non pris en charge sur ce téléphone</string>
+    <string name="verify_failed">Échec de la vérification</string>
+    <string name="ch_decide">Tu dois décider</string>
+    <string name="ch_decide_desc">Un employé attend que tu touches une carte, ou une action risquée doit être confirmée</string>
+    <string name="ch_alarm">Alertes critiques</string>
+    <string name="ch_alarm_desc">Gros problème en production : sonne jusqu\'à ce que tu touches « Compris »</string>
+    <string name="ch_info">Pour info</string>
+    <string name="ch_info_desc">Travail terminé, et messages des employés réglés sur « notifier chaque message »</string>
+    <string name="ch_service">Rester connecté</string>
+    <string name="ch_service_desc">Reste connecté à ton Opero (toujours affichée ; tu peux la replier dans les réglages)</string>
+    <string name="got_it">Compris</string>
+    <string name="take_look">Voir</string>
+    <string name="connected">Connecté à ton Opero</string>
+    <string name="reconnecting">Connexion perdue, nouvelle tentative…</string>
+    <string name="service_text">Les décisions et alertes critiques te parviennent tout de suite</string>
+    <string name="acked">Confirmé, ça ne sonnera plus</string>
+    <string name="ack_failed">Échec de la confirmation : %1$s. Ouvre l\'app et réessaie</string>
+    <string name="download_failed_code">Échec du téléchargement (%1$s)</string>
+    <string name="bad_checksum">La somme de contrôle ne correspond pas, fichier supprimé. Réessaie plus tard</string>
+</resources>

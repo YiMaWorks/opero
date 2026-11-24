@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+<title>Opero</title>
+<style>
+  :root { color-scheme: light dark; --bg: #F3F4F8; --panel: #fff; --text: #14161F; --sub: #4E5465; --line: #E4E6EC; --primary: #5B4FE9; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0F1117; --panel: #181B24; --text: #E9EBF1; --sub: #A2A8B8; --line: #272B37; } }
+  body { margin: 0; font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); display: grid; place-items: center; min-height: 100vh; }
+  .box { width: 380px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 12px; }
+  h1 { font-size: 20px; margin: 0; } p { margin: 0; color: var(--sub); }
+  label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; font-size: 13px; }
+  input { font: inherit; padding: 9px 11px; border-radius: 9px; border: 1px solid var(--line); background: transparent; color: inherit; }
+  small { color: var(--sub); font-weight: 400; }
+  button { font: inherit; font-weight: 600; padding: 10px; border: 0; border-radius: 10px; background: var(--primary); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .6; } .err { color: #E5484D; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1 id="title">Opero</h1>
+  <p id="intro"></p>
+  <label><span id="addr"></span><input id="server" placeholder="https://opero.example.com" autocomplete="url" /></label>
+  <label><span id="code"></span><input id="pcode" inputmode="numeric" maxlength="6" /><small id="hint"></small></label>
+  <p class="err" id="msg"></p>
+  <button id="go"></button>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id)
+  const q = new URLSearchParams(location.search)
+  $('server').value = q.get('server') || ''
+  $('msg').textContent = q.get('msg') || ''
+  window.OperoDesktop.strings().then((t) => {
+    $('title').textContent = t.title; $('intro').textContent = t.intro; $('addr').textContent = t.addr; $('code').textContent = t.code; $('hint').textContent = t.codeHint; $('go').textContent = t.go
+    const go = async () => {
+      $('go').disabled = true; $('go').textContent = t.going; $('msg').textContent = ''
+      try { await window.OperoDesktop.pair($('server').value, $('pcode').value) } catch (e) { $('msg').textContent = String(e.message || e).replace(/^Error invoking remote method 'pair': (Error: )?/, '') }
+      $('go').disabled = false; $('go').textContent = t.go
+    }
+    $('go').onclick = go
+    $('pcode').onkeydown = (e) => { if (e.key === 'Enter') go() }
+  })
+</script>
+</body>
+</html>

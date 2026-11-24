@@ -123,13 +123,14 @@ export function CardView({ card, onAction }: { card: Card; onAction: OnAction })
     case 'issue':
       return (
         <div className={cls}>
-          <Head card={card} title={`#${d.no} ${d.title}`} tag={d.severity} tagCls="t-danger" />
+          <Head card={card} title={`${d.no ? `#${d.no} ` : ''}${d.title}`} tag={d.severity ?? d.tag} tagCls="t-danger" />
           <dl className="kv">
-            {(d.rows as string[][]).map(([k, v]) => (
+            {((d.rows ?? []) as string[][]).map(([k, v]) => (
               <div key={k}><dt>{k}</dt><dd>{v}</dd></div>
             ))}
           </dl>
-          <div className="chips">{(d.evidence as string[]).map((e) => <span key={e} className="chip">{e}</span>)}</div>
+          {Array.isArray(d.evidence) && <div className="chips">{(d.evidence as string[]).map((e) => <span key={e} className="chip">{e}</span>)}</div>}
+          {d.sample && <pre className="console small" data-no-i18n="">{String(d.sample)}</pre>}
           {open ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
         </div>
       )
@@ -237,6 +238,7 @@ export function CardView({ card, onAction }: { card: Card; onAction: OnAction })
               {(d.rows as string[][]).map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
             </dl>
           )}
+          {typeof d.url === 'string' && /^https?:\/\//.test(d.url) && <a className="card-link" href={d.url} target="_blank" rel="noreferrer">打开 ↗</a>}
           {open ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
         </div>
       )

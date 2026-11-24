@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外壳界面文字（生成：见 docs/交接.md 第八十一轮）；网页里的文字在 code/web/src/i18n -->
+<resources>
+    <string name="locked">Opero ist gesperrt</string>
+    <string name="unlock">Entsperren</string>
+    <string name="unlock_title">Opero entsperren</string>
+    <string name="unpaired">Dieses Handy wurde im Web getrennt. Bitte neu koppeln.</string>
+    <string name="cant_reach">%1$s nicht erreichbar: %2$s</string>
+    <string name="cant_open">%1$s lässt sich nicht öffnen: %2$s</string>
+    <string name="no_network">Kein Netzwerk</string>
+    <string name="speak">Sprich jetzt</string>
+    <string name="bad_address">Ungültige Adresse</string>
+    <string name="not_opero_http">Diese Adresse ist kein Opero-Server (HTTP %1$s)</string>
+    <string name="not_opero">Diese Adresse ist kein Opero-Server: Gib die Adresse des Opero auf deinem eigenen Server ein (Website und Demo gehen nicht)</string>
+    <string name="bad_code">Kopplungscode falsch oder abgelaufen</string>
+    <string name="too_old">Dieses Opero ist zu alt für das Koppeln. Verbinde dich erst ohne Code.</string>
+    <string name="cant_connect">Keine Verbindung</string>
+    <string name="update_title">Neue Opero-App-Version %1$s</string>
+    <string name="update_note">Update der App-Hülle (die Oberfläche ist im Web, normalerweise kein Update nötig)</string>
+    <string name="update">Aktualisieren</string>
+    <string name="download_failed">Download fehlgeschlagen</string>
+    <string name="later">Später</string>
+    <string name="no_server">Noch nicht mit deinem Opero verbunden</string>
+    <string name="bad_url">Ungültige Adresse: %1$s</string>
+    <string name="error_code">Fehler (%1$s)</string>
+    <string name="no_lock">Auf diesem Handy ist noch keine Bildschirmsperre, kein Fingerabdruck und kein Gesicht eingerichtet. Bitte zuerst in den Einstellungen einrichten.</string>
+    <string name="bio_unavailable">Fingerabdruck / Gesicht ist auf diesem Handy gerade nicht verfügbar</string>
+    <string name="security_update">Das System braucht zuerst ein Sicherheitsupdate</string>
+    <string name="bio_unsupported">Fingerabdruck / Gesicht wird auf diesem Handy nicht unterstützt</string>
+    <string name="verify_failed">Überprüfung fehlgeschlagen</string>
+    <string name="ch_decide">Braucht dich</string>
+    <string name="ch_decide_desc">Ein Mitarbeiter wartet auf deine Antwort auf eine Karte oder eine riskante Aktion braucht deine Bestätigung</string>
+    <string name="ch_alarm">Kritische Alarme</string>
+    <string name="ch_alarm_desc">Große Probleme in der Produktion: klingelt, bis du auf „Verstanden“ tippst</string>
+    <string name="ch_info">Zur Info</string>
+    <string name="ch_info_desc">Erledigte Arbeit und Nachrichten von Mitarbeitern mit „bei jeder Nachricht benachrichtigen“</string>
+    <string name="ch_service">Verbunden bleiben</string>
+    <string name="ch_service_desc">Hält die Verbindung zu deinem Opero (immer sichtbar; in den Systemeinstellungen einklappbar)</string>
+    <string name="got_it">Verstanden</string>
+    <string name="take_look">Ansehen</string>
+    <string name="connected">Mit deinem Opero verbunden</string>
+    <string name="reconnecting">Verbindung unterbrochen, neuer Versuch…</string>
+    <string name="service_text">Entscheidungen und kritische Alarme erreichen dich sofort</string>
+    <string name="acked">Bestätigt – es klingelt nicht mehr</string>
+    <string name="ack_failed">Bestätigung fehlgeschlagen: %1$s. Öffne die App und versuch es erneut</string>
+    <string name="download_failed_code">Download fehlgeschlagen (%1$s)</string>
+    <string name="bad_checksum">Prüfsumme des Installers stimmt nicht, gelöscht. Später erneut versuchen</string>
+</resources>

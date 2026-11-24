@@ -1,5 +1,6 @@
 package cn.yimakeji.opero.push
 
+import cn.yimakeji.opero.Tr
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
@@ -41,23 +42,23 @@ object Notifier {
         val note = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
         val alarm = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
         nm.createNotificationChannels(listOf(
-            NotificationChannel(CH_DECIDE, "要你决定", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "员工等你点卡片、危险操作要你确认"
+            NotificationChannel(CH_DECIDE, Tr.s(R.string.ch_decide), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = Tr.s(R.string.ch_decide_desc)
                 enableVibration(true); vibrationPattern = longArrayOf(0, 250, 150, 250)
                 setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), note)
             },
-            NotificationChannel(CH_ALARM, "严重告警", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "生产出大问题：一直响到你点「我知道了」"
+            NotificationChannel(CH_ALARM, Tr.s(R.string.ch_alarm), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = Tr.s(R.string.ch_alarm_desc)
                 enableVibration(true); vibrationPattern = longArrayOf(0, 600, 300, 600, 300, 600)
                 setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), alarm)
                 enableLights(true); lightColor = Color.parseColor(RED)
             },
-            NotificationChannel(CH_INFO, "知道就行", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "做完了、你设成「每条都提醒」的员工的消息"
+            NotificationChannel(CH_INFO, Tr.s(R.string.ch_info), NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = Tr.s(R.string.ch_info_desc)
                 setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION), note)
             },
-            NotificationChannel(CH_SERVICE, "保持连接", NotificationManager.IMPORTANCE_MIN).apply {
-                description = "和你的 Opero 保持连接（这一条常驻，可以在系统设置里折叠）"; setShowBadge(false)
+            NotificationChannel(CH_SERVICE, Tr.s(R.string.ch_service), NotificationManager.IMPORTANCE_MIN).apply {
+                description = Tr.s(R.string.ch_service_desc); setShowBadge(false)
             },
         ))
     }
@@ -93,8 +94,8 @@ object Notifier {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setGroup("opero_${p.kind}")
             .setContentIntent(openIntent(ctx, p.route, nid))
-        if (p.alarm != null) b.addAction(0, "我知道了", ActionReceiver.ackIntent(ctx, p.alarm, nid))
-        if (p.kind == "decide" && p.route != null) b.addAction(0, "去看看", openIntent(ctx, p.route, nid + 1))
+        if (p.alarm != null) b.addAction(0, Tr.s(R.string.got_it), ActionReceiver.ackIntent(ctx, p.alarm, nid))
+        if (p.kind == "decide" && p.route != null) b.addAction(0, Tr.s(R.string.take_look), openIntent(ctx, p.route, nid + 1))
         val n = b.build()
         if (p.kind == "alarm" && p.alarm != null && Api.store.insistent) n.flags = n.flags or Notification.FLAG_INSISTENT
         return n
@@ -116,8 +117,8 @@ object Notifier {
         return NotificationCompat.Builder(ctx, CH_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_opero)
             .setColor(Color.parseColor(BRAND))
-            .setContentTitle(if (connected) "已连上你的 Opero" else "连接中断，正在重试…")
-            .setContentText("要你决定的事、严重告警会第一时间提醒你")
+            .setContentTitle(if (connected) Tr.s(R.string.connected) else Tr.s(R.string.reconnecting))
+            .setContentText(Tr.s(R.string.service_text))
             .setOngoing(true).setSilent(true).setShowWhen(false)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)

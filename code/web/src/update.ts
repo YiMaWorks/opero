@@ -5,7 +5,7 @@ const KEY = 'opero.updateTo'
 
 async function check() {
   try {
-    const r = await fetch(`/version.txt?t=${Date.now()}`, { cache: 'no-store' })
+    const r = await fetch(`version.txt?t=${Date.now()}`, { cache: 'no-store' })
     if (!r.ok) return
     const v = (await r.text()).trim()
     if (!/^\d+\.\d+\.\d+/.test(v) || v === __APP_VERSION__) return

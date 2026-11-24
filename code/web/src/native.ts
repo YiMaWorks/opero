@@ -24,6 +24,8 @@ interface OperoNativeApi {
   /** 「这台手机」的设置：JSON 字符串 */
   getShell(): string
   setShell(json: string): void
+  /** 说话转文字（手机自带的语音识别）；结果回 window.__operoNative.onVoice(text, err) */
+  voice?(lang: string): void
 }
 
 /** 这台手机（外壳）自己的设置，存在手机上 */
@@ -42,7 +44,9 @@ export interface ShellPrefs {
 declare global {
   interface Window {
     OperoNative?: OperoNativeApi
-    __operoNative?: { onVerify(id: string, ok: boolean, err?: string): void; open(route: string): void }
+    __operoNative?: { onVerify(id: string, ok: boolean, err?: string): void; open(route: string): void; onVoice?(text: string, err?: string): void }
+    SpeechRecognition?: any
+    webkitSpeechRecognition?: any
   }
 }
 
@@ -83,7 +87,9 @@ export function nativeTheme(dark: boolean, bg?: string, panel?: string) {
   const n = native()!
   safe(() => (n.setBars && bg && panel ? n.setBars(dark, bg, panel) : n.setTheme(dark)), undefined)
 }
-export function nativeBadge(n: number) { if (inApp) safe(() => native()!.setBadge(n), undefined) }
+/** 桌面端（code/desktop）给网页开的几个功能 */
+const desk = () => (window as unknown as { OperoDesktop?: { setBadge(n: number): void; openExternal(u: string): void } }).OperoDesktop
+export function nativeBadge(n: number) { if (inApp) safe(() => native()!.setBadge(n), undefined); else desk()?.setBadge(n) }
 export function nativeRoute(route: string) { if (inApp) safe(() => native()!.setRoute(route), undefined) }
 export function nativeUnpair() { if (inApp) safe(() => native()!.unpair(), undefined) }
 export function getShell(): ShellPrefs | null {
@@ -95,6 +101,7 @@ export function nativeHaptic() { if (inApp) safe(() => native()!.haptic(), undef
 
 /** 到原处去（App 里交给系统打开对应的 App，浏览器里开新窗口） */
 export function openExternal(url: string) {
+  if (!inApp && desk()) { desk()!.openExternal(url); return }
   if (inApp) safe(() => native()!.openExternal(url), undefined)
   else window.open(url, '_blank', 'noopener')
 }
@@ -105,3 +112,29 @@ export function onNativeOpen(fn: (route: string) => void) {
 }
 
 if (inApp) document.documentElement.classList.add('in-app')
+
+// ---------- 说话转文字：App 里用手机自带的语音识别，浏览器里用 Web Speech（Chrome / Edge / Safari） ----------
+let voiceWait: ((r: { text: string; err?: string }) => void) | null = null
+if (window.__operoNative) window.__operoNative.onVoice = (text, err) => { voiceWait?.({ text, err }); voiceWait = null }
+
+export const canDictate = () => (inApp && typeof window.OperoNative?.voice === 'function') || !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+
+/** 听一句话，返回文字（空 = 没听清 / 取消） */
+export function dictate(lang: string): Promise<string> {
+  if (inApp && typeof window.OperoNative?.voice === 'function') {
+    return new Promise((resolve) => { voiceWait = (r) => resolve(r.text || ''); safe(() => window.OperoNative!.voice!(lang), undefined) })
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!SR) return Promise.reject(new Error('这个浏览器不支持语音输入'))
+  return new Promise((resolve, reject) => {
+    const r = new SR()
+    r.lang = lang
+    r.interimResults = false
+    r.continuous = false
+    let out = ''
+    r.onresult = (e: any) => { for (const x of e.results) out += x[0].transcript }
+    r.onerror = (e: any) => (e.error === 'no-speech' || e.error === 'aborted' ? resolve('') : reject(new Error(e.error === 'not-allowed' ? '没给麦克风权限' : `语音识别出错：${e.error}`)))
+    r.onend = () => resolve(out)
+    r.start()
+  })
+}

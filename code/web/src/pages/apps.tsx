@@ -246,6 +246,7 @@ const GROUP_HINT: Record<CredGroup, string> = {
   数据库: '你的数据库账号；只读账号就只能查，读写账号改数据也会先存快照',
   代码仓库: '你的 Codeup / GitHub 令牌；你能看哪些仓库，员工就能看哪些',
   云账号: '你的云子账号（AccessKey）；按它的策略来',
+  签名证书: 'Android 签名证书（keystore）：发布时和员工签名用，密码员工拿不到',
   AI: '模型的 API Key；按量计费',
   消息渠道: '邮箱、Slack、Telegram 的账号；消息助理用它收消息、起草回复（发之前要你点）',
   其它: '签名证书、第三方密钥……',

@@ -13,6 +13,8 @@ import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
 import { startTriggerLoop } from './triggers.ts'
 import { startLocalProxy } from './tunnel.ts'
+import * as inbox from './inbox.ts'
+import './notify.ts' // 推送同时转给外部提醒渠道
 import type { Device } from './types.ts'
 
 const TYPES: Record<string, string> = {
@@ -21,14 +23,23 @@ const TYPES: Record<string, string> = {
   '.mp4': 'video/mp4', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8', '.webmanifest': 'application/manifest+json',
 }
 
-let indexCache: { mtime: number; html: string } | null = null
-function indexHtml(): string | null {
+let indexCache: { mtime: number; base: string; html: string } | null = null
+/** 装在子路径下（https://x.com/opero/）：前缀来自 OPERO_URL 的路径，或 nginx 传的 X-Forwarded-Prefix；网页里的 <base href> 换成它，接口和资源都按它走 */
+function basePath(req: http.IncomingMessage): string {
+  let b = ''
+  try { b = new URL(cfg.publicUrl).pathname } catch { /* 没配 */ }
+  if (!b || b === '/') b = String(req.headers['x-forwarded-prefix'] ?? '')
+  b = b.replace(/[^\w./-]/g, '').replace(/\/+$/, '')
+  return `${b}/`.replace(/^(?!\/)/, '/')
+}
+function indexHtml(req: http.IncomingMessage): string | null {
   const p = path.join(cfg.web, 'index.html')
   let st: fs.Stats
   try { st = fs.statSync(p) } catch { return null }
-  if (indexCache?.mtime !== st.mtimeMs) {
+  const base = basePath(req)
+  if (indexCache?.mtime !== st.mtimeMs || indexCache.base !== base) {
     const raw = fs.readFileSync(p, 'utf8')
-    indexCache = { mtime: st.mtimeMs, html: raw.replace('</head>', `<script>window.OPERO_MODE='instance'</script></head>`) }
+    indexCache = { mtime: st.mtimeMs, base, html: raw.replace(/<base href="[^"]*"\s*\/?>/, `<base href="${base}" />`).replace('</head>', `<script>window.OPERO_MODE='instance'</script></head>`) }
   }
   return indexCache.html
 }
@@ -51,7 +62,7 @@ function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, pathna
       }
     } catch { /* 不是文件就给首页 */ }
   }
-  const html = indexHtml()
+  const html = indexHtml(req)
   if (!html) { res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(`还没有网页：先在 code/web 里 npm ci && npm run build（找的是 ${cfg.web}）`); return }
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Frame-Options': 'SAMEORIGIN', 'Referrer-Policy': 'same-origin' })
   res.end(html)
@@ -74,7 +85,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     const bearer = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
     // Agent 的请求要验签名（签的是请求体）：先把请求体读出来
     let pre: Buffer | null = null
-    if ((m.r.auth === 'agent' || p === '/api/agent/register') && req.method !== 'GET' && req.method !== 'HEAD') pre = await readBody(req, 4 * 1024 * 1024)
+    if ((m.r.auth === 'agent' || p === '/api/agent/register') && req.method !== 'GET' && req.method !== 'HEAD') pre = await readBody(req, m.r.raw ? 300 * 1024 * 1024 : 4 * 1024 * 1024) // raw = 发布产物
     if (m.r.auth === 'owner' || m.r.auth === 'none') c.sess = auth.findSession(parseCookies(req.headers.cookie)[auth.COOKIE]) ?? undefined
     if (m.r.auth === 'owner') {
       if (!c.sess) throw new HttpError(401, '要先登录', 'AUTH')
@@ -107,7 +118,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     }
     if (pre) {
       c.raw = pre
-      if (pre.length) { try { c.body = JSON.parse(pre.toString('utf8')) } catch { throw new HttpError(400, '不是 JSON') } }
+      if (pre.length && !m.r.raw) { try { c.body = JSON.parse(pre.toString('utf8')) } catch { throw new HttpError(400, '不是 JSON') } }
     } else if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'DELETE') {
       const buf = await readBody(req, m.r.raw ? 30 * 1024 * 1024 : 4 * 1024 * 1024)
       if (m.r.raw) c.raw = buf
@@ -131,6 +142,7 @@ server.listen(cfg.port, cfg.host, () => {
   console.log(`Opero ${cfg.version} 在 http://${cfg.host}:${cfg.port}（数据 ${cfg.data} · 工作目录 ${cfg.work} · AI 用户 ${cfg.aiUser || '（和 Opero 同一个用户）'}）`)
   if (!cfg.aiUser) console.warn('注意：没设 OPERO_AI_USER，AI 执行器和 Opero 是同一个系统用户，理论上能读到保险箱文件。正式用请用安装脚本装（会建 opero-ai 用户）。')
   startHealthLoop()
+  inbox.start()
   startLocalProxy()
   startTriggerLoop()
 })

@@ -32,6 +32,14 @@ export interface Employee {
   workspace: string
   menus: string[] // 底部菜单（菜单项在 src/menus.ts 注册，二开见 docs/规范/底部菜单.md）
   persona?: string
+  gender?: string // 人设：性别
+  memRepo?: string // 记忆仓库远端（可选）
+  memCred?: string
+  canManage?: boolean // 能建 / 改别的员工
+  reads?: string[] // 只读参考的工作空间
+  budget?: number // 每月预算（美元）
+  workBranch?: string // 在自己的分支上改，干完提合并请求
+  dns?: string[] // 能改哪些域名的解析
   // 每个员工都是一个 work：这三项选了就记住（按员工存）
   model: string
   effort: Effort
@@ -116,6 +124,9 @@ export interface Session {
   pinned?: boolean // 置顶（用户自己设）
   working?: string // 在干活时的一句话（绿色）
   waiting?: string // 要你处理（预览前红字）
+  archived?: number // 归档了（开新会话接着做 / 换执行器）：不在会话列表里
+  title?: string // 归档时记的一句
+  draft?: string // 新会话输入框预填（交接）
 }
 
 // ---------- 工作空间 / 问题 ----------
@@ -137,7 +148,75 @@ export interface Workspace {
   branches: { name: string; status: string; checks?: string }[]
   commits: { sha: string; msg: string; who: string; when: string }[]
   docs: { name: string; updated: string }[]
+  /** 干完自动提交推送、派活前自动拉最新（默认开） */
+  autoSync?: boolean
+  /** 发布目标：一台服务器 + 一条命令 */
+  deploys?: Deploy[]
+  budget?: number // 这个项目每月预算（美元）
+  buildCfg?: BuildCfg // 编译设置
 }
+
+/** 发布环境：发到哪几台、部署目录、部署脚本 / 命令、签名、检查、留几个版本、员工能不能发 */
+export interface Deploy {
+  id: string; name: string; servers: string[]; dir?: string; script?: string; command?: string
+  sign?: string; health?: string; keep?: number; ai?: 'auto' | 'ask' | 'off'; autoRollback?: boolean; last?: string; lastOk?: boolean
+}
+/** 编译设置：模板、在哪编 */
+export interface BuildCfg {
+  kind: 'node' | 'go' | 'android' | 'spring' | 'custom'
+  provider: 'yunxiao' | 'github' | 'local'
+  subdir?: string; cmd?: string; versionFile?: string; versionRe?: string; service?: string; file?: string
+  spring?: { tool?: 'maven' | 'gradle'; jdk?: 17 | 21; task?: string; jar?: string; dirs?: string[] }
+  yunxiao?: { cred: string; org?: string; pipelineId?: string; image?: string; at?: number }
+  github?: { workflow?: string; at?: number }
+  local?: { server: string }
+}
+/** 服务器上登记的目录 */
+export interface ServerDir { path: string; mode: 'read' | 'write' | 'deploy'; note?: string; ok?: boolean; error?: string }
+export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
+/** 真的一套的一次发布 */
+export interface LiveRelease {
+  id: string; ws: string; target: string; targetName: string; version: string; sha: string; status: 'running' | 'success' | 'failed'
+  steps: ReleaseStep[]; note?: string; by: string; emp?: string; sid?: string; rollbackOf?: string; servers?: string[]; pkgName?: string; buildUrl?: string; kept?: boolean
+  started: number; ended?: number; error?: string; tail?: string
+}
+/** 收消息的账号（邮箱 / Slack） */
+export interface InChannel { id: string; kind: 'email' | 'slack'; name: string; cred: string; enabled: boolean; imapHost?: string; imapPort?: number; user?: string; team?: string; status?: 'ok' | 'error'; error?: string; lastSync?: number; convCount?: number }
+/** 收件箱里的一条 */
+export interface InboxItem {
+  id: string; ch: string; kind: 'email' | 'slack'; from: string; fromAddr?: string; subject: string; snippet: string; at: number; url?: string
+  mention?: boolean; cat?: 'need' | 'fyi' | 'skip'; by?: 'ai' | 'rule' | 'me'; summary?: string; important?: boolean; done?: boolean; draft?: string
+}
+/** 提醒发到外部的渠道 */
+export interface Notifier {
+  id: string; kind: 'email' | 'telegram' | 'slack' | 'wecom' | 'dingtalk' | 'feishu' | 'webhook'; name: string; events: ('decide' | 'error' | 'all')[]; enabled: boolean; cred: string
+  credName?: string; chatId?: string; smtpHost?: string; smtpPort?: number; smtpUser?: string; to?: string; lastOk?: number; lastError?: string
+}
+/** 登记的域名（DNS） */
+export interface Domain { id: string; domain: string; provider: 'cloudflare' | 'aliyun'; cred: string }
+
+/** 真的一套的问题清单（日志巡检记下来的线上问题） */
+export interface LiveIssue {
+  id: string
+  title: string
+  server?: string
+  workspace?: string
+  severity: 'high' | 'mid' | 'low'
+  status: 'new' | 'fixing' | 'fixed' | 'known' | 'ignored'
+  count: number
+  first: number
+  last: number
+  key: string
+  sample: string
+  cause?: string
+  reporter?: string
+  fixer?: string
+  ignoreUntil?: number
+  note?: string
+}
+
+/** 服务器给员工的规矩 */
+export interface Policy { allowBuild?: boolean; allowTest?: boolean; deny?: string[]; memPct?: number; maxConcurrent?: number }
 
 export type IssueStatus = 'new' | 'watching' | 'fixing' | 'fixed' | 'ignored'
 export interface Issue {
@@ -164,6 +243,10 @@ export interface Server {
   env: EnvTag
   /** 员工在上面改东西先出确认卡片；没设过按标签猜（像生产的就开） */
   protect?: boolean
+  /** 给员工的规矩：能不能编译 / 自测、禁止的命令、内存上限、同时几个员工 */
+  policy?: Policy
+  /** 登记的本地目录：员工只读 / 读写、发布能部署进去 */
+  dirs?: ServerDir[]
   os: string
   agent: string
   online: boolean
@@ -206,7 +289,7 @@ export interface ReleaseRecord {
 }
 
 /** 权限 = 你在公司本来就有的账号，带进来就有；没有的这里也没有 */
-export type CredGroup = '服务器' | '数据库' | '代码仓库' | '云账号' | 'AI' | '消息渠道' | '其它'
+export type CredGroup = '服务器' | '数据库' | '代码仓库' | '云账号' | '签名证书' | 'AI' | '消息渠道' | '其它'
 export interface Credential {
   id: string
   /** 用户名（账号密码 / Codeup 令牌要配用户名时） */
@@ -330,6 +413,7 @@ export interface Usage {
 export interface Settings {
   prodProtect: boolean
   habits: string // 我的习惯：所有员工都遵守的个人规矩（每次派活都带上）
+  phrases?: string[] // 常用语：聊天输入框点一下就填进去
   /** 风格：'system' = 跟随系统（浅色用 themeLight、深色用 themeDark）；'custom' = 自己挑的三个颜色；其它 = themes.ts 里某一套的 key */
   theme: string
   themeLight: string
@@ -360,7 +444,7 @@ export type PageName =
   | 'me' | 'meEdit' | 'settings' | 'usage' | 'security' | 'about' | 'habits' | 'customize'
   | 'chatSettings' | 'channels' | 'inbox' | 'knowledge' | 'flows'
   | 'diff' | 'queryResult' | 'profile' | 'placeholder'
-  | 'executors' | 'dataSourceAdd' | 'comingSoon'
+  | 'executors' | 'dataSourceAdd' | 'comingSoon' | 'history' | 'domains' | 'domain'
 
 export interface Route {
   page: PageName

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外壳界面文字（生成：见 docs/交接.md 第八十一轮）；网页里的文字在 code/web/src/i18n -->
+<resources>
+    <string name="locked">Opero مقفل</string>
+    <string name="unlock">فتح القفل</string>
+    <string name="unlock_title">فتح قفل Opero</string>
+    <string name="unpaired">تم فصل هذا الهاتف من الويب. أعد الإقران.</string>
+    <string name="cant_reach">تعذّر الوصول إلى %1$s: %2$s</string>
+    <string name="cant_open">تعذّر فتح %1$s: %2$s</string>
+    <string name="no_network">لا توجد شبكة</string>
+    <string name="speak">تحدّث الآن</string>
+    <string name="bad_address">عنوان غير صالح</string>
+    <string name="not_opero_http">هذا العنوان ليس خادم Opero (HTTP %1$s)</string>
+    <string name="not_opero">هذا العنوان ليس خادم Opero: أدخل عنوان Opero المثبّت على خادمك (لا يمكن الاتصال بالموقع أو العرض التجريبي)</string>
+    <string name="bad_code">رمز الإقران خاطئ أو منتهي الصلاحية</string>
+    <string name="too_old">إصدار Opero هذا قديم ولا يدعم الإقران. اتصل أولًا بدون رمز.</string>
+    <string name="cant_connect">تعذّر الاتصال</string>
+    <string name="update_title">إصدار جديد من تطبيق Opero %1$s</string>
+    <string name="update_note">تحديث غلاف التطبيق (الواجهة على الويب، فلا تحتاج للتحديث عادةً)</string>
+    <string name="update">تحديث</string>
+    <string name="download_failed">فشل التنزيل</string>
+    <string name="later">لاحقًا</string>
+    <string name="no_server">لم يتم الاتصال بـ Opero بعد</string>
+    <string name="bad_url">عنوان غير صالح: %1$s</string>
+    <string name="error_code">حدث خطأ (%1$s)</string>
+    <string name="no_lock">لم يتم إعداد قفل الشاشة أو البصمة أو الوجه بعد. أعدّه أولًا من إعدادات النظام.</string>
+    <string name="bio_unavailable">البصمة / الوجه غير متاحة على هذا الهاتف حاليًا</string>
+    <string name="security_update">يحتاج النظام إلى تحديث أمني أولًا</string>
+    <string name="bio_unsupported">البصمة / الوجه غير مدعومة على هذا الهاتف</string>
+    <string name="verify_failed">فشل التحقق</string>
+    <string name="ch_decide">يحتاج قرارك</string>
+    <string name="ch_decide_desc">موظف ينتظر ضغطك على بطاقة، أو عملية خطرة تحتاج تأكيدك</string>
+    <string name="ch_alarm">تنبيهات حرجة</string>
+    <string name="ch_alarm_desc">مشكلة كبيرة في الإنتاج: يستمر الرنين حتى تضغط «فهمت»</string>
+    <string name="ch_info">للعلم</string>
+    <string name="ch_info_desc">العمل المنجز ورسائل الموظفين المضبوطين على «التنبيه لكل رسالة»</string>
+    <string name="ch_service">البقاء متصلًا</string>
+    <string name="ch_service_desc">يبقى متصلًا بـ Opero (يظهر دائمًا؛ يمكنك طيّه من إعدادات النظام)</string>
+    <string name="got_it">فهمت</string>
+    <string name="take_look">اذهب وانظر</string>
+    <string name="connected">متصل بـ Opero</string>
+    <string name="reconnecting">انقطع الاتصال، جارٍ إعادة المحاولة…</string>
+    <string name="service_text">القرارات والتنبيهات الحرجة تصلك فورًا</string>
+    <string name="acked">تم التأكيد، لن يرنّ مجددًا</string>
+    <string name="ack_failed">تعذّر التأكيد: %1$s. افتح التطبيق وحاول مجددًا</string>
+    <string name="download_failed_code">فشل التنزيل (%1$s)</string>
+    <string name="bad_checksum">لم يتطابق التحقق من الحزمة وتم حذفها. حاول لاحقًا</string>
+</resources>

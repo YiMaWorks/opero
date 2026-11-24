@@ -1,5 +1,7 @@
 package cn.yimakeji.opero.lock
 
+import cn.yimakeji.opero.Tr
+import cn.yimakeji.opero.R
 import android.content.Context
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
@@ -44,10 +46,10 @@ object AppLock {
 
     fun unavailable(ctx: Context): String? = when (BiometricManager.from(ctx).canAuthenticate(AUTH)) {
         BiometricManager.BIOMETRIC_SUCCESS -> null
-        BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "手机还没设置锁屏密码、指纹或面容，先到系统设置里设置"
-        BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE, BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> "这台手机暂时用不了指纹 / 面容"
-        BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> "系统要先更新安全补丁"
-        else -> "这台手机用不了指纹 / 面容"
+        BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> Tr.s(R.string.no_lock)
+        BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE, BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> Tr.s(R.string.bio_unavailable)
+        BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED -> Tr.s(R.string.security_update)
+        else -> Tr.s(R.string.bio_unsupported)
     }
 
     private const val GRACE_MS = 30 * 60_000L
@@ -68,6 +70,6 @@ object AppLock {
         })
         val info = BiometricPrompt.PromptInfo.Builder().setTitle(title).apply { subtitle?.takeIf { it.isNotBlank() }?.let { setSubtitle(it) } }
             .setAllowedAuthenticators(AUTH).build()
-        try { p.authenticate(info) } catch (e: Exception) { onFail(e.message ?: "验证失败") }
+        try { p.authenticate(info) } catch (e: Exception) { onFail(e.message ?: Tr.s(R.string.verify_failed)) }
     }
 }

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外壳界面文字（生成：见 docs/交接.md 第八十一轮）；网页里的文字在 code/web/src/i18n -->
+<resources>
+    <string name="locked">Opero 已锁定</string>
+    <string name="unlock">解锁</string>
+    <string name="unlock_title">解锁 Opero</string>
+    <string name="unpaired">这台手机已经在网页里断开了，重新配对一下</string>
+    <string name="cant_reach">连不上 %1$s：%2$s</string>
+    <string name="cant_open">打不开 %1$s：%2$s</string>
+    <string name="no_network">网络不通</string>
+    <string name="speak">说吧</string>
+    <string name="bad_address">地址不对</string>
+    <string name="not_opero_http">这个地址不是 Opero 后台（HTTP %1$s）</string>
+    <string name="not_opero">这个地址不是 Opero 后台：填你自己服务器上装好的 Opero 的地址（官网和在线试用不能连）</string>
+    <string name="bad_code">配对码不对或者过期了</string>
+    <string name="too_old">这套 Opero 版本太旧，还不支持配对，先不填配对码直接连</string>
+    <string name="cant_connect">连不上</string>
+    <string name="update_title">Opero App 有新版本 %1$s</string>
+    <string name="update_note">外壳更新（界面在网页里，平时不用更新 App）</string>
+    <string name="update">更新</string>
+    <string name="download_failed">下载失败</string>
+    <string name="later">以后再说</string>
+    <string name="no_server">还没连接你的 Opero</string>
+    <string name="bad_url">地址不对：%1$s</string>
+    <string name="error_code">出错了（%1$s）</string>
+    <string name="no_lock">手机还没设置锁屏密码、指纹或面容，先到系统设置里设置</string>
+    <string name="bio_unavailable">这台手机暂时用不了指纹 / 面容</string>
+    <string name="security_update">系统要先更新安全补丁</string>
+    <string name="bio_unsupported">这台手机用不了指纹 / 面容</string>
+    <string name="verify_failed">验证失败</string>
+    <string name="ch_decide">要你决定</string>
+    <string name="ch_decide_desc">员工等你点卡片、危险操作要你确认</string>
+    <string name="ch_alarm">严重告警</string>
+    <string name="ch_alarm_desc">生产出大问题：一直响到你点「我知道了」</string>
+    <string name="ch_info">知道就行</string>
+    <string name="ch_info_desc">做完了、你设成「每条都提醒」的员工的消息</string>
+    <string name="ch_service">保持连接</string>
+    <string name="ch_service_desc">和你的 Opero 保持连接（这一条常驻，可以在系统设置里折叠）</string>
+    <string name="got_it">我知道了</string>
+    <string name="take_look">去看看</string>
+    <string name="connected">已连上你的 Opero</string>
+    <string name="reconnecting">连接中断，正在重试…</string>
+    <string name="service_text">要你决定的事、严重告警会第一时间提醒你</string>
+    <string name="acked">已确认，不会再响</string>
+    <string name="ack_failed">确认失败：%1$s，打开 App 再试</string>
+    <string name="download_failed_code">下载失败（%1$s）</string>
+    <string name="bad_checksum">安装包校验不对，已删掉，稍后再试</string>
+</resources>

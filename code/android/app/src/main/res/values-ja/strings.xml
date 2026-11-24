@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 外壳界面文字（生成：见 docs/交接.md 第八十一轮）；网页里的文字在 code/web/src/i18n -->
+<resources>
+    <string name="locked">Opero はロック中</string>
+    <string name="unlock">ロック解除</string>
+    <string name="unlock_title">Opero のロック解除</string>
+    <string name="unpaired">この端末はウェブで切断されました。もう一度ペアリングしてください</string>
+    <string name="cant_reach">%1$s に接続できません：%2$s</string>
+    <string name="cant_open">%1$s を開けません：%2$s</string>
+    <string name="no_network">ネットワークに接続できません</string>
+    <string name="speak">どうぞ話してください</string>
+    <string name="bad_address">アドレスが正しくありません</string>
+    <string name="not_opero_http">このアドレスは Opero サーバーではありません（HTTP %1$s）</string>
+    <string name="not_opero">このアドレスは Opero サーバーではありません。自分のサーバーに入れた Opero のアドレスを入力してください（公式サイトとデモには接続できません）</string>
+    <string name="bad_code">ペアリングコードが違うか期限切れです</string>
+    <string name="too_old">この Opero は古くてペアリングに未対応です。まずはコードなしで接続してください</string>
+    <string name="cant_connect">接続できません</string>
+    <string name="update_title">Opero アプリの新しいバージョン %1$s</string>
+    <string name="update_note">アプリ本体の更新（画面はウェブなので普段は更新不要です）</string>
+    <string name="update">更新</string>
+    <string name="download_failed">ダウンロードに失敗しました</string>
+    <string name="later">あとで</string>
+    <string name="no_server">まだ Opero に接続していません</string>
+    <string name="bad_url">アドレスが正しくありません：%1$s</string>
+    <string name="error_code">エラーが発生しました（%1$s）</string>
+    <string name="no_lock">画面ロック・指紋・顔認証が未設定です。先にシステム設定で設定してください</string>
+    <string name="bio_unavailable">この端末では今、指紋 / 顔認証を使えません</string>
+    <string name="security_update">先にシステムのセキュリティ更新が必要です</string>
+    <string name="bio_unsupported">この端末は指紋 / 顔認証に対応していません</string>
+    <string name="verify_failed">認証に失敗しました</string>
+    <string name="ch_decide">あなたの判断が必要</string>
+    <string name="ch_decide_desc">社員がカードの操作を待っている、または危険な操作の確認が必要</string>
+    <string name="ch_alarm">重大なアラート</string>
+    <string name="ch_alarm_desc">本番で重大な問題：「了解」を押すまで鳴り続けます</string>
+    <string name="ch_info">参考</string>
+    <string name="ch_info_desc">完了の通知や、「毎回通知」にした社員のメッセージ</string>
+    <string name="ch_service">接続を維持</string>
+    <string name="ch_service_desc">Opero との接続を維持します（常に表示されます。システム設定で折りたためます）</string>
+    <string name="got_it">了解</string>
+    <string name="take_look">見てみる</string>
+    <string name="connected">Opero に接続しました</string>
+    <string name="reconnecting">接続が切れました。再試行中…</string>
+    <string name="service_text">判断が必要なことや重大なアラートをすぐに通知します</string>
+    <string name="acked">確認しました。もう鳴りません</string>
+    <string name="ack_failed">確認できませんでした：%1$s。アプリを開いてもう一度</string>
+    <string name="download_failed_code">ダウンロードに失敗しました（%1$s）</string>
+    <string name="bad_checksum">インストーラーの検証に失敗したため削除しました。後でもう一度</string>
+</resources>

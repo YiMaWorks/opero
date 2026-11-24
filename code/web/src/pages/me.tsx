@@ -13,6 +13,7 @@ import { appVersion, getShell, nativeUnpair, setShell, type ShellPrefs } from '.
 import { CUR, LIVE } from '../mode'
 import { LangPicker } from '../components/LangPicker'
 import { LIVE_APPS } from './live'
+import { UsageDetail } from './live2'
 
 export function MePage({ params, nav }: PageProps) {
   const me = useStore((s) => s.me)
@@ -105,6 +106,7 @@ export function UsagePage({ nav }: PageProps) {
             </div>
           ))}
         </Section>
+        {LIVE && <UsageDetail />}
         <p className="hint">超预算时员工会先停下来问你；常做的事存成固定流程后，第二次不经过 AI，更快更省。</p>
       </div>
     </div>
@@ -143,6 +145,7 @@ export function SettingsPage({ nav }: PageProps) {
             <Toggle on={s.aiDown} onChange={(v) => up({ aiDown: v })} />
           </div>
         </Section>}
+        {LIVE && <Section title="通知发到哪" right={<span className="sub">不装 App 也能收到</span>}><Row title="Telegram、Slack、企业微信、钉钉、飞书、邮件、Webhook" sub="要你决定的、出错的同时发到这些地方" chevron onClick={() => nav.push({ page: 'channels' })} /></Section>}
         {!LIVE && <Section title="通知发到哪" right={<span className="sub">不装 App 也能收到</span>}>
           <div className="pad chips">
             {['App 推送', 'Telegram', 'Slack', '邮件'].map((t) => (

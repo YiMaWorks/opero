@@ -23,6 +23,8 @@ class Bridge(private val host: Host) {
         fun relogin()
         fun pair(server: String, code: String)
         fun shellChanged()
+        /** 系统语音输入（打开手机自带的语音识别），结果回 window.__operoNative.onVoice(text) */
+        fun voice(lang: String)
     }
 
     @JavascriptInterface fun version(): String = BuildConfig.VERSION_NAME
@@ -45,6 +47,9 @@ class Bridge(private val host: Host) {
     @JavascriptInterface fun openExternal(url: String) { if (host.trusted() && (url.startsWith("http") || url.startsWith("mailto:") || url.startsWith("tg:") || url.startsWith("slack:"))) host.openExternal(url) }
 
     @JavascriptInterface fun haptic() { host.haptic() }
+
+    /** 说话转文字：用手机自带的语音识别（不用装模型、不要录音权限），说完把文字交回网页 */
+    @JavascriptInterface fun voice(lang: String) { if (host.trusted()) host.voice(lang) }
 
     /** 正在看的会话（chat/<编号>）：推送的就是它时不弹通知 */
     @JavascriptInterface fun setRoute(route: String?) { cn.yimakeji.opero.push.VisibleRoute.route = route?.ifBlank { null } }

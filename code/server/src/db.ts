@@ -18,10 +18,14 @@ CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, emp TEXT NOT NULL, ts INTE
 CREATE TABLE IF NOT EXISTS auth_sessions (token TEXT PRIMARY KEY, created INTEGER NOT NULL, seen INTEGER NOT NULL, verified INTEGER NOT NULL, device TEXT);
 CREATE TABLE IF NOT EXISTS push (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, data TEXT NOT NULL);
 `)
+// 收件箱（邮件、Slack 收进来的消息）：量大，单独一张表
+db.exec('CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, ch TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS inbox_ts ON inbox (ts);')
+// 用量按工作空间分：老库补一列
+try { db.exec('ALTER TABLE runs ADD COLUMN ws TEXT') } catch { /* 已经有了 */ }
 
 export type Coll =
   | 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries'
-  | 'triggers' | 'kb' | 'workspaces' | 'devices' | 'queue'
+  | 'triggers' | 'kb' | 'workspaces' | 'devices' | 'queue' | 'issues' | 'releases' | 'domains' | 'channels' | 'notifiers'
 
 export interface Doc { id: string }
 

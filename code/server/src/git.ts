@@ -14,7 +14,7 @@ import type { Credential, Workspace } from './types.ts'
 const askpass = path.join(cfg.data, 'git-askpass.sh')
 fs.writeFileSync(askpass, '#!/bin/sh\ncase "$1" in\n  Username*) printf "%s" "$OPERO_GIT_USER" ;;\n  *) printf "%s" "$OPERO_GIT_PASS" ;;\nesac\n', { mode: 0o700 })
 
-const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+export const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
 export async function git(args: string[], opts: { cwd?: string; cred?: string; timeoutMs?: number; host?: string } = {}): Promise<{ code: number; out: string }> {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' }
@@ -43,9 +43,11 @@ export async function git(args: string[], opts: { cwd?: string; cred?: string; t
 }
 
 /** 远程的工作空间：root 跑完 git 后把目录还给 AI 用户（不然它改不了） */
-async function handBack(w: Workspace) {
-  if (hosts.isLocal(w.server)) return
-  await agents.exec(w.server!, `chown -R opero-ai:opero-work ${q(w.dir)} 2>/dev/null; chmod -R g+rwX ${q(w.dir)} 2>/dev/null; true`, { timeoutMs: 120_000 })
+async function handBack(w: Workspace) { await handBackDir(w.server, w.dir) }
+/** 远程目录：root 跑完 git 后交还给 AI 用户 */
+export async function handBackDir(host: string | undefined, dir: string) {
+  if (hosts.isLocal(host)) return
+  await agents.exec(host!, `chown -R opero-ai:opero-work ${q(dir)} 2>/dev/null; chmod -R g+rwX ${q(dir)} 2>/dev/null; true`, { timeoutMs: 120_000 })
 }
 
 export const providerOf = (url: string) => (/github\.com/i.test(url) ? 'GitHub' : /codeup\.aliyun/i.test(url) ? 'Codeup' : /gitee\.com/i.test(url) ? 'Gitee' : /gitlab/i.test(url) ? 'GitLab' : 'Git')

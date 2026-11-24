@@ -1,0 +1,25 @@
+{
+  "name": "opero-desktop",
+  "productName": "Opero",
+  "version": "0.1.0",
+  "description": "Opero desktop client: your own Opero in a window, a tray with what's waiting for you, system notifications",
+  "main": "main.js",
+  "license": "Apache-2.0",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "cn.yimakeji.opero.desktop",
+    "productName": "Opero",
+    "files": ["main.js", "preload.js", "pair.html", "i18n.js", "assets/**"],
+    "directories": { "output": "dist" },
+    "mac": { "target": ["dmg"], "category": "public.app-category.developer-tools", "icon": "assets/icon.png" },
+    "win": { "target": ["nsis"], "icon": "assets/icon.png" },
+    "linux": { "target": ["AppImage"], "category": "Development", "icon": "assets/icon.png" }
+  }
+}

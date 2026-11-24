@@ -909,3 +909,26 @@ body { background: var(--bg-solid); }
 .pend.busy { opacity: .6; }
 .pend.err { border-color: var(--danger, #D92D20); color: var(--danger, #D92D20); }
 .pend button { position: absolute; top: 2px; right: 4px; border: 0; background: none; color: var(--sub); font-size: 16px; cursor: pointer; line-height: 1; }
+
+/* 用量：最近 30 天的柱子 */
+.usage-days { display: flex; align-items: flex-end; gap: 4px; height: 120px; }
+.usage-day { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 8px; }
+.usage-day i { display: block; width: 100%; border-radius: 3px 3px 0 0; background: var(--primary); opacity: .75; }
+.usage-day span { font-size: 9px; color: var(--faint); margin-top: 3px; }
+/* 历史会话 */
+.history-msgs { display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow: auto; }
+.hist-msg { padding: 8px 10px; border-radius: 10px; background: var(--soft); }
+.hist-msg.me { background: var(--primary-soft); }
+.hist-msg.sys { background: transparent; padding: 2px 10px; }
+
+.queue-text { cursor: text; }
+.queue-edit { flex: 1; font: inherit; font-size: 13px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); resize: vertical; }
+
+.num-input { width: 90px; text-align: right; }
+/* 说话转文字：在听时按钮变色、呼吸 */
+.round-btn.on, .icon-btn.boxed.on { background: var(--danger); color: #fff; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .6; } }
+/* 看日志 */
+.log-view { max-height: 60vh; overflow: auto; font-size: 12px; line-height: 1.5; }
+.log-view .log-err { color: var(--danger); }
+.log-view .log-warn { color: #D97706; }

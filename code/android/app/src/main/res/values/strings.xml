@@ -1,4 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 外壳界面文字（生成：见 docs/交接.md 第八十一轮）；网页里的文字在 code/web/src/i18n -->
 <resources>
     <string name="app_name">Opero</string>
+    <string name="locked">Opero is locked</string>
+    <string name="unlock">Unlock</string>
+    <string name="unlock_title">Unlock Opero</string>
+    <string name="unpaired">This phone was disconnected on the web. Pair it again.</string>
+    <string name="cant_reach">Can\'t reach %1$s: %2$s</string>
+    <string name="cant_open">Can\'t open %1$s: %2$s</string>
+    <string name="no_network">No network</string>
+    <string name="speak">Speak now</string>
+    <string name="bad_address">Invalid address</string>
+    <string name="not_opero_http">This address is not an Opero server (HTTP %1$s)</string>
+    <string name="not_opero">This address is not an Opero server: enter the address of the Opero installed on your own server (the website and demo can\'t be connected)</string>
+    <string name="bad_code">Pairing code is wrong or expired</string>
+    <string name="too_old">This Opero is too old for pairing. Connect without a pairing code first.</string>
+    <string name="cant_connect">Can\'t connect</string>
+    <string name="update_title">New Opero App version %1$s</string>
+    <string name="update_note">Shell update (the interface lives on the web, so you rarely need to update the app)</string>
+    <string name="update">Update</string>
+    <string name="download_failed">Download failed</string>
+    <string name="later">Later</string>
+    <string name="no_server">Not connected to your Opero yet</string>
+    <string name="bad_url">Invalid address: %1$s</string>
+    <string name="error_code">Something went wrong (%1$s)</string>
+    <string name="no_lock">This phone has no screen lock, fingerprint or face set up yet. Set one up in system settings first.</string>
+    <string name="bio_unavailable">Fingerprint / face isn\'t available on this phone right now</string>
+    <string name="security_update">The system needs a security update first</string>
+    <string name="bio_unsupported">Fingerprint / face isn\'t supported on this phone</string>
+    <string name="verify_failed">Verification failed</string>
+    <string name="ch_decide">Needs you</string>
+    <string name="ch_decide_desc">An employee is waiting for you to tap a card, or a risky action needs your confirmation</string>
+    <string name="ch_alarm">Critical alerts</string>
+    <string name="ch_alarm_desc">Major production problems: keeps ringing until you tap \"Got it\"</string>
+    <string name="ch_info">FYI</string>
+    <string name="ch_info_desc">Finished work, and messages from employees set to \"notify every message\"</string>
+    <string name="ch_service">Stay connected</string>
+    <string name="ch_service_desc">Stays connected to your Opero (this one is always shown; you can collapse it in system settings)</string>
+    <string name="got_it">Got it</string>
+    <string name="take_look">Take a look</string>
+    <string name="connected">Connected to your Opero</string>
+    <string name="reconnecting">Connection lost, retrying…</string>
+    <string name="service_text">Decisions and critical alerts reach you right away</string>
+    <string name="acked">Acknowledged — it won\'t ring again</string>
+    <string name="ack_failed">Couldn\'t confirm: %1$s. Open the app and try again</string>
+    <string name="download_failed_code">Download failed (%1$s)</string>
+    <string name="bad_checksum">Installer checksum didn\'t match; it was deleted. Try again later</string>
 </resources>

@@ -1,5 +1,7 @@
 package cn.yimakeji.opero.push
 
+import cn.yimakeji.opero.Tr
+import cn.yimakeji.opero.R
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -43,7 +45,7 @@ class ActionReceiver : BroadcastReceiver() {
         OperoApp.ensureStore(ctx)
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
-            val msg = try { Api.post("/api/app/alarms/$alarm/ack"); "已确认，不会再响" } catch (e: Exception) { "确认失败：${e.message ?: "网络不通"}，打开 App 再试" }
+            val msg = try { Api.post("/api/app/alarms/$alarm/ack"); Tr.s(R.string.acked) } catch (e: Exception) { Tr.s(R.string.ack_failed, e.message ?: Tr.s(R.string.no_network)) }
             Handler(Looper.getMainLooper()).post { Toast.makeText(ctx.applicationContext, msg, Toast.LENGTH_SHORT).show() }
             pending.finish()
         }

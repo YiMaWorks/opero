@@ -29,6 +29,16 @@ export function enqueue(emp: string, text: string, files: QAtt[], source: QItem[
   return item
 }
 
+/** 改一条还没发的（只改文字，附件不动） */
+export function edit(id: string, text: string): QItem {
+  const q = get<QItem>('queue', id)
+  if (!q) throw new Error('这条已经发出去了')
+  const next = { ...q, text: text.slice(0, 20000) }
+  put('queue', next)
+  emit({ t: 'put', coll: 'queue', item: next })
+  return next
+}
+
 /** 删掉一条；dropFiles = 连它带的、还没发出去的文件一起删 */
 export function remove(id: string, dropFiles = false) {
   const q = get<QItem>('queue', id)
@@ -79,10 +89,18 @@ export function drain(emp: string) {
 
 // 接到执行器上：插不进去的话进队；一轮正常结束就发下一条
 runner.setHooks({
-  busy: (emp, text, files) => {
+  busy: (emp, text, files, why) => {
     const e = get<Employee>('employees', emp)
-    const atts: QAtt[] = files.map((f) => ({ id: path.basename(f.local ?? f.path), name: f.name, size: '', ext: (f.name.split('.').pop() ?? '').toUpperCase().slice(0, 4), image: f.image, mediaType: f.mediaType, url: e ? `/api/uploads/${e.id}/${encodeURIComponent(path.basename(f.local ?? f.path))}` : '' }))
-    try { enqueue(emp, text, atts, 'auto'); system(sessionFor(emp).id, '员工在忙，已排队：这一轮做完接着做') } catch (err) { system(sessionFor(emp).id, (err as Error).message) }
+    const atts: QAtt[] = files.map((f) => ({ id: path.basename(f.local ?? f.path), name: f.name, size: '', ext: (f.name.split('.').pop() ?? '').toUpperCase().slice(0, 4), image: f.image, mediaType: f.mediaType, url: e ? `api/uploads/${e.id}/${encodeURIComponent(path.basename(f.local ?? f.path))}` : '' }))
+    try { enqueue(emp, text, atts, 'auto'); system(sessionFor(emp).id, why ?? '员工在忙，已排队：这一轮做完接着做') } catch (err) { system(sessionFor(emp).id, (err as Error).message) }
   },
   idle: (emp, stopped) => { if (!stopped) setTimeout(() => drain(emp), 300) },
+  // 这台有员工做完了：因为「同时最多几个」在排队的员工，轮到一个
+  freed: (host) => setTimeout(() => {
+    const waiting = [...new Set(all<QItem>('queue').map((q) => q.emp))].filter((id) => !runner.isWorking(id))
+    for (const id of waiting) {
+      const e = get<Employee>('employees', id)
+      if (e && runner.hostOf(e) === host && drain(id)) return
+    }
+  }, 500),
 })

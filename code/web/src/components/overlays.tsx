@@ -6,6 +6,7 @@ import { Avatar } from './Avatar'
 import { Row, Section, Sheet } from './ui'
 import { IconBack, IconFingerprint, IconPlus, IconSearch } from './icons'
 import { LIVE } from '../mode'
+import { getPasskey, passkeySupported } from '../webauthn'
 import { api } from '../live'
 
 export function SearchOverlay({ onClose, onOpenChat, onOpen }: {
@@ -129,11 +130,17 @@ export function VerifyModal() {
 function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
   const [pwd, setPwd] = useState('')
   const [busy, setBusy] = useState(false)
+  const [byCode, setByCode] = useState(false)
+  const done = () => { const cur = getState().verify; set({ verify: null }); cur?.onOk() }
+  const withPasskey = async () => {
+    setBusy(true)
+    try { const o = await api('POST', '/api/auth/passkey/options', {}); await api('POST', '/api/auth/passkey/verify', await getPasskey(o)); done() } catch (e) { toast((e as Error).message); setBusy(false) }
+  }
   const go = async () => {
     if (!pwd) return
     setBusy(true)
     try {
-      await api('POST', '/api/auth/verify', { password: pwd })
+      await api('POST', '/api/auth/verify', byCode ? { code: pwd } : { password: pwd })
       const cur = getState().verify
       set({ verify: null })
       cur?.onOk()
@@ -147,8 +154,10 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
       <div className="sheet" onClick={(e) => e.stopPropagation()}>
         <b>验证本人</b>
         <p className="sub center">{title}{desc ? ` · ${desc}` : ''}</p>
-        <input type="password" autoFocus value={pwd} onChange={(e) => setPwd(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} placeholder="输入登录密码" autoComplete="current-password" />
-        <button className="btn primary" disabled={busy || !pwd} onClick={go}>{busy ? '验证中…' : '确认'}</button>
+        {passkeySupported() && <button className="btn primary" disabled={busy} onClick={withPasskey}>用通行密钥（指纹 / 面容）</button>}
+        <input type={byCode ? 'text' : 'password'} autoFocus value={pwd} onChange={(e) => setPwd(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && go()} placeholder={byCode ? '两步验证的 6 位码' : '输入登录密码'} autoComplete={byCode ? 'one-time-code' : 'current-password'} inputMode={byCode ? 'numeric' : undefined} />
+        <button className="btn ghost sm" onClick={() => { setByCode(!byCode); setPwd('') }}>{byCode ? '改用密码' : '改用两步验证码'}</button>
+        <button className={passkeySupported() ? 'btn default' : 'btn primary'} disabled={busy || !pwd} onClick={go}>{busy ? '验证中…' : '确认'}</button>
         <button className="btn default" onClick={() => set({ verify: null })}>取消</button>
       </div>
     </div>

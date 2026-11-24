@@ -48,11 +48,11 @@ export function SideNav({ tab, active, onPick }: Props) {
   } else if (tab === 'workspace') {
     title = '工作空间'
     action = { label: '接入仓库', route: { page: 'workspaceAdd' } }
-    const open = s.issues.filter((i) => i.status === 'new' || i.status === 'watching' || i.status === 'fixing').length
+    const open = LIVE ? s.liveIssues.filter((i) => i.status === 'new' || i.status === 'fixing').length : s.issues.filter((i) => i.status === 'new' || i.status === 'watching' || i.status === 'fixing').length
     body = (
       <>
         {item({ page: 'workspaces' }, '全部项目', <TabIcon tab="workspace" />, <em>{s.workspaces.length}</em>)}
-        {!LIVE && item({ page: 'issues' }, '问题清单', letter('问'), open ? <em className="hot">{open}</em> : undefined)}
+        {item({ page: 'issues' }, '问题清单', letter('问'), open ? <em className="hot">{open}</em> : undefined)}
         <div className="side-sep" />
         {s.workspaces.filter((w) => match(w.name + w.repo)).map((w) =>
           item({ page: 'workspace', params: { id: w.id } }, w.name, letter(w.name.slice(0, 1).toUpperCase()), undefined, `${w.branch} · ${w.last}`))}

@@ -2,6 +2,7 @@
 // 员工配置里只写菜单名（Employee.menus）；点了打开哪个页面在这里登记。不经过 AI，秒开。
 // 正式版：插件在清单里声明 menus（名字 + ui://界面 或 内核页面），加载插件时登记到这里。
 import type { Route } from './types'
+import { LIVE } from './mode'
 
 export interface MenuDef {
   /** 点了打开哪一页；拿得到员工 id 和它的工作空间 */
@@ -15,7 +16,7 @@ export interface MenuDef {
 export const MENU_REGISTRY: Record<string, MenuDef> = {
   问题清单: { plugin: 'core', desc: '这个员工负责的项目的问题', route: ({ employeeId }) => ({ page: 'issues', params: { project: employeeId.startsWith('shop') ? 'shop' : undefined } }) },
   日志扫描: { plugin: 'server', desc: '日志扫描触发器', route: () => ({ page: 'triggers' }) },
-  查生产库: { plugin: 'data', desc: '查询台（只读账号）', route: () => ({ page: 'query', params: { source: 'shop-prod' } }) },
+  查生产库: { plugin: 'data', desc: '查询台（只读账号）', route: () => (LIVE ? { page: 'data' } : { page: 'query', params: { source: 'shop-prod' } }) },
   发布记录: { plugin: 'release', desc: '最近的发布', route: () => ({ page: 'releases' }) },
   应用: { plugin: 'release', desc: '应用和环境、AI 发版设置', route: () => ({ page: 'releases', params: { tab: 'apps' } }) },
   改动记录: { plugin: 'core', desc: '工作空间的提交和分支', route: ({ workspace }) => ({ page: 'workspace', params: { id: workspace } }) },

@@ -16,6 +16,9 @@ import { LangPicker } from '../components/LangPicker'
 import { useLang } from '../i18n'
 import { CUR } from '../mode'
 import { headNav, type PageProps } from './nav'
+import { DirsSection, EmployeeWorkSections, PolicySection, WorkspaceAutoSections } from './live2'
+import { LogViewer, SignCertFields } from './live3'
+import { getPasskey, passkeySupported, createPasskey } from '../webauthn'
 
 // 环境是标签：随便起名、要几个都行；「改东西先确认」是单独的开关，没设过按标签猜（和后台 env.ts 一样）
 const PROD_RE = /生产|正式|線上|线上|prod|production|live/i
@@ -51,6 +54,9 @@ export function LiveLogin() {
   const [pwd, setPwd] = useState('')
   const [pwd2, setPwd2] = useState('')
   const [busy, setBusy] = useState(false)
+  // 开了两步验证：输完密码还要输一个码
+  const [ticket, setTicket] = useState<string | null>(null)
+  const [code, setCode] = useState('')
   const first = !!a.needOwner
   const go = async () => {
     if (!email.trim() || !pwd) { toast('账号和密码都要填'); return }
@@ -58,12 +64,33 @@ export function LiveLogin() {
     if (first && pwd !== pwd2) { toast('两次密码不一样'); return }
     setBusy(true)
     try {
-      await api('POST', first ? '/api/auth/setup' : '/api/auth/login', first ? { email: email.trim(), name: name.trim() || '主人', password: pwd } : { email: email.trim(), password: pwd })
+      const r = await api<{ mfa?: boolean; ticket?: string }>('POST', first ? '/api/auth/setup' : '/api/auth/login', first ? { email: email.trim(), name: name.trim() || '主人', password: pwd } : { email: email.trim(), password: pwd })
+      if (r.mfa && r.ticket) { setTicket(r.ticket); return }
       await boot()
     } catch (e) {
       toast((e as Error).message)
     } finally { setBusy(false) }
   }
+  const sendCode = async () => {
+    if (!ticket || !code.trim()) return
+    setBusy(true)
+    try { await api('POST', '/api/auth/mfa', { ticket, code: code.trim() }); await boot() } catch (e) { toast((e as Error).message); if (/过期|太多/.test((e as Error).message)) setTicket(null) } finally { setBusy(false) }
+  }
+  const withPasskey = async () => {
+    setBusy(true)
+    try { const o = await api('POST', '/api/auth/passkey/options', {}); await api('POST', '/api/auth/passkey/login', await getPasskey(o)); await boot() } catch (e) { toast((e as Error).message) } finally { setBusy(false) }
+  }
+  if (ticket) return (
+    <div className="auth">
+      <div className="auth-box">
+        <div className="auth-logo"><Wordmark size={40} /></div>
+        <p className="sub center">输入验证器 App 里的 6 位动态码（或者一个恢复码）</p>
+        <Field label="动态码"><input autoFocus value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" onKeyDown={(e) => e.key === 'Enter' && sendCode()} /></Field>
+        <button className="btn primary block" disabled={busy || !code.trim()} onClick={sendCode}>{busy ? '…' : '登录'}</button>
+        <button className="btn ghost block" onClick={() => { setTicket(null); setCode('') }}>返回</button>
+      </div>
+    </div>
+  )
   return (
     <div className="auth">
       <div className="auth-box">
@@ -78,6 +105,7 @@ export function LiveLogin() {
         </Field>
         {first && <Field label="再输一次"><input type="password" value={pwd2} onChange={(e) => setPwd2(e.target.value)} autoComplete="new-password" onKeyDown={(e) => e.key === 'Enter' && go()} /></Field>}
         <button className="btn primary block lg" onClick={go} disabled={busy}>{busy ? '稍等…' : first ? '创建并进入' : '登录'}</button>
+        {!first && passkeySupported() && <button className="btn default block" onClick={withPasskey} disabled={busy}>用通行密钥登录</button>}
         {!first && <p className="hint center">忘了密码：在服务器上运行 <span className="mono">opero reset-password</span></p>}
         <div className="auth-lang"><LangPicker /></div>
       </div>
@@ -141,6 +169,7 @@ const PRESETS: { key: string; name: string; desc: string }[] = [
   { key: 'dev', name: '开发', desc: '在工作空间里改代码、提交、推送' },
   { key: 'ops', name: '运维', desc: '看服务器、查问题；改之前先问你' },
   { key: 'logwatch', name: '日志值班', desc: '配个触发器定时巡检日志，有问题发卡片' },
+  { key: 'inbox', name: '消息助理', desc: '看邮件和 Slack，告诉你哪些要你看，写回复建议（不替你发）' },
 ]
 
 export function LiveSetup() {
@@ -273,11 +302,16 @@ export const LIVE_APPS: { page: any; name: string; desc: string; letter: string 
   { page: 'servers', name: '服务器和 Agent', desc: '装 Agent 让员工在上面干活；或 SSH 跑命令', letter: '服' },
   { page: 'credentials', name: '权限和凭证', desc: '账号加密存着，AI 拿不到', letter: '权' },
   { page: 'data', name: '数据', desc: 'MySQL / PostgreSQL，默认只读', letter: '数' },
+  { page: 'releases', name: '发布', desc: '编译、签名、部署、检查，失败自动退回上一版', letter: '发' },
+  { page: 'issues', name: '问题清单', desc: '日志巡检记下来的线上问题', letter: '问' },
+  { page: 'domains', name: '域名', desc: 'DNS 解析，开给员工改', letter: '域' },
+  { page: 'inbox', name: '收件箱', desc: '邮件、Slack 分好类，回复建议只写不发', letter: '收' },
+  { page: 'channels', name: '消息渠道', desc: '收邮件 / Slack；提醒发到 Telegram、企业微信、钉钉、飞书、邮件', letter: '渠' },
   { page: 'triggers', name: '触发器', desc: '定时 / Webhook → 员工', letter: '触' },
   { page: 'knowledge', name: '知识库', desc: '所有员工共用的资料', letter: '知' },
   { page: 'audit', name: '操作记录', desc: '员工做的每件事', letter: '记' },
 ]
-const SOON_APPS = ['发布', '消息渠道', '流程', '插件']
+const SOON_APPS = ['流程', '插件']
 
 export function LiveAppsPage({ nav }: PageProps) {
   const s = useStore((x) => x)
@@ -483,6 +517,7 @@ export function LiveServerPage({ params, nav }: PageProps) {
   const [busy, setBusy] = useState(false)
   const [rejoin, setRejoin] = useState(false)
   const [naming, setNaming] = useState<string | null>(null)
+  const opVer = useStore((x) => x.instance?.version)
   const prodProtect = useStore((x) => x.settings.prodProtect)
   if (!s) return <div className="page"><PageHeader title="服务器" {...headNav(nav)} /><Empty>找不到</Empty></div>
   const agent = s.via === 'agent'
@@ -541,6 +576,8 @@ export function LiveServerPage({ params, nav }: PageProps) {
             <Row title="已开机" right={up(sys.uptime)} />
           </Section>
         )}
+        {s.via === 'agent' && <DirsSection s={s} />}
+        {work && <PolicySection s={s} />}
         {work && (
           <Section title="AI 执行器（这台）" right={<button className="btn ghost sm" onClick={() => nav.push({ page: 'executors', params: { host: s.id } })}>装 / 登录</button>}>
             <Row title="Claude Code" right={s.executors?.claude ?? (s.id === 'local' ? '点右上角看' : '没装')} />
@@ -553,6 +590,7 @@ export function LiveServerPage({ params, nav }: PageProps) {
             {onIt.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={32} />} title={e.name} chevron onClick={() => nav.openChat(e.id)} />)}
           </Section>
         )}
+        {s.online && <LogViewer serverId={s.id} />}
         <Section title="跑命令" right={<span className="sub">只读命令直接跑；会改东西的要先验证本人</span>}>
           <div className="pad">
             <div className="inline-form">
@@ -565,6 +603,9 @@ export function LiveServerPage({ params, nav }: PageProps) {
         {agent && rejoin && <div className="pad form"><AgentJoin nav={nav} again={{ name: s.name, env: s.env }} /></div>}
         <div className="pad row-actions wrap">
           <button className="btn default" onClick={() => nav.openChat(getState().employees.find((e) => e.id === 'ops')?.id ?? getState().employees[0]?.id ?? '')}>让员工看看</button>
+          {agent && s.online && s.agentVersion && opVer && s.agentVersion !== opVer && (
+            <button className="btn primary" onClick={() => requireVerify(`把「${s.name}」的 Agent 升级到 ${opVer}`, () => call('POST', `/api/agents/${s.id}/upgrade`, undefined, '已开始升级：一两分钟后 Agent 会重新连上来'))}>升级 Agent（{s.agentVersion} → {opVer}）</button>
+          )}
           {agent && !rejoin && <button className="btn ghost" onClick={() => setRejoin(true)}>重新接入（重装 / 换机器后用）</button>}
           {agent && <button className="btn ghost" onClick={removeAgent}>移除 Agent</button>}
           {s.id !== 'local' && <button className="btn ghost" onClick={remove}>去掉这台</button>}
@@ -575,7 +616,7 @@ export function LiveServerPage({ params, nav }: PageProps) {
 }
 
 // ======================= 凭证 =======================
-const GROUPS: CredGroup[] = ['服务器', '数据库', '代码仓库', '云账号', 'AI', '消息渠道', '其它']
+const GROUPS: CredGroup[] = ['服务器', '数据库', '代码仓库', '云账号', '签名证书', 'AI', '消息渠道', '其它']
 const KINDS: Credential['kind'][] = ['账号密码', '密钥', 'Token', '证书', '数据库']
 export function LiveCredentialEditPage({ params, nav }: PageProps) {
   const existing = useStore((s) => s.credentials.find((x) => x.id === params.id))
@@ -605,6 +646,7 @@ export function LiveCredentialEditPage({ params, nav }: PageProps) {
       <div className="page-body form">
         <Field label="是什么"><Segmented value={c.group as CredGroup} onChange={(v) => setC({ ...c, group: v })} options={GROUPS.map((g) => ({ value: g, label: g }))} /></Field>
         <Field label="名字"><input value={c.name} onChange={(e) => setC({ ...c, name: e.target.value })} placeholder={c.group === '代码仓库' ? '比如：GitHub 个人令牌' : '比如：prod 只读账号'} /></Field>
+        {c.group === '签名证书' ? <SignCertFields onChange={setSecret} /> : <>
         <Field label="类型"><Segmented value={c.kind} onChange={(v) => setC({ ...c, kind: v })} options={KINDS.map((k) => ({ value: k, label: k }))} /></Field>
         <Field label="用户名（可选）" hint={c.group === '代码仓库' ? 'GitHub 不用填；Codeup / Gitee 填你的用户名' : '账号密码类填这里'}>
           <input value={c.user ?? ''} onChange={(e) => setC({ ...c, user: e.target.value })} autoComplete="off" />
@@ -614,6 +656,7 @@ export function LiveCredentialEditPage({ params, nav }: PageProps) {
             ? <textarea className="mono code-edit" rows={5} value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="-----BEGIN …" />
             : <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="••••••••" autoComplete="new-password" />}
         </Field>
+        </>}
         <Field label="它在那边能做什么" hint="照实写（只读 / 读写 / 能部署…），给你自己看"><input value={c.scope} onChange={(e) => setC({ ...c, scope: e.target.value })} placeholder="只读" /></Field>
         <Field label="环境标签"><EnvPicker value={c.env} onChange={(v) => setC({ ...c, env: v })} /></Field>
         <div className="field">
@@ -983,6 +1026,10 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
         <Section title="分支">{w.branches.map((b) => <Row key={b.name} title={<span className="mono">{b.name}</span>} right={<span className="sub">{b.status}</span>} />)}</Section>
         <Section title="最近提交">{w.commits.map((c) => <Row key={c.sha} title={c.msg} sub={<><span className="mono">{c.sha}</span> · {c.who} · {c.when}</>} />)}</Section>
         {w.docs.length > 0 && <Section title="文档（docs/）">{w.docs.map((d) => <Row key={d.name} title={<span className="mono">{d.name}</span>} sub={`更新于 ${d.updated}`} />)}</Section>}
+        <WorkspaceAutoSections w={w} nav={nav} />
+        <Section title="预算">
+          <Row title="这个项目每月预算（美元）" sub="用满了在这个项目里干活的员工先停下；到 80% 提醒一次。0 = 不单独限" right={<input className="num-input" inputMode="decimal" defaultValue={String(w.budget ?? 0)} onBlur={(e) => call('PUT', `/api/workspaces/${w.id}`, { budget: Number(e.target.value) || 0 }, '已保存')} />} />
+        </Section>
         <Section title="位置">
           <Row title="目录" right={<span className="mono small">{w.dir}</span>} />
           <Row title="令牌" right={
@@ -1041,6 +1088,8 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
           <Row title="工作空间" right={ws ? ws.name : '它自己的目录'} chevron={!!ws} onClick={ws ? () => nav.push({ page: 'workspace', params: { id: ws.id } }) : undefined} />
         </Section>
         {e.prompt && <Section title="职责"><p className="prose">{e.prompt}</p></Section>}
+        {(e.gender || e.persona) && <Section title="人设"><Row title="性别" right={e.gender || '—'} /><Row title="性格 / 说话风格" right={e.persona || '—'} /></Section>}
+        <EmployeeWorkSections e={e} nav={nav} />
         <Section title={`触发器 · ${mine.length}`} right={<button className="btn ghost sm" onClick={() => nav.push({ page: 'triggerEdit', params: { employee: e.id } })}>添加</button>}>
           {mine.length === 0 && <Empty>没有触发器：你叫它才干活</Empty>}
           {mine.map((t) => <Row key={t.id} title={t.name} sub={`${t.kind} · ${t.rule}`} chevron onClick={() => nav.push({ page: 'triggerEdit', params: { id: t.id } })} right={<Tag tone={t.enabled ? 'ok' : 'mute'}>{t.enabled ? '开' : '关'}</Tag>} />)}
@@ -1081,6 +1130,8 @@ export function LiveSecurityPage({ nav }: PageProps) {
               right={<button className="btn ghost sm" onClick={() => call('DELETE', `/api/app/list/${d.id}`, undefined, '已断开，这台手机要重新配对才能用').then(load)}>断开</button>} />
           ))}
         </Section>
+        <PasskeySection />
+        <MfaSection />
         <Section title="改密码">
           <div className="pad form">
             <Field label="原密码"><input type="password" value={old} onChange={(e) => setOld(e.target.value)} autoComplete="current-password" /></Field>
@@ -1095,3 +1146,70 @@ export function LiveSecurityPage({ nav }: PageProps) {
   )
 }
 
+
+// ======================= 通行密钥、两步验证（账号安全页） =======================
+interface PkInfo { passkeys: { id: string; name: string; created: number; lastUsed?: number; rpId: string }[]; mfa: { enabled: boolean; recoveryLeft: number } }
+function usePk() {
+  const [info, setInfo] = useState<PkInfo | null>(null)
+  const load = () => call<PkInfo>('GET', '/api/auth/passkeys').then((r) => r && setInfo(r))
+  useEffect(() => { load() }, [])
+  return [info, load] as const
+}
+function PasskeySection() {
+  const [info, load] = usePk()
+  const add = () => requireVerify('加一个通行密钥', async () => {
+    try {
+      const o = await api('POST', '/api/auth/passkey/register-options', {})
+      const cred = await createPasskey(o)
+      const name = prompt('给它起个名字（比如：我的 iPhone、MacBook 指纹）', '') ?? ''
+      await api('POST', '/api/auth/passkey/register', { credential: cred, name })
+      toast('已加上：以后能用它登录、验证本人')
+      load()
+    } catch (e) { toast((e as Error).message) }
+  })
+  return (
+    <Section title="通行密钥" right={<span className="sub">指纹 / 面容 / 设备 PIN 登录，不用输密码</span>}>
+      {!passkeySupported() && <Empty>这个浏览器不支持通行密钥</Empty>}
+      {(info?.passkeys ?? []).map((p) => (
+        <Row key={p.id} title={p.name} sub={`${p.rpId} · ${new Date(p.created).toLocaleDateString('zh-CN')} 加的${p.lastUsed ? ` · 上次用 ${new Date(p.lastUsed).toLocaleDateString('zh-CN')}` : ''}`}
+          right={<button className="btn ghost sm" onClick={() => { if (confirm(`删掉通行密钥「${p.name}」？`)) requireVerify('删通行密钥', () => call('DELETE', `/api/auth/passkeys/${encodeURIComponent(p.id)}`, undefined, '已删').then(load)) }}>删</button>} />
+      ))}
+      {passkeySupported() && <Row title="加一个通行密钥" sub="要用 HTTPS 打开 Opero；每台设备加一个" chevron onClick={add} />}
+    </Section>
+  )
+}
+function MfaSection() {
+  const [info, load] = usePk()
+  const [setup, setSetup] = useState<{ secret: string; uri: string } | null>(null)
+  const [code, setCode] = useState('')
+  const [codes, setCodes] = useState<string[] | null>(null)
+  const start = () => requireVerify('开两步验证', () => call<{ secret: string; uri: string }>('POST', '/api/auth/mfa/setup').then((r) => r && setSetup(r)))
+  const enable = async () => { const r = await call<{ recovery: string[] }>('POST', '/api/auth/mfa/enable', { code: code.trim() }); if (r) { setCodes(r.recovery); setSetup(null); setCode(''); load() } }
+  const disable = () => { const c = prompt('输一个动态码或恢复码，才能关两步验证') ?? ''; if (c.trim()) requireVerify('关两步验证', () => call('POST', '/api/auth/mfa/disable', { code: c.trim() }, '已关').then(load)) }
+  const regen = () => { const c = prompt('输一个动态码，换一批恢复码（旧的作废）') ?? ''; if (c.trim()) requireVerify('换恢复码', () => call<{ recovery: string[] }>('POST', '/api/auth/mfa/recovery', { code: c.trim() }).then((r) => { if (r) { setCodes(r.recovery); load() } })) }
+  return (
+    <Section title="两步验证" right={<span className="sub">密码登录后还要输验证器 App 里的动态码</span>}>
+      {info?.mfa.enabled
+        ? <>
+            <Row title="已开" sub={`恢复码还剩 ${info.mfa.recoveryLeft} 个`} right={<span className="row-actions"><button className="btn ghost sm" onClick={regen}>换恢复码</button><button className="btn ghost sm" onClick={disable}>关掉</button></span>} />
+          </>
+        : !setup && <Row title="开两步验证" sub="用 Google Authenticator、1Password、微软 Authenticator 这类 App" chevron onClick={start} />}
+      {setup && (
+        <div className="pad form">
+          <p className="field-hint">在验证器 App 里「手动输入密钥」，或者在手机上点下面的链接：</p>
+          <div className="cmd-box mono" data-no-i18n="">{setup.secret}<button className="btn ghost sm" onClick={() => copy(setup.secret)}>复制</button></div>
+          <a className="btn ghost sm" href={setup.uri}>在手机上打开验证器</a>
+          <Field label="输入 App 里现在显示的 6 位码"><input value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
+          <button className="btn primary" disabled={code.trim().length < 6} onClick={enable}>开启</button>
+        </div>
+      )}
+      {codes && (
+        <div className="pad">
+          <div className="banner b-warn">恢复码只显示这一次：抄下来放好。手机丢了用它登录，每个用一次。</div>
+          <pre className="console" data-no-i18n="">{codes.join('\n')}</pre>
+          <button className="btn default sm" onClick={() => copy(codes.join('\n'))}>复制全部</button>
+        </div>
+      )}
+    </Section>
+  )
+}

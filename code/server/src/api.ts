@@ -4,15 +4,22 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { cfg } from './config.ts'
 import { all, db, del, get, kvGet, kvSet, put, uid } from './db.ts'
-import { addClient, emit, waitPush } from './bus.ts'
+import { addClient, emit, push, waitPush } from './bus.ts'
 import { bad, baseUrl, HttpError, isHttps, route, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { addMsg, audit, delMsg, getMsg, listAudit, listMessages, patchMsg, patchSession, sessionFor, system, usage } from './chat.ts'
+import { addMsg, audit, delMsg, getMsg, historyOf, listAudit, listMessages, patchMsg, patchSession, rotateSession, sessionFor, system, usage, usageDetail } from './chat.ts'
 import * as runner from './runner.ts'
-import { callTool, fmtSize, TOOLS, type ToolResult } from './tools.ts'
+import { callTool, fmtSize, prCard, TOOLS, type ToolResult } from './tools.ts'
+import * as prs from './prs.ts'
+import * as dns from './dns.ts'
+import * as inbox from './inbox.ts'
+import * as mfa from './mfa.ts'
+import * as notify from './notify.ts'
+import * as releases from './releases.ts'
+import * as build from './build.ts'
 import { checkServer, execOn, isReadOnly, LOCAL_ID } from './ssh.ts'
 import { isReadSql, loadSchema, runQuery } from './dbconn.ts'
-import { cloneWorkspace, inspect, providerOf, workspaceDir } from './git.ts'
+import { cloneWorkspace, git, inspect, providerOf, workspaceDir } from './git.ts'
 import { fire, parseRule } from './triggers.ts'
 import { PRESETS } from './presets.ts'
 import * as execs from './executors.ts'
@@ -21,7 +28,10 @@ import * as hosts from './hosts.ts'
 import * as queue from './queue.ts'
 import * as keys from './keys.ts'
 import { delSecret, getSecret, hasSecret, setSecret } from './vault.ts'
-import type { Credential, DataSource, Device, Employee, KbDoc, Message, SavedQuery, Server, Session, Trigger, Workspace } from './types.ts'
+import type { Credential, DataSource, Deploy, Device, Employee, Issue, KbDoc, Message, Release, SavedQuery, Server, ServerDir, Session, Trigger, Workspace } from './types.ts'
+import * as memory from './memory.ts'
+import * as issues from './issues.ts'
+import { cleanPolicy } from './policy.ts'
 import { envOf, isProtected } from './env.ts'
 
 const now = () => new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16)
@@ -51,6 +61,7 @@ function setCookie(c: Ctx, token: string | null) {
 const defaultSettings = {
   prodProtect: true, theme: 'system', themeLight: 'amethyst', themeDark: 'slate', customTheme: { mode: 'light', bg: '#F3EEE3', ink: '#111111', accent: '#D9541E' },
   lang: 'auto', notify: 'decide', notifyTo: ['App 推送'], budget: 0, budgetStop: false, fallback: '', aiDown: false,
+  phrases: ['继续', '先说方案，我确认了再改', '改完看一遍 diff，写清楚怎么测', '把这次做的写进交接'],
   habits: '- 先给结论再说原因\n- 改代码在分支上做，改完自己看一遍 diff\n- 不确定的先问我',
 }
 export const settings = () => ({ ...defaultSettings, ...kvGet<Record<string, unknown>>('settings', {}) })
@@ -60,7 +71,7 @@ function bootstrap(c: Ctx) {
   const sess = c.sess
   const setupDone = kvGet('setupDone', false)
   if (!o || !sess) return { auth: { needOwner: !o, loggedIn: false, setupDone }, instance: instanceInfo() }
-  const sessions = all<Session>('sessions')
+  const sessions = all<Session>('sessions').filter((s) => !s.archived) // 归档的在员工档案「历史会话」里按需拉
   return {
     auth: { needOwner: false, loggedIn: true, setupDone },
     instance: instanceInfo(),
@@ -76,6 +87,12 @@ function bootstrap(c: Ctx) {
     kb: all<KbDoc>('kb'),
     workspaces: all<Workspace>('workspaces'),
     queue: all<queue.QItem>('queue'),
+    issues: issues.list().slice(0, 300),
+    releases: releases.list({ limit: 100 }),
+    domains: all<dns.Domain>('domains'),
+    channels: all<inbox.Channel>('channels').map(inbox.pubCh),
+    notifiers: all<notify.Notifier>('notifiers').map(notify.pub),
+    inbox: inbox.list({ limit: 200 }),
     audit: listAudit(),
     usage: usage(),
     settings: settings(),
@@ -107,17 +124,83 @@ route('POST', '/api/auth/login', (c) => {
     audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '拒绝', how: '账号或密码不对' })
     throw new HttpError(401, '账号或密码不对', 'LOGIN')
   }
+  // 开了两步验证：先给一张票，再输一个码才登进去
+  if (mfa.mfa().enabled) return { mfa: true, ticket: mfa.newTicket() }
   const token = auth.newSession()
   setCookie(c, token)
   audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '成功', how: '密码' })
   return { ok: true }
 }, { auth: 'none' })
+route('POST', '/api/auth/mfa', (c) => {
+  if (auth.tooManyFails(c.ip)) throw new HttpError(429, '试太多次了，一分钟后再试')
+  const how = mfa.verifyCode(String(c.body?.code ?? ''))
+  let passed: boolean
+  try { passed = mfa.useTicket(String(c.body?.ticket ?? ''), !!how) } catch (e) { throw new HttpError(401, (e as Error).message, 'LOGIN') }
+  if (!passed) { auth.noteFail(c.ip); throw new HttpError(401, '码不对', 'MFA') }
+  const token = auth.newSession()
+  setCookie(c, token)
+  auth.markVerified(token)
+  audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '成功', how: how === 'recovery' ? `密码 + 恢复码（还剩 ${mfa.mfa().recovery.length} 个）` : '密码 + 两步验证' })
+  if (how === 'recovery') push({ kind: 'info', title: '用了一个恢复码登录', body: `还剩 ${mfa.mfa().recovery.length} 个，不是你的话马上改密码` })
+  return { ok: true }
+}, { auth: 'none' })
+
+// ---------- 通行密钥：登录（不用密码）、验证本人、加 / 删 ----------
+const origin = (c: Ctx) => String(c.req.headers.origin ?? '')
+route('POST', '/api/auth/passkey/options', (c) => { try { return mfa.loginOptions(origin(c)) } catch (e) { throw bad((e as Error).message) } }, { auth: 'none' })
+route('POST', '/api/auth/passkey/login', (c) => {
+  if (auth.tooManyFails(c.ip)) throw new HttpError(429, '试太多次了，一分钟后再试')
+  let pk: mfa.Passkey
+  try { pk = mfa.assertVerify(origin(c), c.body) } catch (e) { auth.noteFail(c.ip); throw new HttpError(401, (e as Error).message, 'LOGIN') }
+  const token = auth.newSession()
+  setCookie(c, token)
+  auth.markVerified(token)
+  audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '成功', how: `通行密钥「${pk.name}」` })
+  return { ok: true }
+}, { auth: 'none' })
+route('POST', '/api/auth/passkey/verify', (c) => {
+  try { mfa.assertVerify(origin(c), c.body) } catch (e) { auth.noteFail(c.ip); throw new HttpError(401, (e as Error).message, 'VERIFY_FAIL') }
+  auth.markVerified(c.sess!.token)
+  return { ok: true }
+})
+route('GET', '/api/auth/passkeys', () => ({ passkeys: mfa.passkeys().map(({ pub: _p, ...x }) => x), mfa: { enabled: mfa.mfa().enabled, recoveryLeft: mfa.mfa().recovery.length } }))
+route('POST', '/api/auth/passkey/register-options', (c) => { needVerify(c); try { return mfa.registerOptions(origin(c), auth.owner()?.name ?? '') } catch (e) { throw bad((e as Error).message) } })
+route('POST', '/api/auth/passkey/register', (c) => {
+  needVerify(c)
+  try {
+    const pk = mfa.registerVerify(origin(c), c.body?.credential, String(c.body?.name ?? ''))
+    audit({ via: '—', action: 'passkey.add', target: pk.name, level: '危险', result: '成功', how: '本人（已验证）' })
+    return { ok: true }
+  } catch (e) { throw bad((e as Error).message) }
+})
+route('DELETE', '/api/auth/passkeys/:id', (c) => { needVerify(c); mfa.removePasskey(c.params.id); audit({ via: '—', action: 'passkey.remove', target: c.params.id.slice(0, 12), level: '危险', result: '成功', how: '本人（已验证）' }); return { ok: true } })
+
+// ---------- 两步验证 ----------
+route('POST', '/api/auth/mfa/setup', (c) => { needVerify(c); return mfa.setup() })
+route('POST', '/api/auth/mfa/enable', (c) => {
+  needVerify(c)
+  try { const codes = mfa.enable(String(c.body?.code ?? '')); audit({ via: '—', action: 'mfa.enable', target: '两步验证', level: '危险', result: '成功', how: '本人（已验证）' }); return { recovery: codes } } catch (e) { throw bad((e as Error).message) }
+})
+route('POST', '/api/auth/mfa/disable', (c) => {
+  needVerify(c)
+  if (!mfa.verifyCode(String(c.body?.code ?? ''))) throw bad('要输一个两步验证码或恢复码才能关')
+  mfa.disable()
+  audit({ via: '—', action: 'mfa.disable', target: '两步验证', level: '危险', result: '成功', how: '本人（已验证 + 动态码）' })
+  return { ok: true }
+})
+route('POST', '/api/auth/mfa/recovery', (c) => {
+  needVerify(c)
+  if (!mfa.verifyCode(String(c.body?.code ?? ''))) throw bad('要输一个两步验证码')
+  return { recovery: mfa.newRecovery() }
+})
 
 route('POST', '/api/auth/logout', (c) => { auth.endSession(c.sess!.token); setCookie(c, null); return { ok: true } })
 
 route('POST', '/api/auth/verify', (c) => {
   if (auth.tooManyFails(c.ip)) throw new HttpError(429, '试太多次了，一分钟后再试')
-  if (!auth.checkPassword(String(c.body?.password ?? ''))) { auth.noteFail(c.ip); throw new HttpError(401, '密码不对', 'VERIFY_FAIL') }
+  // 验证本人：密码，或者两步验证的码
+  const ok = c.body?.code ? !!mfa.verifyCode(String(c.body.code)) : auth.checkPassword(String(c.body?.password ?? ''))
+  if (!ok) { auth.noteFail(c.ip); throw new HttpError(401, c.body?.code ? '码不对' : '密码不对', 'VERIFY_FAIL') }
   auth.markVerified(c.sess!.token)
   return { ok: true }
 })
@@ -275,10 +358,18 @@ function cleanEmp(b: any, old?: Employee): Employee {
     executor: /codex/i.test(String(pick('executor', 'Claude Code'))) ? 'Codex' : 'Claude Code', host: empHost(b.host ?? old?.host), workspace: pick('workspace', ''), menus: pick('menus', []),
     model: pick('model', 'Opus 5.5'), effort: pick('effort', 'high'), approval: pick('approval', 'auto'), notify: pick('notify', 'decide'), bg: pick('bg', 'plain'),
     avatarImg: pick('avatarImg', undefined), repo: '', resumeId: old?.resumeId, contextUsed: old?.contextUsed ?? 0,
+    gender: String(pick('gender', '') ?? '').slice(0, 10), memRepo: String(pick('memRepo', '') ?? '').trim() || undefined, memCred: String(pick('memCred', '') ?? '') || undefined,
+    works: old?.works,
+    canManage: !!pick('canManage', false),
+    reads: (Array.isArray(b.reads) ? b.reads : old?.reads ?? []).map(String).filter((id: string) => get<Workspace>('workspaces', id)).slice(0, 8),
+    budget: Math.max(0, Number(pick('budget', 0)) || 0) || undefined,
+    dns: (Array.isArray(b.dns) ? b.dns : old?.dns ?? []).map(String).filter((id: string) => get('domains', id)),
+    workBranch: /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]{1,100}(?<!\/)$/.test(String(pick('workBranch', '') ?? '')) ? String(pick('workBranch', '')) : undefined,
   }
 }
 function createEmployee(e: Employee, greet = true) {
   if (get('employees', e.id)) e = { ...e, id: uid('e') }
+  e = { ...e, works: [{ no: 1, from: new Date().toLocaleDateString('zh-CN'), reason: '刚建', host: hosts.isLocal(e.host) ? 'Opero 这台' : (get<Server>('servers', e.host)?.name ?? '') }] }
   put1('employees', e)
   const s = sessionFor(e.id)
   if (greet) {
@@ -294,6 +385,12 @@ route('PUT', '/api/employees/:id', (c) => {
   if (!old) throw new HttpError(404, '没有这个员工')
   const e = cleanEmp({ ...c.body, id: old.id }, old)
   if (old.executor !== e.executor || old.workspace !== e.workspace || old.host !== e.host) e.resumeId = undefined // 换了执行器 / 目录：会话接不上了，下一句开新的
+  if (old.host !== e.host) {
+    if (runner.isWorking(old.id)) throw bad('员工正在干活：等这一轮做完再换服务器')
+    e.works = nextWork(e, '换服务器')
+    const sid = sessionFor(e.id).id
+    memory.moveMemory(old, runner.hostOf(old), runner.hostOf(e)).then((r) => r && system(sid, r)).catch((err) => system(sid, `记忆仓库没搬过来：${(err as Error).message}`))
+  }
   return put1('employees', e)
 })
 route('DELETE', '/api/employees/:id', (c) => {
@@ -309,6 +406,84 @@ route('DELETE', '/api/employees/:id', (c) => {
   audit({ via: '—', action: 'employee.delete', target: e.name, level: '写', result: '成功', how: '本人' })
   return { ok: true }
 })
+// ---------- 换会话（开新会话接着做 / 换执行器）、历史会话、记忆仓库 ----------
+const empOf = (id: string) => { const e = get<Employee>('employees', id); if (!e) throw new HttpError(404, '没有这个员工'); return e }
+const day = () => new Date().toLocaleDateString('zh-CN')
+/** work 历史：上一个结束、新的开始 */
+function nextWork(e: Employee, reason: string): Employee['works'] {
+  const works = [...(e.works ?? [])]
+  if (works[0] && !works[0].to) works[0] = { ...works[0], to: day() }
+  works.unshift({ no: (works[0]?.no ?? 0) + 1, from: day(), reason, host: runner.hostOf(e) === LOCAL_ID ? 'Opero 这台' : (get<Server>('servers', runner.hostOf(e))?.name ?? '') })
+  return works.slice(0, 30)
+}
+/** 交接草稿：最近你说的、员工最后说的、工作空间现在的样子 */
+async function handoffDraft(e: Employee, sid: string): Promise<string> {
+  const msgs = listMessages(sid, 400)
+  const asks = msgs.filter((m) => m.from === 'me' && m.kind === 'text' && m.text).slice(-5).map((m) => `- ${m.text!.replace(/\s+/g, ' ').slice(0, 160)}`)
+  const last = [...msgs].reverse().find((m) => m.from === e.id && m.kind === 'text' && m.text)?.text?.slice(0, 600)
+  const w = e.workspace ? get<Workspace>('workspaces', e.workspace) : undefined
+  let wsLine = ''
+  if (w) {
+    const st = await git(['status', '--short'], { host: w.server, cwd: w.dir }).catch(() => ({ code: 1, out: '' }))
+    const lg = await git(['log', '-3', '--format=%h %s'], { host: w.server, cwd: w.dir }).catch(() => ({ code: 1, out: '' }))
+    const n = st.out.split('\n').filter(Boolean).length
+    wsLine = `工作空间「${w.name}」：${n ? `还有 ${n} 个文件没提交` : '没有未提交的改动'}${lg.out ? `；最近提交：\n${lg.out.split('\n').map((l) => `  - ${l}`).join('\n')}` : ''}`
+  }
+  return [
+    '接着上一个会话做（上一个会话已归档，上下文清空了）。先读你记忆仓库的 CLAUDE.md 和 docs/交接.md 最上面几条。',
+    asks.length && `上一个会话里我最近说的：\n${asks.join('\n')}`,
+    last && `你最后说的：\n> ${last.replace(/\n/g, '\n> ')}`,
+    wsLine,
+    '没做完的接着做；做完更新交接。',
+  ].filter(Boolean).join('\n\n')
+}
+function rotate(e: Employee, reason: string, draft?: string) {
+  if (runner.isWorking(e.id)) throw bad('员工正在干活：等这一轮做完，或者先点「停止」')
+  const next = { ...e, resumeId: undefined, contextUsed: 0, works: nextWork(e, reason) }
+  put1('employees', next)
+  return rotateSession(e.id, reason, { draft })
+}
+route('GET', '/api/employees/:id/history', (c) => { empOf(c.params.id); return historyOf(c.params.id) })
+route('POST', '/api/sessions/:id/handoff', async (c) => {
+  const s = sess(c.params.id)
+  const e = empOf(s.employee)
+  const draft = await handoffDraft(e, s.id)
+  const ns = rotate(e, '开新会话接着做', draft)
+  audit({ via: '—', action: 'session.handoff', target: e.name, level: '写', result: '成功', how: '本人' })
+  return ns
+})
+route('POST', '/api/employees/:id/switch', async (c) => {
+  const e = empOf(c.params.id)
+  const to = /codex/i.test(String(c.body?.executor ?? '')) ? 'Codex' : 'Claude Code'
+  if (to === e.executor) throw bad(`已经是 ${to} 了`)
+  const host = runner.hostOf(e)
+  const bin = to === 'Codex' ? cfg.codexBin : cfg.claudeBin
+  const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
+  if (v.code !== 0) throw bad(`这台还没装好 ${to}：先到「我 → AI 执行器」装好、登录`)
+  const draft = await handoffDraft(e, sessionFor(e.id).id)
+  const ns = rotate({ ...e }, `换成 ${to}`, draft)
+  put1('employees', { ...get<Employee>('employees', e.id)!, executor: to, model: to === 'Codex' ? '执行器默认' : 'Opus 5.5' })
+  audit({ via: '—', action: 'employee.switch', target: `${e.name}：${e.executor} → ${to}`, level: '写', result: '成功', how: '本人' })
+  return ns
+})
+route('GET', '/api/employees/:id/memory', async (c) => {
+  const e = empOf(c.params.id)
+  const host = runner.hostOf(e)
+  await memory.ensureMemory(e, host)
+  return { dir: memory.memDir(e, host), files: await memory.listFiles(e, host), remote: e.memRepo ?? '' }
+})
+route('GET', '/api/employees/:id/memory/file', async (c) => {
+  const e = empOf(c.params.id)
+  const text = await memory.readFile(e, runner.hostOf(e), String(c.url.searchParams.get('path') ?? ''))
+  if (text === undefined) throw new HttpError(404, '没有这个文件')
+  return { text }
+})
+route('PUT', '/api/employees/:id/memory/file', async (c) => {
+  const e = empOf(c.params.id)
+  if (runner.isWorking(e.id)) throw bad('员工正在干活：等这一轮做完再改它的记忆')
+  try { return { result: await memory.writeFile(e, runner.hostOf(e), String(c.body?.path ?? ''), String(c.body?.text ?? '')) } } catch (err) { throw bad((err as Error).message) }
+})
+
 route('POST', '/api/setup/employees', (c) => {
   const { presets = [], executor = 'Claude Code', model = 'Opus 5.5' } = c.body ?? {}
   const made: Employee[] = []
@@ -325,7 +500,7 @@ const sess = (id: string) => { const s = get<Session>('sessions', id); if (!s) t
 route('POST', '/api/sessions/for/:emp', (c) => sessionFor(c.params.emp))
 route('PUT', '/api/sessions/:id', (c) => {
   const s = sess(c.params.id)
-  const next = { ...s, ...(c.body?.pinned !== undefined ? { pinned: !!c.body.pinned } : {}) }
+  const next = { ...s, ...(c.body?.pinned !== undefined ? { pinned: !!c.body.pinned } : {}), ...(c.body?.draft !== undefined ? { draft: String(c.body.draft) || undefined } : {}) }
   return put1('sessions', next)
 })
 route('POST', '/api/sessions/:id/read', (c) => { sess(c.params.id); patchSession(c.params.id, { unread: 0 }); return { ok: true } })
@@ -347,7 +522,7 @@ function attsOf(emp: Employee, list: unknown): queue.QAtt[] {
     const name = id.replace(/^[^-]+-/, '')
     const ext = (name.split('.').pop() ?? 'file').toLowerCase()
     const mediaType = MIME[ext] ?? 'application/octet-stream'
-    return { id, name, size: fmtSize(fs.statSync(p).size), ext: ext.toUpperCase().slice(0, 4), image: mediaType.startsWith('image/'), mediaType, url: `/api/uploads/${emp.id}/${encodeURIComponent(id)}`, w: Number(x?.w) || undefined, h: Number(x?.h) || undefined }
+    return { id, name, size: fmtSize(fs.statSync(p).size), ext: ext.toUpperCase().slice(0, 4), image: mediaType.startsWith('image/'), mediaType, url: `api/uploads/${emp.id}/${encodeURIComponent(id)}`, w: Number(x?.w) || undefined, h: Number(x?.h) || undefined }
   })
 }
 
@@ -390,6 +565,7 @@ route('DELETE', '/api/sessions/:id/files/:file', (c) => {
 
 // 排队：删一条（连它的附件）、员工闲着时手动开始
 route('DELETE', '/api/queue/:id', (c) => { queue.remove(c.params.id, true); return { ok: true } })
+route('PUT', '/api/queue/:id', (c) => { try { return queue.edit(c.params.id, String(c.body?.text ?? '')) } catch (e) { throw bad((e as Error).message) } })
 route('POST', '/api/sessions/:id/queue/run', (c) => {
   const s = sess(c.params.id)
   if (runner.isWorking(s.employee)) throw bad('员工正在干活，这一轮做完会自动接着发')
@@ -428,7 +604,7 @@ route('POST', '/api/sessions/:id/new-topic', (c) => {
 })
 
 // 卡片上的按钮
-route('POST', '/api/messages/:id/action', (c) => {
+route('POST', '/api/messages/:id/action', async (c) => {
   const found = getMsg(c.params.id)
   const card = found?.msg.card
   if (!found || !card) throw new HttpError(404, '没有这张卡片')
@@ -443,6 +619,15 @@ route('POST', '/api/messages/:id/action', (c) => {
   if (runner.isPending(c.params.id)) {
     runner.answerCard(c.params.id, { action: act.id, answer, verified })
     result = card.type === 'ask' ? `你选了：${answer ?? ''}` : act.id === 'allow' ? `你同意了${verified && act.style === 'danger' ? ' · 已验证本人' : ''}` : '你没同意，员工已经知道了'
+  } else if (card.data.pr && act.id === 'refresh') {
+    // 合并请求：现查状态，卡片留着（不算点过）
+    const st = await prs.status(card.data.pr)
+    const fresh = prCard(card.data.pr, st)
+    patchMsg(c.params.id, { card: { ...fresh, id: card.id, state: st.state === 'open' || st.state === 'unknown' ? 'open' : 'done', result: st.state === 'merged' ? '已合并' : st.state === 'closed' ? '已关闭' : null } })
+    return { ok: true, result: fresh.data.tag }
+  } else if (card.type === 'issue' && card.data.issueId) {
+    try { issues.act(String(card.data.issueId), act.id, { by: '主人' }) } catch (e) { throw bad((e as Error).message) }
+    result = act.id === 'fix' ? '已交给员工去修' : act.id === 'known' ? '标成已知' : '7 天内不再提醒'
   } else if (card.data.pending) {
     result = '这个请求已经失效（员工那一轮结束了或 Opero 重启过），让员工再发一次'
   } else {
@@ -487,9 +672,52 @@ route('PUT', '/api/servers/:id', (c) => {
   const protect = typeof b.protect === 'boolean' ? b.protect : undefined
   const changes = [name && name !== old.name && `名字 → ${name}`, env && env !== old.env && `环境 ${old.env} → ${env}`, protect !== undefined && protect !== isProtected(old) && (protect ? '改东西先确认' : '改东西不用确认')].filter(Boolean)
   if (changes.length) audit({ via: '—', action: 'server.update', target: `${old.name} · ${changes.join(' · ')}`, level: '写', result: '成功', how: '本人' })
-  const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
+  if (b.policy !== undefined) audit({ via: '—', action: 'server.policy', target: old.name, level: '写', result: '成功', how: '本人' })
+  if (b.dirs !== undefined) {
+    needVerify(c)
+    const dirs = cleanDirs(b.dirs)
+    applyDirs(old, dirs).catch(() => {})
+    audit({ via: '—', action: 'server.dirs', target: `${old.name}：${dirs.map((d) => `${d.path}（${d.mode}）`).join('、') || '清空'}`, level: '危险', result: '成功', how: '本人（已验证）' })
+    old.dirs = dirs.map((d) => ({ ...d, ok: undefined, error: '在设权限…' }))
+  }
+  const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.policy !== undefined ? { policy: cleanPolicy(b.policy, old.policy) } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
   return pub('servers', put1('servers', next))
 })
+/** 服务器登记的目录：绝对路径、不是系统目录、最多 30 个 */
+function cleanDirs(list: unknown): ServerDir[] {
+  if (!Array.isArray(list)) return []
+  const SYS = /^\/(etc|usr|bin|sbin|lib|lib64|boot|proc|sys|dev|run|var\/lib|root)(\/|$)/
+  return list.slice(0, 30).map((x: any) => {
+    const p = String(x?.path ?? '').trim().replace(/\/+$/, '')
+    if (!/^\/[\w./@+-]+$/.test(p) || p.includes('..') || p.split('/').length < 3 && !/^\/(srv|opt|data|home|www|var)\/?/.test(p)) throw bad(`目录不对：${p}（要绝对路径，至少两层，比如 /srv/app）`)
+    if (SYS.test(p) && x?.mode !== 'read') throw bad(`${p} 是系统目录，只能登记成「只读」`)
+    return { path: p, mode: ['read', 'write', 'deploy'].includes(x?.mode) ? x.mode : 'read', note: String(x?.note ?? '').slice(0, 80) || undefined }
+  })
+}
+/** 按登记的目录给 AI 用户开权限（ACL）：只读 = r-X，读写 = rwX（连默认 ACL，新文件也跟着），能部署的由 Agent 以 root 部署、不用开。去掉的收回 */
+async function applyDirs(sv: Server, dirs: ServerDir[]) {
+  const before = sv.dirs ?? []
+  const results: ServerDir[] = []
+  const local = sv.id === LOCAL_ID
+  const ai = local ? (cfg.aiUser || 'opero-ai') : 'opero-ai'
+  for (const d of dirs) {
+    if (d.mode === 'deploy') { results.push({ ...d, ok: true }); continue }
+    const perm = d.mode === 'write' ? 'rwX' : 'rX'
+    const cmd = `set -e; command -v setfacl >/dev/null || { echo "这台没有 setfacl（装 acl 包：apt install acl / yum install acl）"; exit 3; }; test -d ${shq(d.path)} || { echo "目录不存在"; exit 4; }
+p=${shq(d.path)}; while [ "$p" != "/" ]; do p=$(dirname "$p"); setfacl -m u:${ai}:x "$p" 2>/dev/null || true; done
+setfacl -R -m u:${ai}:${perm} ${shq(d.path)} && setfacl -R -d -m u:${ai}:${perm} ${shq(d.path)} && echo OK`
+    if (local) { results.push({ ...d, ok: false, error: `Opero 这台要你自己用 root 跑：setfacl -R -m u:${ai}:${perm} ${d.path} && setfacl -R -d -m u:${ai}:${perm} ${d.path}` }); continue }
+    const r = await execOn(sv, cmd, 120_000)
+    results.push({ ...d, ok: r.out.includes('OK'), error: r.out.includes('OK') ? undefined : r.out.trim().split('\n').pop()?.slice(0, 200) })
+  }
+  for (const old of before.filter((x) => x.mode !== 'deploy' && !dirs.some((d) => d.path === x.path && d.mode !== 'deploy'))) {
+    if (!local) await execOn(sv, `command -v setfacl >/dev/null && setfacl -R -x u:${ai} ${shq(old.path)} 2>/dev/null; setfacl -R -d -x u:${ai} ${shq(old.path)} 2>/dev/null; true`, 120_000).catch(() => {})
+  }
+  const cur = get<Server>('servers', sv.id)
+  if (cur) put1('servers', { ...cur, dirs: results })
+}
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
 route('DELETE', '/api/servers/:id', (c) => {
   if (c.params.id === LOCAL_ID) throw bad('本机不能删')
   del1('servers', c.params.id)
@@ -499,6 +727,27 @@ route('POST', '/api/servers/:id/check', async (c) => {
   const sv = get<Server>('servers', c.params.id)
   if (!sv) throw new HttpError(404, '没有')
   return pub('servers', await checkServer(sv))
+})
+// 看日志（服务器详情「日志」）：systemd 服务或日志文件的最后 N 行；只读
+route('GET', '/api/servers/:id/services', async (c) => {
+  const sv = get<Server>('servers', c.params.id)
+  if (!sv) throw new HttpError(404, '没有')
+  const r = await execOn(sv, "systemctl list-units --type=service --state=running --no-legend --plain 2>/dev/null | awk '{print $1}' | head -n 200", 20_000)
+  return { services: r.out.split('\n').map((x) => x.trim()).filter((x) => /^[\w@.:-]+\.service$/.test(x)) }
+})
+route('GET', '/api/servers/:id/logs', async (c) => {
+  const sv = get<Server>('servers', c.params.id)
+  if (!sv) throw new HttpError(404, '没有')
+  const q = c.url.searchParams
+  const lines = Math.max(20, Math.min(Number(q.get('lines')) || 200, 2000))
+  const svc = q.get('service') ?? ''
+  const file = q.get('file') ?? ''
+  let cmd: string
+  if (svc) { if (!/^[\w@.:-]+$/.test(svc)) throw bad('服务名不对'); cmd = `journalctl -u '${svc}' -n ${lines} --no-pager -o short-iso 2>&1` }
+  else if (file) { if (!/^\/[\w./@+-]+$/.test(file) || file.includes('..')) throw bad('日志路径要是绝对路径'); cmd = `tail -n ${lines} '${file}' 2>&1` }
+  else throw bad('选一个服务或日志文件')
+  const r = await execOn(sv, cmd, 20_000)
+  return { text: r.out, code: r.code }
 })
 route('POST', '/api/servers/:id/exec', async (c) => {
   const sv = get<Server>('servers', c.params.id)
@@ -674,12 +923,213 @@ route('PUT', '/api/workspaces/:id', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   if (!w) throw new HttpError(404, '没有')
   const b = c.body ?? {}
-  return put1('workspaces', { ...w, ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(b.preview !== undefined ? { preview: String(b.preview) } : {}) })
+  return put1('workspaces', { ...w, ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(b.preview !== undefined ? { preview: String(b.preview) } : {}),
+    ...(typeof b.autoSync === 'boolean' ? { autoSync: b.autoSync } : {}), ...(b.budget !== undefined ? { budget: Math.max(0, Number(b.budget) || 0) || undefined } : {}), ...(Array.isArray(b.deploys) ? { deploys: cleanDeploys(b.deploys, w.deploys) } : {}),
+    ...(b.buildCfg !== undefined ? { buildCfg: cleanBuild(b.buildCfg, w.buildCfg) } : {}) })
 })
+/** 编译设置：哪种模板、在哪编（云效 / GitHub / 自己的服务器） */
+function cleanBuild(b: any, old?: build.BuildCfg): build.BuildCfg | undefined {
+  if (!b) return undefined
+  const kind = ['node', 'go', 'android', 'spring', 'custom'].includes(b.kind) ? b.kind : 'custom'
+  const provider = ['yunxiao', 'github', 'local'].includes(b.provider) ? b.provider : 'local'
+  const s = (v: unknown, n = 200) => String(v ?? '').trim().slice(0, n) || undefined
+  const out: build.BuildCfg = { kind, provider, subdir: s(b.subdir, 100), cmd: s(b.cmd, 8000), versionFile: s(b.versionFile), versionRe: s(b.versionRe), service: s(b.service, 80)?.replace(/[^A-Za-z0-9@._-]/g, ''), file: s(b.file, 100) }
+  if (kind === 'custom' && !out.cmd) throw bad('自定义模板要写编译命令（把产物放进 out/）')
+  if (kind === 'spring') out.spring = { tool: b.spring?.tool === 'gradle' ? 'gradle' : 'maven', jdk: Number(b.spring?.jdk) === 21 ? 21 : 17, task: s(b.spring?.task), jar: s(b.spring?.jar), dirs: Array.isArray(b.spring?.dirs) ? b.spring.dirs.map(String).slice(0, 10) : [] }
+  if (provider === 'yunxiao') {
+    if (!get<Credential>('credentials', String(b.yunxiao?.cred ?? ''))) throw bad('选一个放着云效个人访问令牌的凭证')
+    out.yunxiao = { cred: String(b.yunxiao.cred), org: s(b.yunxiao?.org, 64), pipelineId: s(b.yunxiao?.pipelineId, 32) ?? old?.yunxiao?.pipelineId, image: s(b.yunxiao?.image), at: old?.yunxiao?.at }
+  }
+  if (provider === 'github') out.github = { workflow: s(b.github?.workflow, 80)?.replace(/[^\w.-]/g, '') ?? old?.github?.workflow, at: old?.github?.at }
+  if (provider === 'local') {
+    if (!get<Server>('servers', String(b.local?.server ?? ''))) throw bad('选一台编译的服务器')
+    out.local = { server: String(b.local.server) }
+  }
+  return out
+}
+route('POST', '/api/workspaces/:id/build/generate', async (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  if (!w?.buildCfg) throw bad('先存好编译设置')
+  try {
+    const next = await build.generate(w, w.buildCfg)
+    audit({ via: '—', action: 'build.generate', target: `${w.name} · ${build.providerName(next)}`, level: '写', result: '成功', how: '本人' })
+    return put1('workspaces', { ...get<Workspace>('workspaces', w.id)!, buildCfg: next })
+  } catch (e) { throw bad((e as Error).message) }
+})
+route('GET', '/api/workspaces/:id/build/script', (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  if (!w?.buildCfg) throw bad('先存好编译设置')
+  return { script: build.script(w.buildCfg, build.codeOf(w)) }
+})
+function cleanDeploys(list: any[], old: Deploy[] = []): Deploy[] {
+  return list.slice(0, 20).map((d) => {
+    const prev = old.find((o) => o.id === d.id)
+    const name = String(d.name ?? '').trim().slice(0, 40)
+    if (!name) throw bad('发布环境要有名字')
+    const servers = (Array.isArray(d.servers) ? d.servers : []).map(String).filter((id: string) => get<Server>('servers', id)).slice(0, 20)
+    if (!servers.length) throw bad(`发布环境「${name}」要选至少一台服务器`)
+    const dir = String(d.dir ?? '').trim().replace(/\/+$/, '')
+    if (dir && (!/^\/[\w./@+-]+$/.test(dir) || dir.includes('..'))) throw bad('部署目录要是绝对路径')
+    const command = String(d.command ?? '').trim().slice(0, 4000)
+    const sign = d.sign ? String(d.sign) : undefined
+    if (sign && get<Credential>('credentials', sign)?.group !== '签名证书') throw bad(`发布环境「${name}」的签名证书不对`)
+    const health = String(d.health ?? '').trim()
+    if (health && !/^https?:\/\/\S+$/.test(health)) throw bad('检查地址要以 http:// 或 https:// 开头')
+    return {
+      id: prev?.id ?? uid('dp'), name, servers, dir: dir || undefined, script: String(d.script ?? '').trim().replace(/[^\w./-]/g, '') || undefined, command: command || undefined, sign, health: health || undefined,
+      keep: Math.max(1, Math.min(Number(d.keep) || 5, 30)), ai: ['auto', 'ask', 'off'].includes(d.ai) ? d.ai : 'ask', autoRollback: d.autoRollback !== false,
+      last: prev?.last, lastOk: prev?.lastOk,
+    }
+  })
+}
+route('POST', '/api/workspaces/:id/deploys/:did/run', (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  const d = w?.deploys?.find((x) => x.id === c.params.did)
+  if (!w || !d) throw new HttpError(404, '没有这个发布环境')
+  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c)
+  try { return releases.start(w, d.id, { by: '主人', note: c.body?.note ? String(c.body.note) : undefined }) } catch (e) { throw bad((e as Error).message) }
+})
+
+// ---------- 发布记录 ----------
+route('GET', '/api/releases', (c) => releases.list({ ws: c.url.searchParams.get('ws') ?? undefined, limit: Number(c.url.searchParams.get('limit')) || 100 }))
+route('GET', '/api/releases/:id', (c) => { const r = get<Release>('releases', c.params.id); if (!r) throw new HttpError(404, '没有这次发布'); return r })
+route('POST', '/api/releases/:id/rollback', (c) => {
+  const r = get<Release>('releases', c.params.id)
+  const w = r && get<Workspace>('workspaces', r.ws)
+  const d = w?.deploys?.find((x) => x.id === r!.target)
+  if (!r || !w || !d) throw new HttpError(404, '这次发布或它的目标不在了')
+  if (r.status !== 'success') throw bad('只能回滚到发成功的版本')
+  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c)
+  try { return releases.start(w, d.id, { by: '主人', rollbackOf: r, note: `回滚到 ${r.version}` }) } catch (e) { throw bad((e as Error).message) }
+})
+// 发布产物在服务器之间搬（Agent 调）
+route('POST', '/api/agent/blob/:key', (c) => {
+  const f = releases.blobAllowed(c.params.key, c.agent!.serverId, 'push')
+  if (!f) throw new HttpError(403, '这个文件不是给你传的')
+  fs.writeFileSync(f, c.raw ?? Buffer.alloc(0), { mode: 0o600 })
+  return { ok: true, size: c.raw?.length ?? 0 }
+}, { auth: 'agent', raw: true })
+route('GET', '/api/agent/blob/:key', (c) => {
+  const f = releases.blobAllowed(c.params.key, c.agent!.serverId, 'pull')
+  if (!f || !fs.existsSync(f)) throw new HttpError(404, '没有这个文件')
+  const st = fs.statSync(f)
+  c.res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': st.size })
+  fs.createReadStream(f).pipe(c.res)
+}, { auth: 'agent' })
 route('DELETE', '/api/workspaces/:id', (c) => {
   del1('workspaces', c.params.id) // 目录留着（里面可能有没推的改动），要删去服务器上删
   return { ok: true }
 })
+
+// ---------- 问题清单 ----------
+route('POST', '/api/issues/:id/action', (c) => {
+  try { return issues.act(c.params.id, String(c.body?.action ?? ''), { by: '主人', fixer: c.body?.fixer ? String(c.body.fixer) : undefined, note: c.body?.note ? String(c.body.note) : undefined }) } catch (e) { throw bad((e as Error).message) }
+})
+route('DELETE', '/api/issues/:id', (c) => { del1('issues', c.params.id); return { ok: true } })
+
+// ---------- 域名（DNS） ----------
+route('POST', '/api/domains', (c) => {
+  const b = c.body ?? {}
+  const domain = String(b.domain ?? '').trim().toLowerCase().replace(/\.$/, '')
+  if (!/^([a-z0-9-]+\.)+[a-z]{2,}$/.test(domain)) throw bad('域名不对，比如 example.com')
+  if (all<dns.Domain>('domains').some((d) => d.domain === domain)) throw bad('已经登记过了')
+  const provider = b.provider === 'aliyun' ? 'aliyun' : 'cloudflare'
+  if (!get<Credential>('credentials', String(b.cred ?? ''))) throw bad('选一个凭证（Cloudflare 填 API 令牌；阿里云用户名填 AccessKeyId、值填 AccessKeySecret）')
+  const d: dns.Domain = { id: uid('dm'), domain, provider, cred: String(b.cred) }
+  audit({ via: '—', action: 'domain.add', target: domain, level: '写', result: '成功', how: '本人' })
+  return put1('domains', d)
+})
+route('DELETE', '/api/domains/:id', (c) => { del1('domains', c.params.id); return { ok: true } })
+const domOf = (id: string) => { const d = get<dns.Domain>('domains', id); if (!d) throw new HttpError(404, '没有这个域名'); return d }
+route('GET', '/api/domains/:id/records', async (c) => { try { return await dns.list(domOf(c.params.id)) } catch (e) { throw bad((e as Error).message) } })
+route('POST', '/api/domains/:id/records', async (c) => {
+  needVerify(c)
+  const d = domOf(c.params.id)
+  const b = c.body ?? {}
+  try {
+    const x = await dns.set(d, { rr: String(b.rr ?? '').trim(), type: String(b.type ?? '').toUpperCase(), value: String(b.value ?? '').trim(), ttl: b.ttl ? Number(b.ttl) : undefined, priority: b.priority ? Number(b.priority) : undefined })
+    audit({ via: '—', action: 'dns.set', target: `${b.rr}.${d.domain} ${b.type} ${b.value}`, level: '危险', result: '成功', how: '本人（已验证）' })
+    return x
+  } catch (e) { throw bad((e as Error).message) }
+})
+route('DELETE', '/api/domains/:id/records/:rid', async (c) => {
+  needVerify(c)
+  const d = domOf(c.params.id)
+  try { const old = await dns.remove(d, c.params.rid); audit({ via: '—', action: 'dns.delete', target: `${old?.rr}.${d.domain} ${old?.type} ${old?.value}`, level: '危险', result: '成功', how: '本人（已验证）' }); return { ok: true } } catch (e) { throw bad((e as Error).message) }
+})
+
+// ---------- 消息渠道（收）：邮箱、Slack ----------
+route('POST', '/api/channels', async (c) => {
+  const b = c.body ?? {}
+  const kind = b.kind === 'slack' ? 'slack' : 'email'
+  const name = String(b.name ?? '').trim().slice(0, 40)
+  const cred = get<Credential>('credentials', String(b.cred ?? ''))
+  if (!name || !cred) throw bad('名字和凭证都要有')
+  const ch: inbox.Channel = { id: inbox.newChannelId(), kind, name, cred: cred.id, enabled: true }
+  if (kind === 'email') {
+    ch.imapHost = String(b.imapHost ?? '').trim()
+    ch.imapPort = Number(b.imapPort) || 993
+    ch.user = String(b.user ?? cred.user ?? '').trim()
+    if (!ch.imapHost || !ch.user) throw bad('邮箱要填 IMAP 服务器和账号')
+  } else {
+    try { const r = await inbox.slackCheck(getSecret(cred.id) ?? ''); ch.team = r.team; ch.me = r.me } catch (e) { throw bad((e as Error).message) }
+  }
+  audit({ via: '—', action: 'channel.add', target: `${kind} · ${name}`, level: '写', result: '成功', how: '本人' })
+  return inbox.pubCh(put1('channels', ch))
+})
+route('PUT', '/api/channels/:id', (c) => {
+  const ch = get<inbox.Channel>('channels', c.params.id)
+  if (!ch) throw new HttpError(404, '没有这个渠道')
+  const next = { ...ch, ...(typeof c.body?.enabled === 'boolean' ? { enabled: c.body.enabled } : {}), ...(c.body?.name ? { name: String(c.body.name).slice(0, 40) } : {}) }
+  put('channels', next)
+  emit({ t: 'put', coll: 'channels', item: inbox.pubCh(next) })
+  return inbox.pubCh(next)
+})
+route('DELETE', '/api/channels/:id', (c) => { del1('channels', c.params.id); db.prepare('DELETE FROM inbox WHERE ch = ?').run(c.params.id); return { ok: true } })
+
+// ---------- 收件箱 ----------
+route('GET', '/api/inbox', (c) => inbox.list({ cat: c.url.searchParams.get('cat') ?? undefined, before: Number(c.url.searchParams.get('before')) || undefined }))
+route('PUT', '/api/inbox/:id', (c) => { try { return inbox.mark(c.params.id, { cat: c.body?.cat, done: c.body?.done }) } catch (e) { throw bad((e as Error).message) } })
+route('GET', '/api/inbox/:id/body', async (c) => {
+  const i = inbox.getItem(c.params.id)
+  if (!i) throw new HttpError(404, '没有这条')
+  if (i.kind !== 'email') return { text: i.snippet }
+  try { return { text: await inbox.emailBody(i) } } catch (e) { throw bad((e as Error).message) }
+})
+route('POST', '/api/inbox/:id/draft', async (c) => { try { return await inbox.draft(c.params.id, String(c.body?.hint ?? '')) } catch (e) { throw bad((e as Error).message) } })
+
+// ---------- 提醒发到哪（外部渠道） ----------
+const KINDS = ['email', 'telegram', 'slack', 'wecom', 'dingtalk', 'feishu', 'webhook']
+route('POST', '/api/notifiers', (c) => {
+  const b = c.body ?? {}
+  if (!KINDS.includes(b.kind)) throw bad('不认识的渠道')
+  if (!get<Credential>('credentials', String(b.cred ?? ''))) throw bad('选一个凭证（机器人令牌 / 地址 / SMTP 密码）')
+  const events = (Array.isArray(b.events) ? b.events : ['decide', 'error']).filter((x: string) => ['decide', 'error', 'all'].includes(x))
+  const n: notify.Notifier = {
+    id: uid('nt'), kind: b.kind, name: String(b.name ?? b.kind).slice(0, 40), events: events.length ? events : ['decide', 'error'], enabled: true, cred: String(b.cred),
+    chatId: b.chatId ? String(b.chatId) : undefined, smtpHost: b.smtpHost ? String(b.smtpHost) : undefined, smtpPort: Number(b.smtpPort) || undefined, smtpUser: b.smtpUser ? String(b.smtpUser) : undefined, to: b.to ? String(b.to) : undefined,
+  }
+  if (n.kind === 'telegram' && !n.chatId) throw bad('Telegram 要填 chat_id（给机器人发一句话后，用 getUpdates 看）')
+  if (n.kind === 'email' && (!n.smtpHost || !n.to)) throw bad('邮件要填 SMTP 服务器和收件人')
+  audit({ via: '—', action: 'notifier.add', target: `${n.kind} · ${n.name}`, level: '写', result: '成功', how: '本人' })
+  put('notifiers', n)
+  emit({ t: 'put', coll: 'notifiers', item: notify.pub(n) })
+  return notify.pub(n)
+})
+route('PUT', '/api/notifiers/:id', (c) => {
+  const n = get<notify.Notifier>('notifiers', c.params.id)
+  if (!n) throw new HttpError(404, '没有这个渠道')
+  const b = c.body ?? {}
+  const next = { ...n, ...(typeof b.enabled === 'boolean' ? { enabled: b.enabled } : {}), ...(Array.isArray(b.events) ? { events: b.events.filter((x: string) => ['decide', 'error', 'all'].includes(x)) } : {}) }
+  put('notifiers', next)
+  emit({ t: 'put', coll: 'notifiers', item: notify.pub(next) })
+  return notify.pub(next)
+})
+route('DELETE', '/api/notifiers/:id', (c) => { del1('notifiers', c.params.id); return { ok: true } })
+route('POST', '/api/notifiers/:id/test', async (c) => { try { await notify.test(c.params.id); return { ok: true } } catch (e) { throw bad((e as Error).message) } })
+
+// ---------- 用量明细 ----------
+route('GET', '/api/usage/detail', () => usageDetail())
 
 // ---------- 手机外壳 ----------
 const pairCodes = new Map<string, number>()
@@ -707,13 +1157,20 @@ route('POST', '/api/app/ticket', (c) => {
   return { url: `/api/app/enter?t=${t}` }
 }, { auth: 'device' })
 const tickets = new Map<string, { device: string; exp: number; route: string }>()
+/** 网页首页的路径（装在子路径下时带前缀） */
+function home(c: Ctx) {
+  let b = ''
+  try { b = new URL(cfg.publicUrl).pathname } catch { /* 没配 */ }
+  if (!b || b === '/') b = String(c.req.headers['x-forwarded-prefix'] ?? '')
+  return `${b.replace(/[^\w./-]/g, '').replace(/\/+$/, '')}/`.replace(/^(?!\/)/, '/')
+}
 route('GET', '/api/app/enter', (c) => {
   const t = tickets.get(String(c.url.searchParams.get('t') ?? ''))
   tickets.delete(String(c.url.searchParams.get('t') ?? ''))
-  if (!t || t.exp < Date.now()) { c.res.writeHead(302, { Location: '/' }); c.res.end(); return }
+  if (!t || t.exp < Date.now()) { c.res.writeHead(302, { Location: home(c) }); c.res.end(); return }
   auth.endDeviceSessions(t.device)
   setCookie(c, auth.newSession(t.device))
-  c.res.writeHead(302, { Location: '/' + (t.route ? `?route=${encodeURIComponent(t.route)}` : '') })
+  c.res.writeHead(302, { Location: home(c) + (t.route ? `?route=${encodeURIComponent(t.route)}` : '') })
   c.res.end()
 }, { auth: 'none' })
 route('POST', '/api/app/devices', (c) => {
@@ -780,6 +1237,16 @@ route('POST', '/api/agents/move', (c) => {
   for (const s of list) agents.sendTask(s.id, { t: 'move', id: uid('mv'), url })
   audit({ via: '—', action: 'agent.move', target: `${list.length} 台 → ${url}`, level: '危险', result: '成功', how: '本人（已验证）' })
   return { sent: list.length, fingerprint: keys.SERVER_FP }
+})
+// 一键升级 Agent：让那台在 systemd 里另起一个单元跑 opero update（不在 Agent 自己的进程里，升级时 Agent 重启也不会把它带走）
+route('POST', '/api/agents/:id/upgrade', async (c) => {
+  needVerify(c)
+  const sv = get<Server>('servers', c.params.id)
+  if (!sv || !agents.agentOnline(sv)) throw bad('这台的 Agent 不在线')
+  const r = await agents.exec(sv.id, 'systemd-run --unit=opero-agent-upgrade --collect --quiet /usr/local/bin/opero update && echo STARTED', { timeoutMs: 30_000 })
+  audit({ via: '—', action: 'agent.upgrade', target: `${sv.name}：${sv.agentVersion ?? '?'} → ${cfg.version}`, level: '写', result: r.out.includes('STARTED') ? '成功' : '失败', how: '本人（已验证）' })
+  if (!r.out.includes('STARTED')) throw bad(`没能开始升级：${r.out.slice(-300)}`)
+  return { ok: true, from: sv.agentVersion, to: cfg.version }
 })
 route('GET', '/api/agents/fingerprint', () => ({ fingerprint: keys.SERVER_FP }))
 route('GET', '/api/agent/poll', async (c) => {

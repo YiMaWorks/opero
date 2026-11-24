@@ -88,6 +88,15 @@ export default function App() {
     if (!mobile && !current && sessions.length) setCurrent(sessions.find((s) => s.id === 's-shop-log')?.id ?? sessions[0].id)
   }, [mobile, current, sessions])
 
+  // 开着的会话被归档了（开新会话接着做 / 换执行器）：跳到这个员工的新会话
+  const curEmp = useRef<string | null>(null)
+  useEffect(() => {
+    const s = sessions.find((x) => x.id === current)
+    if (s) { curEmp.current = s.employee; return }
+    const n = current && curEmp.current ? sessions.find((x) => x.employee === curEmp.current) : undefined
+    if (n) setCurrent(n.id)
+  }, [current, sessions])
+
   const stack = stacks[tab]
   const pushTab = (r: Route) => setStacks((st) => ({ ...st, [tab]: [...st[tab], r] }))
   const popTab = () => setStacks((st) => ({ ...st, [tab]: st[tab].length > 1 ? st[tab].slice(0, -1) : st[tab] }))

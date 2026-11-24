@@ -22,10 +22,13 @@ export function emit(ev: Record<string, unknown>) {
 setInterval(() => { for (const c of clients) { try { c.write(': ping\n\n') } catch { clients.delete(c) } } }, 25_000).unref()
 
 // ---------- 手机推送队列 ----------
-export interface PushItem { id: number; kind: 'decide' | 'info' | 'alarm'; title: string; body?: string; route?: string }
+export interface PushItem { id: number; kind: 'decide' | 'info' | 'alarm'; title: string; body?: string; route?: string; /** 出错类（发布失败、执行器出错）：外部提醒按它分 */ error?: boolean }
 const waiters = new Set<() => void>()
+/** 推送的同时转给外部提醒渠道（notify.ts 挂上来） */
+export const pushHooks: ((item: Omit<PushItem, 'id'>) => void)[] = []
 
 export function push(item: Omit<PushItem, 'id'>) {
+  for (const h of pushHooks) { try { h(item) } catch { /* 外部渠道出错不影响推送 */ } }
   db.prepare('INSERT INTO push (ts, data) VALUES (?, ?)').run(Date.now(), JSON.stringify(item))
   db.prepare('DELETE FROM push WHERE ts < ?').run(Date.now() - 7 * 86400_000)
   for (const w of [...waiters]) w()

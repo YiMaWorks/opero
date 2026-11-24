@@ -9,14 +9,19 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { cfg, MCP_SCRIPT } from './config.ts'
-import { get, kvGet, put, uid } from './db.ts'
+import { get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit, push } from './bus.ts'
-import { addMsg, delMsg, empSays, getMsg, monthCost, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
+import { addMsg, delMsg, empSays, getMsg, monthCost, monthCostOf, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
 import { getSecret, scrub } from './vault.ts'
 import type { Employee, Server, Workspace } from './types.ts'
 import * as hosts from './hosts.ts'
 import * as agents from './agents.ts'
 import * as tunnel from './tunnel.ts'
+import * as memory from './memory.ts'
+import * as autogit from './autogit.ts'
+import { policyOf, policyText, shimBins, SHIM_SCRIPT, type Policy } from './policy.ts'
+import { watchMemory } from './limits.ts'
+import { spawn } from 'node:child_process'
 
 /** path = 员工那台机器上看到的路径；local = Opero 这台上的原文件（远程员工时两者不同） */
 export interface Attachment { path: string; name: string; mediaType: string; image: boolean; local?: string }
@@ -41,6 +46,11 @@ interface Live {
   stderr: string
   secrets: string[]
   ctx?: number
+  /** 这一轮的第一句（自动提交的说明用）、工作空间、内存看守 */
+  ask: string
+  ws?: Workspace
+  unwatch: () => void
+  warned: number
 }
 
 const live = new Map<string, Live>()
@@ -49,7 +59,9 @@ const booting = new Map<string, { text: string; files: Attachment[] }[]>()
 const stopEarly = new Set<string>()
 const byToken = new Map<string, { emp: string; sid: string; runId: string; remote?: boolean }>()
 
-export const isWorking = (emp: string) => live.has(emp) || booting.has(emp)
+/** 干完一轮在收尾（提交记忆、提交推送代码）：这时也算在干活，新来的话排队 */
+const finishing = new Set<string>()
+export const isWorking = (emp: string) => live.has(emp) || booting.has(emp) || finishing.has(emp)
 export const runOf = (token: string) => byToken.get(token)
 export const workingList = () => [...live.keys()]
 
@@ -93,6 +105,22 @@ function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL): { env: Rec
   return { env, secrets }
 }
 
+/** 一次性问 AI（不进任何会话）：整理收件箱、写回复建议用。先用 Claude Code（便宜的模型），不行再用 Codex；返回最后的文字 */
+export async function oneShot(prompt: string, timeoutMs = 180_000): Promise<string> {
+  const tries: [string, string[], 'claude' | 'codex'][] = [
+    [cfg.claudeBin, ['-p', '--max-turns', '1', '--output-format', 'text', '--model', 'claude-haiku-5-5'], 'claude'],
+    [cfg.codexBin, ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], 'codex'],
+  ]
+  let last = ''
+  for (const [bin, args, kind] of tries) {
+    const { env, secrets } = aiEnv(kind)
+    const r = await hosts.runAiOn(hosts.LOCAL, bin, args, { env, input: prompt, timeoutMs })
+    if (r.code === 0 && r.out.trim()) return scrub(r.out.trim(), secrets)
+    last = scrub(r.out, secrets).slice(-300)
+  }
+  throw new Error(`AI 没回话：${last || '没装 Claude Code / Codex，或没登录'}`)
+}
+
 // 本机起进程的工具在 hosts.ts（远程员工经 Agent 跑）；executors 等还按原来的名字用
 export const spawnAi = hosts.spawnAi
 export const runAi = (bin: string, args: string[], opts: Parameters<typeof hosts.runAiOn>[3] = {}) => hosts.runAiOn(hosts.LOCAL, bin, args, opts)
@@ -103,6 +131,29 @@ export function hostOf(emp: Employee): string {
   if (hosts.isLocal(emp.host)) return hosts.LOCAL
   const sv = get<Server>('servers', emp.host)
   return agents.isAgent(sv) ? emp.host : hosts.LOCAL
+}
+
+// ---------- 命令拦截：每台机器一个目录放同名小脚本（policy.ts），员工进程的 PATH 最前面是它 ----------
+const shimsDone = new Map<string, string>()
+async function shimEnv(host: string, p: Policy): Promise<Record<string, string>> {
+  const dir = path.posix.join(hosts.workRoot(host), '.opero-shims')
+  const bins = shimBins(p)
+  const key = bins.join(' ')
+  if (shimsDone.get(host) !== key) {
+    try {
+      if (hosts.isLocal(host)) {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o2775 })
+        for (const b of bins) fs.writeFileSync(path.join(dir, b), SHIM_SCRIPT, { mode: 0o755 })
+      } else {
+        for (const b of bins) agents.writeFile(host, path.posix.join(dir, b), Buffer.from(SHIM_SCRIPT))
+        await new Promise((r) => setTimeout(r, 500))
+        await agents.exec(host, `chmod 755 ${dir}/* && chmod 2775 ${dir}`)
+      }
+      shimsDone.set(host, key)
+    } catch { return {} } // 放不了就只靠 Claude Code 的逐条检查和提示词
+  }
+  const check = hosts.isLocal(host) ? path.join(path.dirname(MCP_SCRIPT), 'policy-check.ts') : '{{SRC}}/policy-check.ts'
+  return { OPERO_SHIMS: dir, OPERO_POLICY: JSON.stringify(p), OPERO_NODE: hosts.nodeBin(host), OPERO_CHECK: check }
 }
 
 const helpCache = new Map<string, boolean>()
@@ -130,6 +181,21 @@ function cwdOf(emp: Employee, host: string): { cwd: string; ws?: Workspace } {
   return { cwd: homeOn(emp, host) }
 }
 
+/** 能只读看的别的工作空间（要和员工在同一台机器上、已经拉下来了） */
+export function readDirsOf(emp: Employee, host = hostOf(emp)): { name: string; dir: string }[] {
+  const wss = (emp.reads ?? []).slice(0, 8).map((id) => get<Workspace>('workspaces', id)).filter((w): w is Workspace => !!w && w.id !== emp.workspace && (w.server ?? hosts.LOCAL) === host)
+    .map((w) => ({ name: w.name, dir: w.dir }))
+  // 那台服务器「目录」里登记成只读的
+  const sv = get<Server>('servers', hosts.isLocal(host) ? 'local' : host)
+  const dirs = (sv?.dirs ?? []).filter((d) => d.mode === 'read' && d.ok !== false).map((d) => ({ name: d.note || d.path, dir: d.path }))
+  return [...wss, ...dirs]
+}
+/** 那台服务器「目录」里登记成读写的：员工能改 */
+export function writeDirsOf(host: string): { name: string; dir: string }[] {
+  const sv = get<Server>('servers', hosts.isLocal(host) ? 'local' : host)
+  return (sv?.dirs ?? []).filter((d) => d.mode === 'write' && d.ok !== false).map((d) => ({ name: d.note || d.path, dir: d.path }))
+}
+
 /** 远程员工：聊天里传的文件先送到那台的 uploads 目录 */
 function place(emp: Employee, host: string, files: Attachment[]): Attachment[] {
   if (hosts.isLocal(host) || !files.length) return files
@@ -145,7 +211,7 @@ const MODEL_IDS: Record<string, string> = { 'Opus 5.5': 'claude-opus-5-5', 'Sonn
 
 const LANG_NAMES: Record<string, string> = { 'zh-CN': '简体中文', 'zh-TW': '繁體中文', en: 'English', ja: '日本語', de: 'Deutsch', fr: 'Français', ar: 'العربية' }
 
-function rules(emp: Employee, cwd: string, ws?: Workspace) {
+function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: string, mem: string) {
   const st = kvGet<{ habits?: string; lang?: string; langResolved?: string }>('settings', {})
   const habits = st.habits?.trim()
   const ln = LANG_NAMES[st.lang && st.lang !== 'auto' ? (st.lang === 'zh' ? 'zh-CN' : st.lang) : st.langResolved ?? ''] ?? ''
@@ -158,16 +224,25 @@ function rules(emp: Employee, cwd: string, ws?: Workspace) {
     `## 在 Opero 里怎么干活
 - 回复像聊天：简短，先给结论；长内容用 Markdown。
 - 服务器、数据库、代码仓库、云的账号都在 Opero 的保险箱里，你拿不到，也不要去找、不要让主人发给你。
-- 连服务器用 opero 的 server_exec（先 list_servers 看有哪些）；查库用 db_query（先 list_databases）；同步 / 推送代码用 git_sync。
+- 连服务器用 opero 的 server_exec（先 list_servers 看有哪些）；看日志用 log_scan（按时间统计、第一次 / 最近出现、异常汇总，别整份 cat）；改服务器上的文件用 file_write（自动备份）；要密码 / 令牌就在命令里写 {{secret:凭证名}}（list_credentials 看有哪些），Opero 替你填，你看不到值。
+- 查库用 db_query（先 list_databases）；同步 / 推送代码用 git_sync；${emp.dns?.length ? '改域名解析用 dns_list / dns_set / dns_delete（只限主人开给你的域名，改前先看、改后用 dig 确认）；' : ''}${emp.workBranch ? `你在自己的分支 ${emp.workBranch} 上改，做完用 pr_create 提合并请求（pr_status 看合没合）；` : ''}发布用 release_publish（release_list 看有哪些目标、你有没有权限发，release_status 看结果）。
+- 线上问题记进问题清单：issue_report（同一个问题用同一个 key），修好了 issue_update 标 fixed；issue_list 看现在有哪些。
 - 要主人在几个方案里选，用 ask_owner；做不可撤销或影响生产的事之前用 confirm；要给主人看结构化的结果用 send_card；要把文件或图片发给主人用 send_file。
-- 别的员工更合适的活，用 delegate 转给它（list_employees 看有谁）。
+- 别的员工更合适的活，用 delegate 转给它（list_employees 看有谁）。${emp.canManage ? '\n- 你能管员工：主人要建新员工或改别的员工的职责，用 emp_create / emp_update（主人会点确认；服务器、库、凭证的权限由主人自己给）。' : ''}
 - 共用资料（规范、接口文档、产品说明）先用 kb_search / kb_get 查；值得留给所有员工的，用 kb_save 存进去。
-- 工作目录：${cwd}${ws ? `（工作空间「${ws.name}」，仓库 ${ws.repo}，分支 ${ws.branch}）` : '（你自己的目录，可以放笔记和脚本）'}。`,
+- 工作目录：${cwd}${ws ? `（工作空间「${ws.name}」，仓库 ${ws.repo}，分支 ${ws.branch}）` : '（就是你的记忆仓库）'}。${ws && autogit.autoOn(ws) ? '\n- 这个工作空间开了自动同步：开工前 Opero 已经拉到最新；这一轮干完 Opero 会自动提交并推送，你可以自己 commit（写好提交说明），不用推送。' : ''}`,
+    `## 你的记忆仓库：${mem}
+- 开工先读 ${mem}/CLAUDE.md 和 ${mem}/docs/交接.md 最上面几条，接着上次做。
+- 做完在 docs/交接.md 最上面加一条（做了什么、为什么、怎么验证、还剩什么、下一步），docs/记录/<年-月>.md 记一行流水；机器的事记 docs/机器/。
+- 这个仓库每轮干完 Opero 自动提交，换会话、换执行器、换服务器都从这里接着干，所以交接要写清楚。`,
+    writeDirsOf(host).length && `## 这台服务器上你能改的目录\n${writeDirsOf(host).map((r) => `- ${r.name}：${r.dir}`).join('\n')}`,
+    readDirsOf(emp, host).length && `## 只读参考的项目（只能看，不能改）\n${readDirsOf(emp, host).map((r) => `- ${r.name}：${r.dir}`).join('\n')}\n要改这些项目，告诉主人交给负责它的员工。`,
+    policyText(policyOf(hosts.isLocal(host) ? get<Server>('servers', 'local') : get<Server>('servers', host)), hosts.isLocal(host) ? 'Opero 这台' : get<Server>('servers', host)?.name ?? host),
   ].filter(Boolean).join('\n\n')
 }
 
 // ---------- 排队（queue.ts 接上来）：插不进去的话进队；一轮结束发下一条 ----------
-let hooks: { busy?: (emp: string, text: string, files: Attachment[]) => void; idle?: (emp: string, stopped: boolean) => void } = {}
+let hooks: { busy?: (emp: string, text: string, files: Attachment[], why?: string) => void; idle?: (emp: string, stopped: boolean) => void; freed?: (host: string) => void } = {}
 export function setHooks(h: typeof hooks) { hooks = h }
 /** 员工在干活、而且现在能插话（Claude Code 的输入通道开着，或者进程正在起） */
 export function canInterject(empId: string) {
@@ -186,6 +261,7 @@ export async function send(empId: string, text: string, files: Attachment[] = []
     system(sessionFor(empId).id, '已插话：员工下一步会看到这句')
     return
   }
+  if (finishing.has(empId)) { hooks.busy?.(empId, text, files, '员工在收尾（提交代码），已排队：马上接着做'); return }
   const cur = live.get(empId)
   if (cur) {
     files = place(emp, cur.host, files)
@@ -201,7 +277,41 @@ export async function send(empId: string, text: string, files: Attachment[] = []
     system(s.id, `这个月的预算（$${budget.budget}）用满了，员工先停下。到「我 → 设置」里调高预算或关掉「用满先停」再试。`)
     return
   }
+  // 单独给员工 / 项目设的预算：用满就停（这两个不看「用满先停」开关，设了就是要管住）
+  const over = budgetOver(emp)
+  if (over) { system(sessionFor(empId).id, over); return }
+  const host = hostOf(emp)
+  const max = policyOf(get<Server>('servers', host)).maxConcurrent
+  if (max && [...live.values()].filter((x) => x.host === host).length + [...booting.keys()].filter((id) => hostOf(get<Employee>('employees', id) ?? emp) === host).length >= max) {
+    hooks.busy?.(empId, text, files, `这台服务器同时最多 ${max} 个员工在干活，已排队：有人做完就轮到它`)
+    return
+  }
   start(emp, text, files)
+}
+
+
+/** 员工 / 它的工作空间这个月的预算用满了：返回原因 */
+export function budgetOver(emp: Employee): string {
+  if (emp.budget && monthCostOf({ emp: emp.id }) >= emp.budget) return `「${emp.name}」这个月的预算（$${emp.budget}）用满了，先停下。到员工档案里调高预算再试。`
+  const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
+  if (ws?.budget && monthCostOf({ ws: ws.id }) >= ws.budget) return `项目「${ws.name}」这个月的预算（$${ws.budget}）用满了，先停下。到工作空间里调高预算再试。`
+  return ''
+}
+
+/** 一轮做完：员工 / 项目预算到了 80% 提醒一次（每月一次） */
+function budgetWarn(emp: Employee, sid: string) {
+  const month = new Date().toISOString().slice(0, 7)
+  const warned = kvGet<Record<string, string>>('budgetWarned', {})
+  const check = (key: string, used: number, cap: number | undefined, label: string) => {
+    if (!cap || used < cap * 0.8 || warned[key] === month) return
+    warned[key] = month
+    kvSet('budgetWarned', warned)
+    system(sid, `⚠ ${label}这个月花了 $${used.toFixed(2)}，预算 $${cap} 用了 ${Math.round((100 * used) / cap)}%`)
+    push({ kind: 'info', title: '预算快用完了', body: `${label}：$${used.toFixed(2)} / $${cap}`, route: `chat/${sid}` })
+  }
+  check(`e:${emp.id}`, monthCostOf({ emp: emp.id }), emp.budget, `「${emp.name}」`)
+  const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
+  if (ws) check(`w:${ws.id}`, monthCostOf({ ws: ws.id }), ws.budget, `项目「${ws.name}」`)
 }
 
 function writeUser(l: Live, text: string, files: Attachment[]) {
@@ -221,6 +331,7 @@ const withFiles = (text: string, files: Attachment[]) =>
   files.length ? `${text}\n\n主人发来的文件（可以直接读）：\n${files.map((f) => `- ${f.path}（${f.name}）`).join('\n')}` : text
 
 function start(emp: Employee, text: string, files: Attachment[]) {
+  const ask = text // 主人原话（自动提交的说明用；下面可能在前面加 Opero 的提示）
   const s = sessionFor(emp.id)
   const kind: 'claude' | 'codex' = /codex/i.test(emp.executor) ? 'codex' : 'claude'
   const host = hostOf(emp)
@@ -240,18 +351,25 @@ function start(emp: Employee, text: string, files: Attachment[]) {
 
   const begin = async () => {
     let proc: ChildProcess
+    // 记忆仓库（没有就建、Opero 管的那段对一遍）和工作空间（拉到最新）
+    const mem = await memory.ensureMemory(emp, host)
+    const pre = ws ? await autogit.preSync(ws, emp) : ''
+    const notes = [mem.note && `（Opero：${mem.note}）`, pre].filter(Boolean).join('\n')
+    if (notes) text = `${notes}\n\n${text}`
+    const memDirs = mem.note ? [] : [mem.dir]
+    Object.assign(env, await shimEnv(host, policyOf(get<Server>('servers', host))))
     if (kind === 'claude') {
       const pm = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : 'acceptEdits'
       const mcp = { mcpServers: { opero: { command: hosts.nodeBin(host), args: ['--disable-warning=ExperimentalWarning', mcpScript], env: mcpEnv } } }
       const args = ['-p', '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
         '--permission-mode', pm, '--max-turns', String(cfg.maxTurns),
         '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__opero__approve', '--allowedTools', 'mcp__opero',
-        '--append-system-prompt', rules(emp, cwd, ws), '--add-dir', uploads]
+        '--append-system-prompt', rules(emp, cwd, ws, host, mem.dir), '--add-dir', uploads, ...memDirs.filter((d) => d !== cwd).flatMap((d) => ['--add-dir', d]), ...readDirsOf(emp, host).flatMap((r) => ['--add-dir', r.dir]), ...writeDirsOf(host).flatMap((r) => ['--add-dir', r.dir])]
       if (!cfg.aiUser && hosts.isLocal(host)) args.push('--disallowedTools', `Read(/${cfg.data}/**),Edit(/${cfg.data}/**),Write(/${cfg.data}/**)`)
       if (MODEL_IDS[emp.model]) args.push('--model', MODEL_IDS[emp.model])
       if (emp.effort && (await supportsEffort(host))) args.push('--effort', emp.effort)
       if (emp.resumeId) args.push('--resume', emp.resumeId)
-      proc = hosts.spawnAiOn(host, cfg.claudeBin, args, env, cwd, mkdirs)
+      proc = hosts.spawnAiOn(host, cfg.claudeBin, args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
     } else {
       const q = (v: string) => JSON.stringify(v)
       const args = ['exec',
@@ -263,6 +381,8 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       const imgs = files.filter((f) => f.image).map((f) => f.path)
       if (imgs.length) args.push('--image', imgs.join(','))
       args.push('--json', '--skip-git-repo-check', '-C', cwd)
+      const roots = [uploads, ...memDirs, ...writeDirsOf(host).map((r) => r.dir)].filter((d) => d !== cwd)
+      if (roots.length) args.push('-c', `sandbox_workspace_write.writable_roots=[${roots.map(q).join(',')}]`)
       if (emp.approval === 'plan') args.push('--sandbox', 'read-only')
       else if (emp.approval === 'auto') args.push('--dangerously-bypass-approvals-and-sandbox')
       else args.push('--sandbox', 'workspace-write')
@@ -271,22 +391,33 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       if (emp.model && emp.model !== '执行器默认') args.push('-m', emp.model)
       if (emp.resumeId) args.push('resume', emp.resumeId)
       args.push('-')
-      proc = hosts.spawnAiOn(host, cfg.codexBin, args, env, cwd, mkdirs)
+      proc = hosts.spawnAiOn(host, cfg.codexBin, args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct)
     }
     const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
-      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets }
+      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0 }
+    // 内存上限（这台的规矩）：本机在这里看着，远程由 Agent 看着、超了在 stderr 里说一句
+    const memPct = policyOf(get<Server>('servers', host)).memPct
+    if (hosts.isLocal(host)) l.unwatch = watchMemory(proc.pid, memPct, {
+      kill: (pid) => { if (cfg.aiUser) spawn('sudo', ['-n', '-u', cfg.aiUser, 'kill', '-9', String(pid)], { stdio: 'ignore' }).on('error', () => {}); else process.kill(pid, 'SIGKILL') },
+      warn: (pct) => { if (Date.now() - l.warned > 5 * 60_000) { l.warned = Date.now(); system(l.sid, `⚠ ${emp.name} 的进程用了这台 ${pct}% 内存（上限 ${memPct}%），一直这样会停掉最大的那个进程`) } },
+      killed: (p, pct) => system(l.sid, `⚠ 内存超过上限（${pct}% > ${memPct}%），停掉了最大的进程：${p.cmd || p.pid}（${p.mb} MB）`),
+    })
     live.set(emp.id, l)
     if (stopEarly.delete(emp.id)) { l.stopped = true; killTree(proc) }
     const early = booting.get(emp.id) ?? []
     booting.delete(emp.id)
     proc.stdin!.on('error', () => { l.stdinOpen = false }) // 进程已经退了还往里写：不要把后台带崩
-    proc.stderr!.on('data', (b) => { l.stderr = (l.stderr + b).slice(-4000) })
+    proc.stderr!.on('data', (b) => {
+      const t = String(b)
+      for (const line of t.split('\n')) if (line.startsWith('[opero] ')) system(l.sid, line.slice(8)) // Agent 那边的提醒（内存上限）
+      l.stderr = (l.stderr + t).slice(-4000)
+    })
     proc.on('error', (e) => { l.stderr += `\n${e.message}` })
     if (kind === 'claude') {
       writeUser(l, text, files)
       for (const x of early) writeUser(l, x.text, x.files)
     } else {
-      const first = emp.resumeId ? withFiles(text, files) : `${rules(emp, cwd, ws)}\n\n---\n\n${withFiles(text, files)}`
+      const first = emp.resumeId ? withFiles(text, files) : `${rules(emp, cwd, ws, host, mem.dir)}\n\n---\n\n${withFiles(text, files)}`
       proc.stdin!.end(first)
       for (const x of early) hooks.busy?.(emp.id, x.text, x.files)
     }
@@ -402,22 +533,39 @@ function saveEmp(id: string, patch: Partial<Employee>) {
 }
 
 function finish(l: Live, code: number | null) {
+  finishing.add(l.emp)
   live.delete(l.emp)
+  l.unwatch()
   setTimeout(() => byToken.delete(l.token), 10_000)
-  delMsg(l.statusId)
-  patchSession(l.sid, { clear: ['working'] })
   cancelPending(l.runId, '员工这一轮已经结束')
   const emp = get<Employee>('employees', l.emp)
   if (l.ctx && emp) saveEmp(emp.id, { contextUsed: Math.min(100, Math.round((100 * l.ctx) / 200_000)) })
-  recordRun(l.runId, l.emp, l.ok && !l.stopped, l.cost, l.tokens)
+  recordRun(l.runId, l.emp, l.ok && !l.stopped, l.cost, l.tokens, l.ws?.id ?? '')
+  if (emp) budgetWarn(emp, l.sid)
+  // 收尾：记忆仓库提交、工作空间提交推送，做完再放下一条排队的（免得两轮同时动 git）
+  const ok = l.ok && !l.stopped
+  ;(async () => {
+    if (!emp) return
+    if (l.ws) { setStatus(l, '在提交、推送代码…'); const r = await autogit.postSync(l.ws, emp, { ok, stopped: l.stopped, ask: l.ask }).catch((e) => `自动提交出错：${(e as Error).message}`); if (r) system(l.sid, r) }
+    await memory.commitMemory(emp, l.host, `${emp.name}: ${l.ask.replace(/\s+/g, ' ').slice(0, 60) || '一轮'}${ok ? '' : '（没做完）'}`).catch(() => '')
+  })().finally(() => {
+    finishing.delete(l.emp)
+    delMsg(l.statusId)
+    patchSession(l.sid, { clear: ['working'] })
+    after(l, code, emp)
+  })
+}
+
+function after(l: Live, code: number | null, emp: Employee | undefined) {
   if (!l.stopped && !l.ok && code !== 0) {
     const err = scrub(l.stderr.trim(), l.secrets).split('\n').slice(-6).join('\n')
     const hint = /auth|login|api key|401|credential|unauthorized|OAuth/i.test(err) ? '\n\n像是执行器没登录：到「我 → AI 执行器」配 API Key，或者在服务器上用 AI 用户登录一次。'
       : /not found|No such file|command not found/i.test(err) ? '\n\n像是服务器上没装这个执行器：到「我 → AI 执行器」看安装方法。' : ''
     system(l.sid, `执行器退出了（${code}）${err ? '：\n' + err : ''}${hint}`)
-    push({ kind: 'info', title: emp?.name ?? '员工', body: '执行器出错了', route: `chat/${l.sid}` })
+    push({ kind: 'info', error: true, title: emp?.name ?? '员工', body: '执行器出错了', route: `chat/${l.sid}` })
   }
   hooks.idle?.(l.emp, l.stopped)
+  hooks.freed?.(l.host)
 }
 
 export function stop(empId: string): boolean {

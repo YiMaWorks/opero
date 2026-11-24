@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { sysInfo } from './sysinfo.ts'
+import { watchMemory } from './limits.ts'
 
 const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8')).version } catch { return '0.0.0' } })()
 const DIR = process.env.OPERO_AGENT_DIR || '/var/lib/opero-agent'
@@ -54,10 +55,14 @@ function verifyWith(raw: string, data: string, sig: string) {
   } catch { return false }
 }
 /** 每个请求都签：方法、路径、时间、请求体的 sha256 */
-function signedHeaders(method: string, url: string, body: string) {
+function signedHeaders(method: string, url: string, body: string | Buffer) {
   const ts = String(Date.now())
   const u = new URL(url)
-  const payload = `${method}\n${u.pathname}${u.search}\n${ts}\n${crypto.createHash('sha256').update(body).digest('hex')}`
+  // Opero 装在子路径下（https://x.com/opero/）时 nginx 会去掉前缀：签名只签 /api/... 这一段
+  let base = ''
+  try { base = new URL(state?.server ?? '').pathname.replace(/\/+$/, '') } catch { /* 还没地址 */ }
+  const p = base && u.pathname.startsWith(base + '/') ? u.pathname.slice(base.length) : u.pathname
+  const payload = `${method}\n${p}${u.search}\n${ts}\n${crypto.createHash('sha256').update(body).digest('hex')}`
   return {
     'X-Opero-Agent-Pub': MY_PUB, 'X-Opero-Ts': ts, 'X-Opero-Sig': crypto.sign(null, Buffer.from(payload), idKey).toString('base64'),
     'X-Opero-Host': encodeURIComponent(os.hostname()).slice(0, 60), 'X-Opero-Os': encodeURIComponent(osName()).slice(0, 120), 'X-Opero-Machine': machineId(),
@@ -85,6 +90,39 @@ async function api(method: string, p: string, body?: unknown, timeoutMs = 30_000
   const j = await r.json().catch(() => ({}))
   if (!r.ok) throw Object.assign(new Error(j.message ?? `HTTP ${r.status}`), { status: r.status, code: j.code })
   return j
+}
+
+// ---------- 发布用的大文件：这台 ⇄ Opero（打包好的构建产物在服务器之间搬） ----------
+const BLOB_MAX = 300 * 1024 * 1024
+async function blobPush(t: any) {
+  const id = String(t.id)
+  try {
+    const f = String(t.path)
+    if (!f.startsWith(WORK + '/')) throw new Error('只能传工作目录里的文件')
+    const buf = fs.readFileSync(f)
+    if (buf.length > BLOB_MAX) throw new Error('文件超过 300 MB')
+    const url = state!.server + `/api/agent/blob/${encodeURIComponent(String(t.key))}`
+    const r = await fetch(url, { method: 'POST', headers: { ...signedHeaders('POST', url, buf), 'Content-Type': 'application/octet-stream', 'User-Agent': `OperoAgent/${VERSION}` }, body: buf, signal: AbortSignal.timeout(30 * 60_000) })
+    if (!r.ok) throw new Error(`上传失败 HTTP ${r.status}：${(await r.text()).slice(0, 200)}`)
+    emitOut(id, 'out', `已上传 ${buf.length} 字节\n`)
+    emitOut(id, 'exit', undefined, 0)
+  } catch (e: any) { emitOut(id, 'err', `${e.message}\n`); emitOut(id, 'exit', undefined, 1) }
+}
+async function blobPull(t: any) {
+  const id = String(t.id)
+  try {
+    const f = String(t.path)
+    if (!f.startsWith(WORK + '/')) throw new Error('只能放进工作目录')
+    const url = state!.server + `/api/agent/blob/${encodeURIComponent(String(t.key))}`
+    const r = await fetch(url, { headers: { ...signedHeaders('GET', url, ''), 'User-Agent': `OperoAgent/${VERSION}` }, signal: AbortSignal.timeout(30 * 60_000) })
+    if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`)
+    const buf = Buffer.from(await r.arrayBuffer())
+    if (t.sha256 && crypto.createHash('sha256').update(buf).digest('hex') !== t.sha256) throw new Error('校验不对（sha256），文件可能坏了')
+    mkdirFor(path.dirname(f))
+    fs.writeFileSync(f, buf, { mode: 0o640 })
+    emitOut(id, 'out', `已下载 ${buf.length} 字节\n`)
+    emitOut(id, 'exit', undefined, 0)
+  } catch (e: any) { emitOut(id, 'err', `${e.message}\n`); emitOut(id, 'exit', undefined, 1) }
 }
 
 const saveState = () => fs.writeFileSync(STATE, JSON.stringify(state), { mode: 0o600 })
@@ -226,7 +264,7 @@ async function tconn(id: string, host: string, port: number) {
 
 // ---------- 活 ----------
 const procs = new Map<string, ChildProcess>()
-const fill = (s: string) => s.replaceAll('{{NODE}}', NODE).replaceAll('{{MCP}}', MCP).replaceAll('{{API}}', state?.server ?? '')
+const fill = (s: string) => s.replaceAll('{{NODE}}', NODE).replaceAll('{{MCP}}', MCP).replaceAll('{{SRC}}', path.dirname(MCP)).replaceAll('{{API}}', state?.server ?? '')
 
 function mkdirFor(dir: string) {
   fs.mkdirSync(dir, { recursive: true })
@@ -254,7 +292,7 @@ function doSpawn(t: any) {
       if (env.OPERO_GIT_PASS) env.GIT_ASKPASS = ASKPASS
       p = spawn(String(t.bin), args, { cwd, env: { ...process.env, ...env } as Record<string, string>, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
     } else {
-      const wrapper = `export PATH="$HOME/.local/bin:$PATH:${path.dirname(NODE)}"; umask 007; exec "$0" "$@"`
+      const wrapper = `export PATH="\${OPERO_SHIMS:+\$OPERO_SHIMS:}$HOME/.local/bin:$PATH:${path.dirname(NODE)}"; umask 007; exec nice -n 10 "$0" "$@"`
       const keep = Object.keys(env)
       p = spawn('sudo', ['-n', '-u', AI_USER, '-H', ...(keep.length ? [`--preserve-env=${keep.join(',')}`] : []), '--', 'bash', '-lc', wrapper, String(t.bin), ...args],
         { cwd, env: { ...process.env, ...env } as Record<string, string>, stdio: ['pipe', 'pipe', 'pipe'], detached: true })
@@ -265,6 +303,13 @@ function doSpawn(t: any) {
     return
   }
   procs.set(id, p)
+  // 内存上限（Opero 那边这台的规矩）：超了在 stderr 里说一句，Opero 转到聊天里
+  const pct = Number(t.memPct) || 0
+  const unwatch = watchMemory(p.pid, pct, {
+    warn: (() => { let at = 0; return (u: number) => { if (Date.now() - at > 5 * 60_000) { at = Date.now(); emitOut(id, 'err', `[opero] ⚠ 员工的进程用了这台 ${u}% 内存（上限 ${pct}%），一直这样会停掉最大的那个进程\n`) } } })(),
+    killed: (k, u) => emitOut(id, 'err', `[opero] ⚠ 内存超过上限（${u}% > ${pct}%），停掉了最大的进程：${k.cmd || k.pid}（${k.mb} MB）\n`),
+  })
+  p.on('close', unwatch)
   const dOut = new StringDecoder('utf8')
   const dErr = new StringDecoder('utf8')
   p.stdout!.on('data', (b: Buffer) => emitOut(id, 'out', dOut.write(b)))
@@ -282,6 +327,8 @@ function kill(p: ChildProcess) {
 function handle(t: any) {
   switch (t.t) {
     case 'spawn': return doSpawn(t)
+    case 'push': blobPush(t); return
+    case 'pull': blobPull(t); return
     case 'stdin': {
       const p = procs.get(String(t.id))
       if (!p) return

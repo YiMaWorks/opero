@@ -15,11 +15,14 @@ import {
   ComingSoonPage, DataSourceAddPage, LiveServersPage, ExecutorsPage, LiveAppsPage, LiveCredentialEditPage, LiveDataPage, LiveEmployeePage, LiveKnowledgePage,
   LiveQueryPage, LiveSecurityPage, LiveServerAddPage, LiveServerPage, LiveTriggerEditPage, LiveTriggersPage, LiveWorkspaceAddPage, LiveWorkspacePage, LiveWorkspacesPage,
 } from './live'
+import { LiveHistoryPage, LiveIssuePage, LiveIssuesPage, LiveMemoryPage } from './live2'
+import { DomainPage, DomainsPage, LiveReleasePage, LiveReleasesPage } from './live3'
+import { LiveChannelsPage, LiveInboxPage } from './live4'
 
 /** 真的一套里还没做的页面 */
 const SOON: Partial<Record<Route['page'], string>> = {
-  releases: '发布', release: '发布', channels: '消息渠道', inbox: '收件箱', flows: '流程', plugins: '插件', customize: '定制和二开',
-  issues: '问题清单', issue: '问题', memory: '记忆', diff: '看改动', queryResult: '查询结果', placeholder: '还在做',
+  flows: '流程', plugins: '插件', customize: '定制和二开',
+  diff: '看改动', queryResult: '查询结果', placeholder: '还在做',
 }
 
 function livePage(route: Route, p: { params: Record<string, any>; nav: Nav }) {
@@ -43,6 +46,16 @@ function livePage(route: Route, p: { params: Record<string, any>; nav: Nav }) {
     case 'security': return <LiveSecurityPage {...p} />
     case 'executors': return <ExecutorsPage {...p} />
     case 'comingSoon': return <ComingSoonPage {...p} />
+    case 'issues': return <LiveIssuesPage {...p} />
+    case 'issue': return <LiveIssuePage {...p} />
+    case 'memory': return <LiveMemoryPage {...p} />
+    case 'history': return <LiveHistoryPage {...p} />
+    case 'releases': return <LiveReleasesPage {...p} />
+    case 'release': return <LiveReleasePage {...p} />
+    case 'domains': return <DomainsPage {...p} />
+    case 'channels': return <LiveChannelsPage {...p} />
+    case 'inbox': return <LiveInboxPage {...p} />
+    case 'domain': return <DomainPage {...p} />
   }
   return null
 }

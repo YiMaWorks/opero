@@ -11,7 +11,8 @@ export class ApiError extends Error {
 
 export async function api<T = any>(method: string, path: string, body?: unknown): Promise<T> {
   const raw = body instanceof Blob
-  const r = await fetch(path, {
+  // 相对地址（去掉开头的 /）：按 <base href> 走，装在子路径下也对
+  const r = await fetch(path.replace(/^\//, ''), {
     method,
     credentials: 'same-origin',
     headers: { 'X-Opero': '1', ...(body !== undefined && !raw ? { 'Content-Type': 'application/json' } : {}) },
@@ -53,7 +54,7 @@ export async function boot() {
       instance: b.instance,
       me: { ...s.me, ...b.me },
       employees: b.employees, sessions: b.sessions, messages: b.messages, servers: b.servers, credentials: b.credentials,
-      dataSources: b.dataSources, savedQueries: b.savedQueries, triggers: b.triggers, kb: b.kb, workspaces: b.workspaces, queue: b.queue ?? [],
+      dataSources: b.dataSources, savedQueries: b.savedQueries, triggers: b.triggers, kb: b.kb, workspaces: b.workspaces, queue: b.queue ?? [], liveIssues: b.issues ?? [], liveReleases: b.releases ?? [], domains: b.domains ?? [], inbox: b.inbox ?? [], inChannels: b.channels ?? [], notifiers: b.notifiers ?? [],
       audit: b.audit, usage: b.usage, settings: { ...s.settings, ...b.settings },
     }))
     syncLang(b.settings?.lang)
@@ -77,7 +78,7 @@ let es: EventSource | null = null
 let broken = false
 function connect() {
   es?.close()
-  es = new EventSource('/api/events')
+  es = new EventSource('api/events')
   es.onmessage = (m) => { try { apply(JSON.parse(m.data)) } catch { /* 坏的一条不管 */ } }
   es.onerror = () => { broken = true }
   es.onopen = () => {
@@ -85,14 +86,18 @@ function connect() {
   }
 }
 
-type Coll = 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries' | 'triggers' | 'kb' | 'workspaces' | 'queue'
-const COLLS: Coll[] = ['employees', 'sessions', 'servers', 'credentials', 'dataSources', 'savedQueries', 'triggers', 'kb', 'workspaces', 'queue']
+type Coll = 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries' | 'triggers' | 'kb' | 'workspaces' | 'queue' | 'liveIssues' | 'liveReleases' | 'domains' | 'inChannels' | 'notifiers'
+const COLLS: Coll[] = ['inChannels', 'notifiers', 'employees', 'sessions', 'servers', 'credentials', 'dataSources', 'savedQueries', 'triggers', 'kb', 'workspaces', 'queue', 'liveIssues', 'liveReleases', 'domains']
+/** 后台的集合名 → 本地 store 的字段（问题清单在 store 里叫 liveIssues，issues 是试用版的） */
+const collOf = (c: string) => (c === 'issues' ? 'liveIssues' : c === 'releases' ? 'liveReleases' : c === 'channels' ? 'inChannels' : c) as Coll
 
 function apply(ev: any) {
   switch (ev.t) {
     case 'put': {
-      const coll = ev.coll as Coll
+      const coll = collOf(ev.coll)
       if (!COLLS.includes(coll)) return
+      // 归档的会话不在会话列表里（员工档案「历史会话」按需拉）
+      if (coll === 'sessions' && ev.item.archived) { set((s) => ({ sessions: s.sessions.filter((x) => x.id !== ev.item.id) })); return }
       set((s) => {
         const list = s[coll] as { id: string }[]
         const i = list.findIndex((x) => x.id === ev.item.id)
@@ -101,7 +106,7 @@ function apply(ev: any) {
       return
     }
     case 'del': {
-      const coll = ev.coll as Coll
+      const coll = collOf(ev.coll)
       if (!COLLS.includes(coll)) return
       set((s) => ({ [coll]: (s[coll] as { id: string }[]).filter((x) => x.id !== ev.id) } as Partial<State>))
       return
@@ -124,6 +129,7 @@ function apply(ev: any) {
     case 'me': set((s) => ({ me: { ...s.me, ...ev.me } })); return
     case 'usage': set({ usage: ev.usage }); return
     case 'toast': toast(ev.text); return
+    case 'inbox': set((s) => { const i = s.inbox.findIndex((x) => x.id === ev.item.id); return { inbox: i >= 0 ? s.inbox.map((x, j) => (j === i ? ev.item : x)) : [ev.item, ...s.inbox].slice(0, 500) } }); return
   }
 }
 

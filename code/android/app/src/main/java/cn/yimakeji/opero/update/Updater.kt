@@ -1,5 +1,7 @@
 package cn.yimakeji.opero.update
 
+import cn.yimakeji.opero.Tr
+import cn.yimakeji.opero.R
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -39,8 +41,8 @@ object Updater {
         val f = File(dir, "opero-${l.code}.apk")
         val url = if (l.url.startsWith("http")) l.url else (Api.store.server ?: "") + l.url
         client.newCall(Request.Builder().url(url).header("User-Agent", Api.userAgent).build()).execute().use { r ->
-            if (!r.isSuccessful) throw IllegalStateException("下载失败（${r.code}）")
-            val body = r.body ?: throw IllegalStateException("下载失败")
+            if (!r.isSuccessful) throw IllegalStateException(Tr.s(R.string.download_failed_code, r.code.toString()))
+            val body = r.body ?: throw IllegalStateException(Tr.s(R.string.download_failed))
             val total = body.contentLength()
             val md = MessageDigest.getInstance("SHA-256")
             f.outputStream().use { out ->
@@ -56,7 +58,7 @@ object Updater {
                 }
             }
             val sum = md.digest().joinToString("") { "%02x".format(it) }
-            if (l.sha256 != null && !sum.equals(l.sha256, ignoreCase = true)) { f.delete(); throw IllegalStateException("安装包校验不对，已删掉，稍后再试") }
+            if (l.sha256 != null && !sum.equals(l.sha256, ignoreCase = true)) { f.delete(); throw IllegalStateException(Tr.s(R.string.bad_checksum)) }
         }
         f
     }

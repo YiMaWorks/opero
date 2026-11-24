@@ -2,7 +2,7 @@
 // 现在数据来自 data/mock.ts（演示）；接后台时：初始数据改成调接口、消息改成服务器推送，动作改成调接口——页面不用改。
 import { useRef, useSyncExternalStore } from 'react'
 import type {
-  AuditEntry, Card, QueueItem, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, Message, Plugin, ReleaseApp,
+  AuditEntry, Card, QueueItem, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, LiveIssue, LiveRelease, Domain, InboxItem, InChannel, Notifier, Message, Plugin, ReleaseApp,
   ReleaseRecord, SavedQuery, Server, Session, Settings, Trigger, Usage, User, Workspace,
 } from './types'
 import * as seed from './data/mock'
@@ -21,6 +21,12 @@ export interface State {
   messages: Record<string, Message[]>
   workspaces: Workspace[]
   issues: Issue[]
+  liveIssues: LiveIssue[]
+  liveReleases: LiveRelease[]
+  domains: Domain[]
+  inbox: InboxItem[]
+  inChannels: InChannel[]
+  notifiers: Notifier[]
   servers: Server[]
   apps: ReleaseApp[]
   releases: ReleaseRecord[]
@@ -64,7 +70,7 @@ function init(): State {
       employees: [], sessions: [], messages: {}, workspaces: [], issues: [], servers: [], apps: [], releases: [], credentials: [],
       dataSources: [], savedQueries: [], triggers: [], plugins: [], audit: [], usage: [],
       settings: { ...seed.seedSettings, prodProtect: true, budget: 0, budgetStop: false, fallback: '', aiDown: false, notifyTo: ['App 推送'], ...(saved.settings ?? {}) },
-      custom: seed.seedCustom, channels: [], kb: [], flows: [], queue: [], toast: null, verify: null,
+      custom: seed.seedCustom, channels: [], kb: [], flows: [], queue: [], liveIssues: [], liveReleases: [], domains: [], inbox: [], inChannels: [], notifiers: [], toast: null, verify: null,
     }
   }
   const prefs = saved.prefs ?? {}
@@ -93,6 +99,12 @@ function init(): State {
     kb: seed.seedKb,
     flows: seed.seedFlows,
     queue: [],
+    liveIssues: [],
+    liveReleases: [],
+    domains: [],
+    inbox: [],
+    inChannels: [],
+    notifiers: [],
     toast: null,
     verify: null,
   }
@@ -182,6 +194,7 @@ export function append(sid: string, m: Omit<Message, 'id' | 'at'> & { id?: strin
   set((s) => ({ messages: { ...s.messages, [sid]: [...(s.messages[sid] ?? []), msg] } }))
 }
 export function removeMsg(sid: string, id: string) {
+  if (LIVE && !id.startsWith('st')) live.call('DELETE', `/api/messages/${id}`)
   set((s) => ({ messages: { ...s.messages, [sid]: (s.messages[sid] ?? []).filter((m) => m.id !== id) } }))
 }
 export function patchMsg(sid: string, id: string, patch: Partial<Message>) {
@@ -366,7 +379,8 @@ export function compactContext(sid: string, empId: string) {
 }
 /** 换 work：旧的先把交接写进员工的 git，新的读交接接着干（上下文满了 / 卡住了 / 换服务器） */
 export function switchWork(sid: string, empId: string, reason = '上下文满了') {
-  if (LIVE) { live.call('POST', `/api/sessions/${sid}/new-topic`, { reason }); return }
+  // 真的一套：现在的会话归档、开新会话，交接预填在输入框里（员工从记忆仓库接着做）
+  if (LIVE) { live.call('POST', `/api/sessions/${sid}/handoff`, { reason }, '已开新会话：交接写在输入框里，看一下再发'); return }
   const e = state.employees.find((x) => x.id === empId)
   if (!e) return
   const no = (e.works?.[0]?.no ?? 0) + 1

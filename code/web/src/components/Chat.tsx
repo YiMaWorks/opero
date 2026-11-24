@@ -1,7 +1,7 @@
 // 聊天：顶栏 · 消息 · 「在做什么」+ 停止 · 底部菜单 · 输入（文字 / 按住说话 / 附件）
 import { useEffect, useRef, useState } from 'react'
 import type { Card, CardAction, Message, Session } from '../types'
-import { append, compactContext, empName, getState, now, patchSession, removeMsg, sessionFor, toast, newTopic, restartWork, saveFlowFromChat, sendFile, sendMessage, setWork, stopWorking, switchWork, toggleMute, togglePin, useStore } from '../store'
+import { append, compactContext, empName, getState, now, patchSession, removeMsg, sessionFor, setSettings, toast, newTopic, restartWork, saveFlowFromChat, sendFile, sendMessage, setWork, stopWorking, switchWork, toggleMute, togglePin, useStore } from '../store'
 import { APPROVALS, EFFORTS, approvalShort, effortLabel, modelsFor } from '../work'
 import { Markdown } from './Markdown'
 import { editImage, fileToDataUrl, imageSize, pickImages } from './ImageEditor'
@@ -11,8 +11,9 @@ import type { QAtt } from '../types'
 import { WorkSheet } from './WorkSheet'
 import { Avatar } from './Avatar'
 import { CardView } from './cards'
-import { Row, Sheet } from './ui'
-import { nativeHaptic } from '../native'
+import { Empty, Row, Sheet } from './ui'
+import { canDictate, dictate, nativeHaptic } from '../native'
+import { resolve as langOf, loadPref } from '../i18n'
 import { IconBack, IconBell, IconBellOff, IconChevron, IconFlow, IconImage, IconMenu, IconMic, IconMore, IconPin, IconPlus, IconRefresh, IconSearch, IconSend, IconSliders } from './icons'
 
 interface Props {
@@ -27,6 +28,7 @@ interface Props {
 }
 
 const EMPTY: Message[] = []
+const NO_PHRASES: string[] = []
 
 export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile, onSearch, onSettings }: Props) {
   const emp = useStore((s) => s.employees.find((e) => e.id === session.employee))
@@ -37,7 +39,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const stuck = useRef(true)
   const [text, setText] = useState('')
   const [voice, setVoice] = useState(mobile && !LIVE) // 语音转文字还没接：真的一套默认打字
-  const [sheet, setSheet] = useState<null | 'more' | 'attach' | 'work' | 'menus' | 'attachD'>(null)
+  const [sheet, setSheet] = useState<null | 'more' | 'attach' | 'work' | 'menus' | 'attachD' | 'phrases'>(null)
+  const phrases = useStore((s) => s.settings.phrases) ?? NO_PHRASES
   const [rec, setRec] = useState<null | { start: number; y: number; cancel: boolean; secs: number }>(null)
   // 像 IM：往上翻着看时来了新消息，右下角出「↓ N 条新消息」
   const [unseen, setUnseen] = useState(0)
@@ -51,6 +54,16 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const myQueue = allQueue.filter((q) => q.emp === session.employee).sort((a, b) => a.at - b.at)
   const [pend, setPend] = useState<{ key: string; name: string; image: boolean; preview?: string; busy: boolean; err?: string; att?: QAtt }[]>([])
   const [sending, setSending] = useState(false)
+  // 说话转文字（真的一套）：点一下说一句，文字接在输入框后面
+  const [listening, setListening] = useState(false)
+  const talk = async () => {
+    if (listening) return
+    setListening(true)
+    try { const t = await dictate(langOf(loadPref())); if (t) setText((x) => (x ? `${x} ${t}` : t)) } catch (e) { toast((e as Error).message) } finally { setListening(false) }
+  }
+  // 排队的话点一下能改（附件不动）
+  const [editQ, setEditQ] = useState<{ id: string; text: string } | null>(null)
+  const saveQ = () => { if (!editQ) return; const cur = allQueue.find((q) => q.id === editQ.id); if (cur && cur.text !== editQ.text) call('PUT', `/api/queue/${editQ.id}`, { text: editQ.text }); setEditQ(null) }
 
   useEffect(() => {
     // 离底部 120px 以内才跟着滚到最新，往上翻着看的时候不打扰
@@ -62,6 +75,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [messages])
   const toBottom = () => { const el = listRef.current; el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); stuck.current = true; setUnseen(0) }
+
+  // 开新会话接着做：交接预填在输入框里，看一下再发
+  useEffect(() => {
+    if (LIVE && session.draft) { setText(session.draft); call('PUT', `/api/sessions/${session.id}`, { draft: '' }) }
+  }, [session.id])
 
   useEffect(() => {
     if (!rec) return
@@ -210,7 +228,15 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         <Sheet title="转给谁" onClose={() => setForward(null)}>
           <div className="sheet-list">
             {getState().employees.filter((x) => x.id !== emp.id).map((x) => (
-              <Row key={x.id} icon={<Avatar id={x.id} size={36} />} title={x.name} sub={x.title} onClick={() => {
+              <Row key={x.id} icon={<Avatar id={x.id} size={36} />} title={x.name} sub={x.title} onClick={async () => {
+                if (LIVE) {
+                  // 真的一套：发到那个员工的会话里，它会接着处理（在干活就插话 / 排队）
+                  const to = await call<{ id: string }>('POST', `/api/sessions/for/${x.id}`)
+                  if (!to) return
+                  if (await call('POST', `/api/sessions/${to.id}/messages`, { text: `转自「${emp.name}」：\n${msgText(forward)}`, files: [] })) toast(`已转给「${x.name}」`)
+                  setForward(null)
+                  return
+                }
                 const sid = sessionFor(x.id)
                 append(sid, { from: 'me', kind: 'text', text: `转自「${emp.name}」：\n${msgText(forward)}` })
                 patchSession(sid, { last: `[转发] ${msgText(forward).slice(0, 30)}`, time: now() })
@@ -222,11 +248,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         </Sheet>
       )}
 
-      {(emp.contextUsed ?? 0) >= 80 && !session.working && (
+      {((emp.contextUsed ?? 0) >= 80 || (LIVE && messages.length >= 300)) && !session.working && (
         <div className="ctx-warn">
-          <span>上下文用了 {emp.contextUsed}%，快满了</span>
-          <button className="btn ghost sm" onClick={() => compactContext(session.id, emp.id)}>压缩</button>
-          <button className="btn primary sm" onClick={() => switchWork(session.id, emp.id, '上下文快满了')}>换 work</button>
+          <span>{(emp.contextUsed ?? 0) >= 80 ? `上下文用了 ${emp.contextUsed}%，快满了` : '这个会话很长了'}</span>
+          {!LIVE && <button className="btn ghost sm" onClick={() => compactContext(session.id, emp.id)}>压缩</button>}
+          <button className="btn primary sm" onClick={() => switchWork(session.id, emp.id, '上下文快满了')}>{LIVE ? '开新会话接着做' : '换 work'}</button>
         </div>
       )}
       {session.working && (
@@ -247,7 +273,10 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
           {myQueue.map((q, i) => (
             <div key={q.id} className="queue-item">
               <span className="queue-n">{i + 1}</span>
-              <span className="queue-text" data-no-i18n="">{q.text || '（只有附件）'}</span>
+              {editQ?.id === q.id
+                ? <textarea className="queue-edit" autoFocus rows={2} value={editQ.text} onChange={(e) => setEditQ({ id: q.id, text: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveQ() } if (e.key === 'Escape') setEditQ(null) }} onBlur={saveQ} data-no-i18n="" />
+                : <span className="queue-text" data-no-i18n="" title="点一下改" onClick={() => setEditQ({ id: q.id, text: q.text })}>{q.text || '（只有附件）'}</span>}
               {q.files.length > 0 && (
                 <span className="queue-files">
                   {q.files.slice(0, 4).map((f) => (f.image ? <img key={f.id} src={f.url} alt={f.name} /> : <span key={f.id} className="queue-file" title={f.name}>📎</span>))}
@@ -308,12 +337,16 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
                   <>
                     {LIVE && session.working && !codex && <button className="btn ghost sm queue-btn" disabled={sending} onClick={() => send('queue')}>排队</button>}
                     {LIVE && !session.working && <button className="round-btn" onClick={() => setSheet('attach')} aria-label="附件"><IconPlus /></button>}
+                    {LIVE && canDictate() && <button className={'round-btn' + (listening ? ' on' : '')} onClick={talk} aria-label="说话"><IconMic /></button>}
                     <button className="round-btn primary" disabled={sending} onClick={() => send()} aria-label="发送"><IconSend /></button>
                   </>
                 )
                 : session.working
                   ? <button className="round-btn stop" onClick={() => stopWorking(session.id)} aria-label="停止"><i /></button>
-                  : <button className="round-btn" onClick={() => setSheet('attach')} aria-label="附件"><IconPlus /></button>}
+                  : <>
+                      {LIVE && canDictate() && <button className={'round-btn' + (listening ? ' on' : '')} onClick={talk} aria-label="说话"><IconMic /></button>}
+                      <button className="round-btn" onClick={() => setSheet('attach')} aria-label="附件"><IconPlus /></button>
+                    </>}
             </div>
           </>
         ) : (
@@ -331,6 +364,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
                 ))}
               </div>
               <button className={'ctx-chip' + ((emp.contextUsed ?? 0) >= 80 ? ' hot' : '')} onClick={() => setSheet('work')} title="上下文：压缩 / 新话题 / 换 work">上下文 {emp.contextUsed ?? 0}%</button>
+              {LIVE && <button className="ctx-chip" onClick={() => setSheet('phrases')} title="常用语：点一下填进输入框">常用语</button>}
               {emp.menus.length > 0 && (
                 <>
                   <span className="grow" />
@@ -343,6 +377,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
             </div>
             <div className="composer-send">
               <button className="icon-btn boxed" onClick={() => setSheet('attachD')} aria-label="发图片 / 文件" title="发图片 / 文件 / 截图"><IconPlus /></button>
+              {LIVE && canDictate() && <button className={'icon-btn boxed' + (listening ? ' on' : '')} onClick={talk} aria-label="说话" title={listening ? '在听…' : '说话转文字'}><IconMic /></button>}
               <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2}
                 onPaste={onPaste}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } }}
@@ -393,7 +428,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <div className="more-acts">
                 <button onClick={() => { compactContext(session.id, emp.id); setSheet(null) }}>压缩</button>
                 <button onClick={() => { newTopic(session.id, emp.id); setSheet(null) }}>新话题</button>
-                <button className="hot" onClick={() => { switchWork(session.id, emp.id, '你让换的'); setSheet(null) }}>换一个 work</button>
+                <button className="hot" onClick={() => { switchWork(session.id, emp.id, '你让换的'); setSheet(null) }}>{LIVE ? '开新会话接着做' : '换一个 work'}</button>
               </div>
             </div>
             <div className="more-list">
@@ -421,9 +456,23 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
       {sheet === 'attach' && (
         <Sheet title="发送" onClose={() => setSheet(null)}>
           <div className="attach-grid">
-            {['图片', '拍照', '截图', '文件'].map((k) => (
-              <button key={k} onClick={() => attach(k)}><span className="ws-icon">{k.slice(0, 1)}</span>{k}</button>
+            {['图片', '拍照', '截图', '文件', ...(LIVE ? ['常用语'] : [])].map((k) => (
+              <button key={k} onClick={() => (k === '常用语' ? setSheet('phrases') : attach(k))}><span className="ws-icon">{k.slice(0, 1)}</span>{k}</button>
             ))}
+          </div>
+        </Sheet>
+      )}
+      {sheet === 'phrases' && (
+        <Sheet title="常用语" onClose={() => setSheet(null)}>
+          <div className="sheet-list">
+            {phrases.length === 0 && <Empty>还没有：在输入框里写好，点下面「存成常用语」</Empty>}
+            {phrases.map((p) => (
+              <Row key={p} title={<span data-no-i18n="">{p}</span>} onClick={() => { setText((t) => (t ? `${t}\n${p}` : p)); setSheet(null) }}
+                right={<button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); setSettings({ phrases: phrases.filter((x) => x !== p) }) }}>删</button>} />
+            ))}
+          </div>
+          <div className="pad row-actions">
+            <button className="btn primary sm" disabled={!text.trim() || phrases.includes(text.trim())} onClick={() => { setSettings({ phrases: [...phrases, text.trim()].slice(-30) }); toast('已存成常用语') }}>把输入框里的存成常用语</button>
           </div>
         </Sheet>
       )}

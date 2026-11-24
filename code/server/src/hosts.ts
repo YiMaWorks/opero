@@ -11,7 +11,8 @@ export const isLocal = (host?: string) => !host || host === LOCAL
 /** 本机：以 AI 用户跑一个命令（登录 shell，PATH 里有它自己装的 claude / codex） */
 export function spawnAi(bin: string, args: string[], env: Record<string, string>, cwd: string): ChildProcess {
   // 一键安装的 Claude Code / Codex 在 AI 用户的 ~/.local/bin；npm 用 Opero 自己的 Node。登录 shell 的 PATH 不一定带这两个，补上
-  const wrapper = `export PATH="$HOME/.local/bin:$PATH:${path.dirname(process.execPath)}"; umask 007; exec "$0" "$@"`
+  // nice：员工进程（包括它起的编译）让着这台上的线上服务
+  const wrapper = `export PATH="\${OPERO_SHIMS:+\$OPERO_SHIMS:}$HOME/.local/bin:$PATH:${path.dirname(process.execPath)}"; umask 007; exec nice -n 10 "$0" "$@"`
   const fullEnv = { ...process.env, ...env } as Record<string, string>
   if (cfg.aiUser) {
     const keep = Object.keys(env)
@@ -22,9 +23,9 @@ export function spawnAi(bin: string, args: string[], env: Record<string, string>
 }
 
 /** 在某台机器上以 AI 用户起进程；远程时 mkdirs 里的目录 Agent 会先建好（属 AI 用户） */
-export function spawnAiOn(host: string | undefined, bin: string, args: string[], env: Record<string, string>, cwd: string, mkdirs: string[] = []): ChildProcess {
+export function spawnAiOn(host: string | undefined, bin: string, args: string[], env: Record<string, string>, cwd: string, mkdirs: string[] = [], memPct = 0): ChildProcess {
   if (isLocal(host)) return spawnAi(bin, args, env, cwd)
-  return agents.spawnRemote(host!, { as: 'ai', bin, args, env, cwd, mkdirs })
+  return agents.spawnRemote(host!, { as: 'ai', bin, args, env, cwd, mkdirs, memPct })
 }
 
 export function killTree(p: ChildProcess) {
