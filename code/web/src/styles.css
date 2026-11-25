@@ -1077,3 +1077,32 @@ body { background: var(--bg-solid); }
 .typing-stop { flex: none; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line)); background: var(--panel); color: var(--danger); border-radius: 999px; height: 24px; padding: 0 10px; font-size: 12px; cursor: pointer; }
 .typing-stop:hover { background: color-mix(in srgb, var(--danger) 8%, var(--panel)); }
 .status-line { opacity: .8; }
+
+/* ---------- 一轮做完的小结 ---------- */
+/* 一行结论（图标 + 本次完成 + 提交推送）→ 改动条（点开看文件）→ 用量一行 → 按钮；左边色条：做完 = 绿、停下 / 没做完 = 橙 */
+.run-card { gap: 10px; max-width: 560px; }
+.run-card.run-ok::before { background: var(--ok); }
+.run-card.run-stop::before, .run-card.run-fail::before { background: var(--warn); }
+.run-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.run-ico { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; flex: none; font-size: 11px; font-weight: 700; }
+.run-ok .run-ico { background: var(--ok-soft); color: var(--ok); }
+.run-stop .run-ico, .run-fail .run-ico { background: var(--warn-soft); color: var(--warn); }
+.run-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+.run-git { flex-basis: 100%; padding-left: 28px; font-size: 12.5px; line-height: 1.5; color: var(--sub); overflow-wrap: anywhere; }
+.run-diff { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--soft); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.run-diff:hover { border-color: var(--primary); }
+.run-diff .add, .run-diff .del { font-weight: 600; font-size: 12.5px; }
+.run-files { font-weight: 600; }
+.run-bar { flex: 1; display: flex; height: 6px; min-width: 40px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.run-bar i { background: var(--ok); } .run-bar b { background: var(--danger); }
+.run-diff svg { width: 16px; height: 16px; color: var(--faint); transition: transform .15s; flex: none; }
+.run-diff.open svg { transform: rotate(180deg); }
+.run-list { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow: auto; margin-top: -4px; }
+.run-file { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; padding: 4px 10px; border-radius: 6px; background: var(--code-bg); font-size: 12px; }
+.run-file .mono:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.run-usage { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: var(--sub); }
+.run-usage b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.run-dot { width: 3px; height: 3px; border-radius: 50%; background: var(--faint); margin: 0 4px; }
+.run-bill { margin-left: auto; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-text); }
+.run-bill.api { background: var(--warn-soft); color: var(--warn); }

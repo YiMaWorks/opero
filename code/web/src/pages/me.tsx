@@ -126,6 +126,12 @@ export function SettingsPage({ nav }: PageProps) {
             <Toggle on={s.prodProtect} onChange={(v) => up({ prodProtect: v })} />
           </div>
         </Section>
+        <Section title="聊天">
+          <div className="lrow">
+            <span className="row-main"><span className="row-title">每轮做完显示小结</span><span className="row-sub">改了哪些文件、提交推送了没有、这一轮和这个会话用了多少；能一键撤销或发布这次改动</span></span>
+            <Toggle on={s.runSummary !== false} onChange={(v) => up({ runSummary: v })} />
+          </div>
+        </Section>
         <PhoneSection />
         <Section title="通知">
           <div className="lrow col">

@@ -16,6 +16,7 @@ import * as inbox from './inbox.ts'
 import * as mfa from './mfa.ts'
 import * as notify from './notify.ts'
 import * as releases from './releases.ts'
+import * as autogit from './autogit.ts'
 import * as build from './build.ts'
 import { checkServer, execOn, isReadOnly, LOCAL_ID } from './ssh.ts'
 import { isReadSql, loadSchema, runQuery } from './dbconn.ts'
@@ -63,7 +64,7 @@ function setCookie(c: Ctx, token: string | null) {
 
 // ---------- 开机 / 登录 ----------
 const defaultSettings = {
-  prodProtect: true, theme: 'system', themeLight: 'amethyst', themeDark: 'slate', customTheme: { mode: 'light', bg: '#F3EEE3', ink: '#111111', accent: '#D9541E' },
+  runSummary: true, prodProtect: true, theme: 'system', themeLight: 'amethyst', themeDark: 'slate', customTheme: { mode: 'light', bg: '#F3EEE3', ink: '#111111', accent: '#D9541E' },
   lang: 'auto', notify: 'decide', notifyTo: ['App 推送'], budget: 0, budgetStop: false, fallback: '', aiDown: false,
   phrases: ['继续', '先说方案，我确认了再改', '改完看一遍 diff，写清楚怎么测', '把这次做的写进交接'],
   habits: '- 先给结论再说原因\n- 改代码在分支上做，改完自己看一遍 diff\n- 不确定的先问我',
@@ -655,6 +656,21 @@ route('POST', '/api/messages/:id/action', async (c) => {
   } else if (card.type === 'issue' && card.data.issueId) {
     try { issues.act(String(card.data.issueId), act.id, { by: '主人' }) } catch (e) { throw bad((e as Error).message) }
     result = act.id === 'fix' ? '已交给员工去修' : act.id === 'known' ? '标成已知' : '7 天内不再提醒'
+  } else if (card.type === 'run') {
+    // 一轮的小结：撤销（反着提交一次再推送）/ 发布到某个环境（生产要验证本人）
+    const w = get<Workspace>('workspaces', String(card.data.ws))
+    if (!w) throw bad('这个项目已经没了')
+    if (act.id === 'revert') {
+      const busy = all<Employee>('employees').filter((e) => e.workspace === w.id && runner.isWorking(e.id))
+      if (busy.length) throw bad(`${busy.map((e) => e.name).join('、')} 还在这个项目里干活，等做完再撤销`)
+      try { result = await autogit.revertRun(w, String(card.data.before), String(card.data.after), String(card.data.title ?? '')) } catch (e) { throw bad((e as Error).message) }
+    } else {
+      const d = (w.deploys ?? []).find((x) => `release:${x.id}` === act.id)
+      if (!d) throw bad('这个发布环境已经没了')
+      if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c) // 发到生产：验证本人
+      try { releases.start(w, d.id, { by: '主人', note: String(card.data.title ?? '') || undefined }) } catch (e) { throw bad((e as Error).message) }
+      result = `已开始发布到${d.name}，进度在「发布」里看`
+    }
   } else if (card.data.pending) {
     result = '这个请求已经失效（员工那一轮结束了或 Opero 重启过），让员工再发一次'
   } else {

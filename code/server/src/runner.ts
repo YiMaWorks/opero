@@ -13,7 +13,7 @@ import { get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit, push } from './bus.ts'
 import { addMsg, delMsg, empSays, getMsg, monthCost, monthCostOf, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
 import { getSecret, scrub } from './vault.ts'
-import type { Employee, Server, Workspace } from './types.ts'
+import type { Card, CardAction, Employee, Server, Session, Workspace } from './types.ts'
 import * as hosts from './hosts.ts'
 import * as agents from './agents.ts'
 import * as tunnel from './tunnel.ts'
@@ -51,6 +51,8 @@ interface Live {
   ws?: Workspace
   unwatch: () => void
   warned: number
+  /** 开工时项目的提交（干完的小结和它比） */
+  before: string
 }
 
 const live = new Map<string, Live>()
@@ -366,6 +368,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
     // 项目员工：记忆就是项目的 docs/，不另建
     const mem = ws ? { dir: '', note: undefined as string | undefined } : await memory.ensureMemory(emp, host)
     const pre = ws ? await autogit.preSync(ws, emp) : ''
+    const before = ws ? await autogit.head(ws) : ''
     // 只读参考的项目也拉到最新（比如从上游仓库同步代码的项目，要读上游最新的）
     const readNotes = (await Promise.all((emp.reads ?? []).map((id) => get<Workspace>('workspaces', id)).filter((w): w is Workspace => !!w && (w.server ?? hosts.LOCAL) === host).map((w) => autogit.refreshRead(w)))).filter(Boolean).join('\n')
     const notes = [mem.note && `（Opero：${mem.note}）`, pre, readNotes].filter(Boolean).join('\n')
@@ -410,7 +413,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     }
     const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
-      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0 }
+      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0, before }
     // 内存上限（这台的规矩）：本机在这里看着，远程由 Agent 看着、超了在 stderr 里说一句
     const { memPct, cpuPct } = policyOf(get<Server>('servers', host))
     if (hosts.isLocal(host)) l.unwatch = watchResources(proc.pid, { memPct, cpuPct }, {
@@ -566,7 +569,15 @@ function finish(l: Live, code: number | null) {
   const ok = l.ok && !l.stopped
   ;(async () => {
     if (!emp) return
-    if (l.ws) { setStatus(l, '在提交、推送代码…'); const r = await autogit.postSync(l.ws, emp, { ok, stopped: l.stopped, ask: l.ask }).catch((e) => `自动提交出错：${(e as Error).message}`); if (r) system(l.sid, r) }
+    const sessCost = (get<Session>('sessions', l.sid)?.cost ?? 0) + l.cost
+    if (l.cost) patchSession(l.sid, { cost: sessCost })
+    const summary = kvGet<{ runSummary?: boolean }>('settings', {}).runSummary !== false
+    if (l.ws) {
+      setStatus(l, '在提交、推送代码…')
+      const r = await autogit.postSync(l.ws, emp, { ok, stopped: l.stopped, ask: l.ask }).catch((e) => `自动提交出错：${(e as Error).message}`)
+      if (summary) runSummary(l, ok, r, sessCost, await autogit.runDiff(l.ws, l.before))
+      else if (r) system(l.sid, r)
+    } else if (summary && l.cost) runSummary(l, ok, '', sessCost, null)
     if (!l.ws) await memory.commitMemory(emp, l.host, `${emp.name}: ${l.ask.replace(/\s+/g, ' ').slice(0, 60) || '一轮'}${ok ? '' : '（没做完）'}`).catch(() => '')
   })().finally(() => {
     finishing.delete(l.emp)
@@ -574,6 +585,28 @@ function finish(l: Live, code: number | null) {
     patchSession(l.sid, { clear: ['working'] })
     after(l, code, emp)
   })
+}
+
+/** 订阅登录（计入订阅额度）还是 API Key（按量计费）：执行器报的花费对订阅只是估算 */
+function billing(kind: 'claude' | 'codex'): 'sub' | 'api' {
+  const c = aiConf()
+  if (kind === 'codex') return c.codexCred ? 'api' : 'sub'
+  if (c.claudeBaseUrl) return 'api'
+  const k = c.claudeCred ? getSecret(c.claudeCred) : ''
+  return !k || k.startsWith('sk-ant-oat') ? 'sub' : 'api'
+}
+
+/** 一轮做完的小结卡片：做完没有、提交推送、改了哪些文件、这一轮和这个会话的用量；能撤销 / 发布这次改动 */
+function runSummary(l: Live, ok: boolean, git: string, sessCost: number, d: autogit.RunDiff | null) {
+  const w = l.ws
+  const changed = !!d && d.files > 0
+  const actions: CardAction[] = []
+  if (w && d?.revertible) actions.push({ id: 'revert', label: '撤销这次改动', style: 'ghost' })
+  if (w && changed && d!.pushed) for (const t of (w.deploys ?? []).filter((x) => x.servers?.length).slice(0, 2)) actions.push({ id: `release:${t.id}`, label: (w.deploys!.length > 1 ? `发布到${t.name}` : '发布这次改动'), style: 'primary' })
+  const card: Card = { id: uid('c'), type: 'run', v: 1, state: actions.length ? 'open' : 'done', level: 'info', actions,
+    data: { ok, stopped: l.stopped, git, ws: w?.id ?? '', before: l.before, after: d?.after ?? '', files: d?.files ?? 0, ins: d?.ins ?? 0, del: d?.del ?? 0, list: d?.list ?? [],
+      cost: l.cost, sessionCost: sessCost, tokens: l.tokens, billing: billing(l.kind), title: l.ask.replace(/\s+/g, ' ').trim().slice(0, 60) } }
+  addMsg(l.sid, { from: l.emp, kind: 'card', card })
 }
 
 function after(l: Live, code: number | null, emp: Employee | undefined) {

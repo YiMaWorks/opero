@@ -73,7 +73,7 @@ export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type Approval = 'auto' | 'edits' | 'ask' | 'plan'
 
 // ---------- 会话和消息 ----------
-export type CardType = 'issue' | 'change' | 'release' | 'query' | 'confirm' | 'ask' | 'generic'
+export type CardType = 'issue' | 'change' | 'release' | 'query' | 'confirm' | 'ask' | 'generic' | 'run'
 export type Level = 'info' | 'warn' | 'danger'
 export type ButtonStyle = 'primary' | 'danger' | 'default' | 'ghost'
 
@@ -129,6 +129,7 @@ export interface Session {
   archived?: number // 归档了（开新会话接着做 / 换执行器）：不在会话列表里
   title?: string // 归档时记的一句
   draft?: string // 新会话输入框预填（交接）
+  cost?: number // 这个会话累计花费（执行器报的，美元）
 }
 
 // ---------- 项目 / 问题 ----------
@@ -431,6 +432,8 @@ export interface Usage {
 
 export interface Settings {
   prodProtect: boolean
+  /** 每轮做完发一张小结卡片（默认开） */
+  runSummary?: boolean
   habits: string // 我的习惯：所有员工都遵守的个人规矩（每次派活都带上）
   phrases?: string[] // 常用语：聊天输入框点一下就填进去
   /** 风格：'system' = 跟随系统（浅色用 themeLight、深色用 themeDark）；'custom' = 自己挑的三个颜色；其它 = themes.ts 里某一套的 key */

@@ -68,12 +68,14 @@ export interface Session {
   title?: string
   /** 新会话的输入框预填（交接） */
   draft?: string
+  /** 这个会话累计花费（执行器报的，美元） */
+  cost?: number
 }
 
 export interface CardAction { id: string; label: string; style?: 'primary' | 'danger' | 'default' | 'ghost'; tool?: string; panel?: string; args?: Record<string, unknown> }
 export interface Card {
   id: string
-  type: 'issue' | 'change' | 'release' | 'query' | 'confirm' | 'ask' | 'generic'
+  type: 'issue' | 'change' | 'release' | 'query' | 'confirm' | 'ask' | 'generic' | 'run'
   v: 1
   state: 'open' | 'done'
   level: 'info' | 'warn' | 'danger'

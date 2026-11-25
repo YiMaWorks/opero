@@ -1,7 +1,7 @@
 // 内核卡片：一份描述（Card）→ 一个组件。按钮统一交给 onAction（= 走网关调工具 / 打开面板）。
 import { useState } from 'react'
 import type { Card, CardAction } from '../types'
-import { IconCheck } from './icons'
+import { IconCheck, IconChevron } from './icons'
 
 type OnAction = (card: Card, action: CardAction, extra?: Record<string, unknown>) => void
 
@@ -13,6 +13,7 @@ const KIND: Record<Card['type'], { label: string; cls: string }> = {
   confirm: { label: '要你确认', cls: 'k-warn' },
   ask: { label: '提问', cls: 'k-primary' },
   generic: { label: '', cls: 'k-mute' },
+  run: { label: '', cls: 'k-mute' },
 }
 
 // 按钮的轻重：主按钮（实心）只有一个、放最前；普通按钮描边；ghost 是文字链接，靠右。一眼看出该点哪个
@@ -103,6 +104,53 @@ function DigestCard({ card, onAction }: { card: Card; onAction: OnAction }) {
             </div>
           )
         })}
+      </div>
+      {card.state === 'open' ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
+    </div>
+  )
+}
+
+const usd = (n: number) => (n >= 10 ? `$${n.toFixed(1)}` : n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? '<$0.01' : '$0')
+
+/** 一轮做完的小结：做完没有 + 提交推送（一行）→ 改了几个文件（点开看清单）→ 用量 → 撤销 / 发布 */
+function RunCard({ card, onAction }: { card: Card; onAction: OnAction }) {
+  const d = card.data
+  const [more, setMore] = useState(false)
+  const list = (d.list as { f: string; a: number; d: number }[] | undefined) ?? []
+  const state = d.ok ? 'ok' : d.stopped ? 'stop' : 'fail'
+  const head = d.ok ? '本次完成' : d.stopped ? '你让停下了' : '这一轮没做完'
+  const files = Number(d.files) || 0
+  return (
+    <div className={'card run-card run-' + state}>
+      <div className="run-head">
+        <span className="run-ico">{d.ok ? <IconCheck size={14} /> : d.stopped ? '■' : '!'}</span>
+        <span className="run-title">{head}</span>
+        {d.git && <span className="run-git">{String(d.git)}</span>}
+      </div>
+      {files > 0 && (
+        <>
+          <button className={'run-diff' + (more ? ' open' : '')} onClick={() => setMore(!more)}>
+            <span className="run-files">{`${files} 个文件`}</span>
+            <span className="mono add" data-no-i18n="">+{d.ins}</span>
+            <span className="mono del" data-no-i18n="">−{d.del}</span>
+            <span className="run-bar" aria-hidden><i style={{ flexGrow: Number(d.ins) || 0 }} /><b style={{ flexGrow: Number(d.del) || 0 }} /></span>
+            <IconChevron />
+          </button>
+          {more && (
+            <div className="run-list" data-no-i18n="">
+              {list.map((x) => (
+                <div key={x.f} className="run-file"><span className="mono">{x.f}</span><span className="mono add">+{x.a}</span><span className="mono del">−{x.d}</span></div>
+              ))}
+              {files > list.length && <div className="sub">{`还有 ${files - list.length} 个文件`}</div>}
+            </div>
+          )}
+        </>
+      )}
+      <div className="run-usage">
+        <span>本次</span><b data-no-i18n="">{usd(Number(d.cost) || 0)}</b>
+        <span className="run-dot" />
+        <span>会话累计</span><b data-no-i18n="">{usd(Number(d.sessionCost) || 0)}</b>
+        <span className={'run-bill ' + d.billing}>{d.billing === 'sub' ? '计入订阅额度' : '按量计费'}</span>
       </div>
       {card.state === 'open' ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
     </div>
@@ -226,6 +274,9 @@ export function CardView({ card, onAction }: { card: Card; onAction: OnAction })
 
     case 'ask':
       return <AskCard card={card} onAction={onAction} />
+
+    case 'run':
+      return <RunCard card={card} onAction={onAction} />
 
     default:
       if (d.ch) return <MsgCard card={card} onAction={onAction} />
