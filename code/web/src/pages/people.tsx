@@ -8,7 +8,7 @@ import { LIVE } from '../mode'
 import { call } from '../live'
 import type { ChatBg, Notify } from '../types'
 import { Avatar } from '../components/Avatar'
-import { editImage, fileToDataUrl } from '../components/ImageEditor'
+import { editImage, fileToDataUrl, pickImages } from '../components/ImageEditor'
 import { Empty, Field, PageHeader, Row, Section, Segmented, Sheet, Stat, Tag, Toggle } from '../components/ui'
 import { WorkSheet } from '../components/WorkSheet'
 import { APPROVALS, EFFORTS, approvalLabel, effortLabel, modelsFor } from '../work'
@@ -379,6 +379,22 @@ export const NOTIFIES: { value: Notify; label: string; desc: string }[] = [
   { value: 'none', label: '不提醒', desc: '免打扰：不推送、不冒红点；要你决定的事照样会在「要你确认」里等着' },
 ]
 
+/** 头像上的字：打字时只改输入框（能删空、中文输入法拼音不被截断），离开或回车才存；空着就恢复原样 */
+function AvatarText({ e }: { e: Employee }) {
+  const cur = e.avatarImg ? '' : e.avatar
+  const [v, setV] = useState(cur)
+  useEffect(() => setV(cur), [cur])
+  const save = () => {
+    const t = Array.from(v.trim()).slice(0, 2).join('')
+    if (!t) { setV(cur); return }
+    if (t === e.avatar && !e.avatarImg) { setV(t); return }
+    setLook(e.id, { avatar: t, avatarImg: undefined })
+    toast('头像已换')
+  }
+  return <input className="avatar-text" value={v} placeholder="字" onChange={(x) => setV(x.target.value)} onBlur={save}
+    onKeyDown={(x) => { if (x.key === 'Enter' && !x.nativeEvent.isComposing) (x.target as HTMLInputElement).blur() }} />
+}
+
 /** 选图后缩成 128×128 再存，避免本机存储撑爆 */
 export function ChatSettingsPage({ params, nav }: PageProps) {
   const e = useStore((s) => s.employees.find((x) => x.id === params.id))
@@ -391,10 +407,13 @@ export function ChatSettingsPage({ params, nav }: PageProps) {
       <PageHeader title="聊天设置" sub={e.name} {...headNav(nav)} />
       <div className="page-body">
         <div className="hero">
-          <Avatar id={e.id} size={72} />
+          <button className="hero-avatar" onClick={async () => {
+            const [f] = await pickImages({ aspect: 1, round: true, maxSize: 256, title: `${e.name} 的头像`, allowOriginal: false })
+            if (f) { setLook(e.id, { avatarImg: await fileToDataUrl(f) }); toast('头像已换') }
+          }} title="换头像"><Avatar id={e.id} size={72} /></button>
           <div className="hero-main">
             <input className="name-input" value={name} onChange={(v) => setName(v.target.value)} onBlur={() => name.trim() && name !== e.name && (setLook(e.id, { name: name.trim() }), toast('名字已改'))} />
-            <span className="sub">点名字就能改；头像、背景、提醒都只影响你看到的样子</span>
+            <span className="sub">点头像换图片，点名字改名字；这些都只影响你看到的样子</span>
           </div>
         </div>
 
@@ -403,7 +422,7 @@ export function ChatSettingsPage({ params, nav }: PageProps) {
             <div className="field">
               <span className="field-label">用字或表情</span>
               <div className="chips">
-                <input className="avatar-text" maxLength={2} value={e.avatarImg ? '' : e.avatar} placeholder="字" onChange={(v) => setLook(e.id, { avatar: v.target.value || e.name.slice(0, 1), avatarImg: undefined })} />
+                <AvatarText e={e} />
                 {EMOJIS.map((x) => <button key={x} className={'chip emoji' + (!e.avatarImg && e.avatar === x ? ' on' : '')} onClick={() => setLook(e.id, { avatar: x, avatarImg: undefined })}>{x}</button>)}
               </div>
             </div>

@@ -18,6 +18,7 @@ import * as mfa from './mfa.ts'
 import * as notify from './notify.ts'
 import * as releases from './releases.ts'
 import * as autogit from './autogit.ts'
+import { cloneFailed } from './cloneNotice.ts'
 import * as build from './build.ts'
 import { checkServer, execOn, isReadOnly, LOCAL_ID } from './ssh.ts'
 import { applyDirs, cleanDirs, cleanLogs, shq } from './serverdirs.ts'
@@ -108,6 +109,7 @@ function bootstrap(c: Ctx) {
 const instanceInfo = () => ({ version: cfg.version, web: webVersion(), isolated: !!cfg.aiUser, aiUser: cfg.aiUser })
 /** 网页包的版本（单独换了网页也要让开着的页面刷新）：看打包出来的 index.html 改没改，用它的修改时间 */
 function webVersion() {
+  if (!cfg.web) return ''
   try { return String(Math.floor(fs.statSync(path.join(cfg.web, 'index.html')).mtimeMs)) } catch { return '' }
 }
 // 开着的网页隔一会 / 切回来时问一下：版本变了就刷新（不用登录，只有版本号）
@@ -1118,10 +1120,10 @@ route('POST', '/api/workspaces', async (c) => {
   const w: Workspace = { id: uid('w'), name, provider: providerOf(repo), repo, branch: String(b.branch ?? '').trim(), host: svName, server, dir: workspaceDir(name, server), last: '拉取中…', employees: [], credential: b.credential || undefined, branches: [], commits: [], docs: [] }
   put1('workspaces', w)
   audit({ via: '—', action: 'workspace.add', target: `${name} · ${repo}`, level: '写', result: '成功', how: '本人' })
-  cloneWorkspace(w).then(async () => { const next = put1('workspaces', { ...w, ...(await inspect(w)) }); await ensureBuild(next) })
-    .catch((e) => put1('workspaces', { ...w, last: '拉取失败', error: String((e as Error).message).slice(-400) }))
-  // 建项目就有一个常驻员工（名字用项目名，能改），这个项目相关的权限都给它
+  // 建项目就有一个常驻员工（名字用项目名，能改），这个项目相关的权限都给它；拉代码失败要告诉主人（写进这个员工的聊天、推送）
   projectEmployee(w)
+  cloneWorkspace(w).then(async () => { const next = put1('workspaces', { ...w, ...(await inspect(w)) }); await ensureBuild(next) })
+    .catch((e) => cloneFailed(w, String((e as Error).message)))
   return w
 })
 /** 给项目建一个员工：跑在项目那台、工作目录就是项目、记忆用项目 docs/；仓库凭证、部署要用的服务器凭证、签名证书都给它 */
@@ -1150,7 +1152,7 @@ route('POST', '/api/workspaces/:id/employees', (c) => {
 /** 项目还没有编译设置：认出类型、建好流水线（默认「自动」：本地资源够就本地编，不够走流水线） */
 const building = new Set<string>()
 async function ensureBuild(w: Workspace) {
-  if (w.buildCfg || w.error || building.has(w.id)) return
+  if (build.buildsOf(w).length || w.error || building.has(w.id)) return
   building.add(w.id)
   try { await ensureBuild1(w) } finally { building.delete(w.id) }
 }
@@ -1161,7 +1163,7 @@ async function ensureBuild1(w: Workspace) {
   try {
     const cfg = await build.autoConfig(w, codeup)
     const cur = get<Workspace>('workspaces', w.id)
-    if (cur && !cur.buildCfg) put1('workspaces', { ...cur, buildCfg: cfg })
+    if (cur && !build.buildsOf(cur).length) put1('workspaces', { ...cur, builds: [cfg] })
     audit({ via: '—', action: 'build.auto', target: `${w.name} · ${build.providerName(cfg)}${cfg.pipelineError ? `（流水线没建成：${cfg.pipelineError.slice(0, 80)}）` : ''}`, level: '写', result: cfg.pipelineError ? '失败' : '成功', how: '接入项目时自动' })
   } catch { /* 认不出来也不挡 */ }
 }
@@ -1169,7 +1171,7 @@ route('POST', '/api/workspaces/:id/refresh', async (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   if (!w) throw new HttpError(404, '没有')
   if (w.error && !fs.existsSync(path.join(w.dir, '.git'))) {
-    try { await cloneWorkspace(w) } catch (e) { return put1('workspaces', { ...w, error: String((e as Error).message).slice(-400) }) }
+    try { await cloneWorkspace(w) } catch (e) { cloneFailed(w, String((e as Error).message)); throw bad(`没拉下来：${String((e as Error).message).slice(-300)}`) }
   }
   const next = put1('workspaces', { ...w, ...(await inspect(w)) })
   void ensureBuild(next)
@@ -1179,10 +1181,29 @@ route('PUT', '/api/workspaces/:id', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   if (!w) throw new HttpError(404, '没有')
   const b = c.body ?? {}
+  const builds = Array.isArray(b.builds) ? cleanBuilds(w, b.builds) : build.buildsOf(w)
+  const deploys = Array.isArray(b.deploys) ? cleanDeploys(b.deploys, w.deploys, builds) : w.deploys
+  // 删了某个编译组件：还在用它的发布目标要先改
+  const orphan = (deploys ?? []).find((d) => d.build && d.build !== 'none' && !builds.some((x) => x.id === d.build))
+  if (orphan) throw bad(`发布目标「${orphan.name}」发的是被删掉的编译组件：先给它换一个组件（或改成不编译）`)
   return put1('workspaces', { ...w, ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(b.preview !== undefined ? { preview: String(b.preview) } : {}),
-    ...(typeof b.autoSync === 'boolean' ? { autoSync: b.autoSync } : {}), ...(b.budget !== undefined ? { budget: Math.max(0, Number(b.budget) || 0) || undefined } : {}), ...(Array.isArray(b.deploys) ? { deploys: cleanDeploys(b.deploys, w.deploys) } : {}),
-    ...(b.buildCfg !== undefined ? { buildCfg: cleanBuild(b.buildCfg, w.buildCfg) } : {}) })
+    ...(typeof b.autoSync === 'boolean' ? { autoSync: b.autoSync } : {}), ...(b.budget !== undefined ? { budget: Math.max(0, Number(b.budget) || 0) || undefined } : {}),
+    builds: builds.length ? builds : undefined, deploys })
 })
+/** 编译组件列表：每个要有名字（不重名）；已有的按编号保留流水线记录，新的分配编号 */
+function cleanBuilds(w: Workspace, list: any[]): build.BuildComp[] {
+  const old = build.buildsOf(w)
+  const out: build.BuildComp[] = []
+  for (const x of list.slice(0, 20)) {
+    const name = String(x?.name ?? '').trim().slice(0, 40)
+    if (!name) throw bad('编译组件要有名字（比如「网页」「安卓」）')
+    if (out.some((y) => y.name === name)) throw bad(`编译组件「${name}」重名了`)
+    const prev = old.find((y) => y.id === x?.id)
+    const id = prev?.id ?? build.newBuildId({ ...w, builds: [...old, ...out] }, String(x?.id || name))
+    out.push({ ...cleanBuild(x, prev)!, id, name })
+  }
+  return out
+}
 /** 编译设置：哪种模板、在哪编（云效 / GitHub / 自己的服务器） */
 function cleanBuild(b: any, old?: build.BuildCfg): build.BuildCfg | undefined {
   if (!b) return undefined
@@ -1208,13 +1229,25 @@ function cleanBuild(b: any, old?: build.BuildCfg): build.BuildCfg | undefined {
   if (out.where === 'pipeline' && provider === 'local') throw bad('「总是流水线」要先选一个打包工具（云效 / GitHub Actions）')
   return out
 }
-route('POST', '/api/workspaces/:id/build/generate', async (c) => {
+/** 项目 + 编译组件（地址里的 :bid 是组件编号） */
+function compOf(c: Ctx): { w: Workspace; b: build.BuildComp } {
   const w = get<Workspace>('workspaces', c.params.id)
-  if (!w?.buildCfg) throw bad('先存好编译设置')
+  if (!w) throw new HttpError(404, '没有这个项目')
+  const b = build.buildsOf(w).find((x) => x.id === c.params.bid)
+  if (!b) throw new HttpError(404, '没有这个编译组件（先在编译设置里存好）')
+  return { w, b }
+}
+/** 存一个组件的最新样子（生成流水线后记下流水线编号等） */
+export function saveBuild(wsId: string, b: build.BuildComp): Workspace {
+  const cur = get<Workspace>('workspaces', wsId)!
+  return put1('workspaces', { ...cur, builds: build.buildsOf(cur).map((x) => (x.id === b.id ? b : x)) })
+}
+route('POST', '/api/workspaces/:id/builds/:bid/generate', async (c) => {
+  const { w, b } = compOf(c)
   try {
-    const next = await build.generate(w, w.buildCfg)
-    audit({ via: '—', action: 'build.generate', target: `${w.name} · ${build.providerName(next)}`, level: '写', result: '成功', how: '本人' })
-    return put1('workspaces', { ...get<Workspace>('workspaces', w.id)!, buildCfg: next })
+    const next = await build.generate(w, b)
+    audit({ via: '—', action: 'build.generate', target: `${w.name} · ${b.name} · ${build.providerName(next)}`, level: '写', result: '成功', how: '本人' })
+    return saveBuild(w.id, { ...next, pipelineError: undefined })
   } catch (e) { throw bad((e as Error).message) }
 })
 // 打包工具（GitLab / Jenkins…）来拿源码、传产物：地址里带一次性令牌，不用登录
@@ -1230,18 +1263,16 @@ route('PUT', '/api/build-upload/:token', (c) => {
   return { ok: true }
 }, { auth: 'none', raw: true, max: 600 * 1024 * 1024 })
 // 网页上的「试编译」：只编不发
-route('POST', '/api/workspaces/:id/build/try', (c) => {
-  const w = get<Workspace>('workspaces', c.params.id)
-  if (!w) throw new HttpError(404, '没有')
-  try { return buildjobs.start(w, '主人') } catch (e) { throw bad((e as Error).message) }
+route('POST', '/api/workspaces/:id/builds/:bid/try', (c) => {
+  const { w, b } = compOf(c)
+  try { return buildjobs.start(w, b, '主人') } catch (e) { throw bad((e as Error).message) }
 })
-route('GET', '/api/workspaces/:id/build/try', (c) => buildjobs.lastOf(c.params.id) ?? null)
-route('GET', '/api/workspaces/:id/build/script', (c) => {
-  const w = get<Workspace>('workspaces', c.params.id)
-  if (!w?.buildCfg) throw bad('先存好编译设置')
-  return { script: build.script(w.buildCfg, build.codeOf(w)) }
+route('GET', '/api/workspaces/:id/builds/:bid/try', (c) => buildjobs.lastOf(c.params.id, c.params.bid) ?? null)
+route('GET', '/api/workspaces/:id/builds/:bid/script', (c) => {
+  const { w, b } = compOf(c)
+  return { script: build.script(b, build.codeOf(w, b)) }
 })
-function cleanDeploys(list: any[], old: Deploy[] = []): Deploy[] {
+function cleanDeploys(list: any[], old: Deploy[] = [], builds: build.BuildComp[] = []): Deploy[] {
   return list.slice(0, 20).map((d) => {
     const prev = old.find((o) => o.id === d.id)
     const name = String(d.name ?? '').trim().slice(0, 40)
@@ -1255,8 +1286,12 @@ function cleanDeploys(list: any[], old: Deploy[] = []): Deploy[] {
     if (sign && get<Credential>('credentials', sign)?.group !== '签名证书') throw bad(`发布环境「${name}」的签名证书不对`)
     const health = String(d.health ?? '').trim()
     if (health && !/^https?:\/\/\S+$/.test(health)) throw bad('检查地址要以 http:// 或 https:// 开头')
+    // 发哪个编译组件：'none' = 不编译；有好几个组件时要选
+    const bid = String(d.build ?? '').trim()
+    if (bid && bid !== 'none' && !builds.some((x) => x.id === bid)) throw bad(`发布环境「${name}」选的编译组件不在了`)
+    if (!bid && builds.length > 1) throw bad(`发布环境「${name}」要选发哪个编译组件`)
     return {
-      id: prev?.id ?? uid('dp'), name, servers, dir: dir || undefined, script: String(d.script ?? '').trim().replace(/[^\w./-]/g, '') || undefined, command: command || undefined, sign, health: health || undefined,
+      id: prev?.id ?? uid('dp'), name, servers, build: bid || undefined, dir: dir || undefined, script: String(d.script ?? '').trim().replace(/[^\w./-]/g, '') || undefined, command: command || undefined, sign, health: health || undefined,
       keep: Math.max(1, Math.min(Number(d.keep) || 5, 30)), ai: ['auto', 'ask', 'off'].includes(d.ai) ? d.ai : servers.some((id: string) => isProtected(get<Server>('servers', id)!)) ? 'ask' : 'auto', autoRollback: d.autoRollback !== false,
       last: prev?.last, lastOk: prev?.lastOk,
     }
@@ -1474,18 +1509,66 @@ route('POST', '/api/app/pair', (c) => {
   if (!exp || exp < Date.now()) { auth.noteFail(c.ip); throw bad('配对码不对或者过期了', 'PAIR') }
   if (auth.tooManyFails(c.ip)) throw new HttpError(429, '试太多次了')
   pairCodes.delete(code)
+  return { deviceToken: addDevice(b, '配对码').token }
+}, { auth: 'none' })
+/** 登记一台设备（App / 桌面端），返回设备令牌和设备 id。同一个 deviceId 再登记就换一个令牌 */
+function addDevice(b: any, how: string): { token: string; id: string } {
   const token = crypto.randomBytes(32).toString('base64url')
   const id = String(b.deviceId || uid('d')).slice(0, 64)
-  put1('devices', { id, name: String(b.name ?? '手机').slice(0, 60), platform: String(b.platform ?? 'android'), appVersion: String(b.appVersion ?? ''), tokenHash: auth.sha(token), enabled: true, paired: Date.now() } satisfies Device)
-  audit({ via: '—', action: 'app.pair', target: String(b.name ?? '手机'), level: '危险', result: '成功', how: '配对码' })
-  return { deviceToken: token }
+  // android / ios / ipados / macos / windows；Electron 过渡版是 desktop-<系统>
+  const platform = String(b.platform ?? '').toLowerCase().replace(/[^\w-]/g, '').slice(0, 30) || 'android'
+  put1('devices', { id, name: String(b.name || platform).slice(0, 60), platform, appVersion: String(b.appVersion ?? ''), tokenHash: auth.sha(token), enabled: true, paired: Date.now() } satisfies Device)
+  audit({ via: '—', action: 'app.pair', target: `${String(b.name || platform)}（${platform}）`, level: '危险', result: '成功', how })
+  return { token, id }
+}
+/** 设备登录成功：登记设备 + 直接给一个 App 会话令牌（省一次 /api/app/session） */
+function appLoggedIn(b: any, how: string, verified: boolean) {
+  const d = addDevice(b, how)
+  const token = auth.newSession(d.id, 'app')
+  if (verified) auth.markVerified(token)
+  return { deviceToken: d.token, token, deviceId: d.id }
+}
+/** 原生 App / 桌面端自己登录（不用先在网页上点配对码）：账号 + 密码，开了两步验证再输码。每台设备各登各的，几个端可以同时登着 */
+route('POST', '/api/app/login', (c) => {
+  if (auth.tooManyFails(c.ip)) throw new HttpError(429, '试太多次了，一分钟后再试')
+  const o = auth.owner()
+  const b = c.body ?? {}
+  if (!o) throw bad('这套 Opero 还没设置主人：先在网页上打开它完成设置', 'SETUP')
+  if (String(b.email ?? '').trim().toLowerCase() !== o.email.toLowerCase() || !auth.checkPassword(String(b.password ?? ''))) {
+    auth.noteFail(c.ip)
+    audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '拒绝', how: 'App：账号或密码不对' })
+    throw new HttpError(401, '账号或密码不对', 'LOGIN')
+  }
+  if (mfa.mfa().enabled) return { mfa: true, ticket: mfa.newTicket() }
+  audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '成功', how: `App（${String(b.platform ?? '')}）：密码` })
+  return appLoggedIn(b, '账号密码', false)
 }, { auth: 'none' })
+route('POST', '/api/app/login/mfa', (c) => {
+  if (auth.tooManyFails(c.ip)) throw new HttpError(429, '试太多次了，一分钟后再试')
+  const b = c.body ?? {}
+  const how = mfa.verifyCode(String(b.code ?? ''))
+  let passed: boolean
+  try { passed = mfa.useTicket(String(b.ticket ?? ''), !!how) } catch (e) { throw new HttpError(401, (e as Error).message, 'LOGIN') }
+  if (!passed) { auth.noteFail(c.ip); throw new HttpError(401, '码不对', 'MFA') }
+  audit({ via: '—', action: 'login', target: c.ip, level: '读', result: '成功', how: `App（${String(b.platform ?? '')}）：${how === 'recovery' ? '密码 + 恢复码' : '密码 + 两步验证'}` })
+  if (how === 'recovery') push({ kind: 'info', title: '用了一个恢复码登录', body: `还剩 ${mfa.mfa().recovery.length} 个，不是你的话马上改密码` })
+  return appLoggedIn(b, '账号密码 + 两步验证', true)
+}, { auth: 'none' })
+/** App 打开网页的票（一分钟有效）：route 是网页的一段（employee;id=e1）；embed = 只显示这一页（原生 App 里嵌的页面），见 docs/api/README.md「嵌网页」 */
 route('POST', '/api/app/ticket', (c) => {
   const t = crypto.randomBytes(24).toString('base64url')
-  tickets.set(t, { device: c.device!.id, exp: Date.now() + 60_000, route: String(c.body?.route ?? '') })
+  tickets.set(t, { device: c.device!.id, exp: Date.now() + 60_000, route: String(c.body?.route ?? ''), embed: c.body?.embed === true })
   return { url: `/api/app/enter?t=${t}` }
 }, { auth: 'device' })
-const tickets = new Map<string, { device: string; exp: number; route: string }>()
+const tickets = new Map<string, { device: string; exp: number; route: string; embed?: boolean }>()
+/** 原生 App：用设备令牌换一个主人会话令牌，之后调主人的接口带 Authorization: Bearer <token>（这台设备以前换的 App 会话作废；App 里嵌的网页会话不受影响）。
+ *  过期（很久没用）或被断开后再换一次；指纹验过本人用 POST /api/app/verified */
+route('POST', '/api/app/session', (c) => {
+  auth.endDeviceSessions(c.device!.id, 'app')
+  const d = get<Device>('devices', c.device!.id)
+  if (d) put('devices', { ...d, seen: Date.now() })
+  return { token: auth.newSession(c.device!.id, 'app') }
+}, { auth: 'device' })
 /** 网页首页的路径（装在子路径下时带前缀） */
 function home(c: Ctx) {
   let b = ''
@@ -1497,9 +1580,10 @@ route('GET', '/api/app/enter', (c) => {
   const t = tickets.get(String(c.url.searchParams.get('t') ?? ''))
   tickets.delete(String(c.url.searchParams.get('t') ?? ''))
   if (!t || t.exp < Date.now()) { c.res.writeHead(302, { Location: home(c) }); c.res.end(); return }
-  auth.endDeviceSessions(t.device)
-  setCookie(c, auth.newSession(t.device))
-  c.res.writeHead(302, { Location: home(c) + (t.route ? `?route=${encodeURIComponent(t.route)}` : '') })
+  auth.endDeviceSessions(t.device, 'web')
+  setCookie(c, auth.newSession(t.device, 'web'))
+  const q = new URLSearchParams({ ...(t.route ? { route: t.route } : {}), ...(t.embed ? { embed: '1' } : {}) }).toString()
+  c.res.writeHead(302, { Location: home(c) + (q ? `?${q}` : '') })
   c.res.end()
 }, { auth: 'none' })
 route('POST', '/api/app/devices', (c) => {
@@ -1654,6 +1738,16 @@ export function interruptedRuns(): { sid: string; emp: string }[] {
 
 
 /** 以前没有「员工能用哪些凭证」（谁都能用全部允许 AI 的凭证）：第一次启动按原样写下来，之后在员工档案里收放 */
+/** 以前一个项目只有一份编译设置（buildCfg）：变成编号 main 的编译组件，流水线记录照留 */
+export function migrateBuilds() {
+  const NAME: Record<string, string> = { node: 'Node', go: 'Go', android: '安卓', spring: 'Java', custom: '主程序' }
+  for (const w of all<Workspace & { buildCfg?: build.BuildCfg }>('workspaces')) {
+    if (!w.buildCfg) continue
+    const { buildCfg, ...rest } = w
+    const builds = build.buildsOf(w).length ? build.buildsOf(w) : [{ ...buildCfg, id: 'main', name: NAME[buildCfg.kind] ?? '主程序' }]
+    put('workspaces', { ...rest, builds })
+  }
+}
 export function migrateEmployeeCreds() {
   const ids = all<Credential>('credentials').filter((c) => c.aiAllowed).map((c) => c.id)
   for (const e of all<Employee>('employees')) if (!Array.isArray(e.creds)) put('employees', { ...e, creds: ids, credGroups: e.credGroups ?? PRESETS[e.id]?.credGroups ?? [] })

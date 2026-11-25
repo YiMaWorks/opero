@@ -62,7 +62,7 @@ export function start(w: Workspace, targetId: string, o: { by: string; emp?: Emp
   if (running(w.id, d.id)) throw new Error(`「${w.name} → ${d.name}」正在发，等它发完`)
   if (d.dir) for (const sv of svs) if (!dirAllowed(sv!, d.dir)) throw new Error(`「${sv!.name}」没把 ${d.dir} 登记成「能部署」的目录：到服务器详情「目录」里加`)
   const rb = o.rollbackOf
-  const b = w.buildCfg
+  const b = build.buildForDeploy(w, d) // 发哪个编译组件（没选 / 删了会报清楚）
   const reuse = !!(rb && (rb.kept || !b)) // 没编译的（命令型）回滚 = 用那个提交再跑一次部署命令
   const steps: ReleaseStep[] = reuse
     ? [{ k: 'deploy', s: 'pending' }, ...(d.health ? [{ k: 'health' as const, s: 'pending' as const }] : [])]
@@ -75,7 +75,7 @@ export function start(w: Workspace, targetId: string, o: { by: string; emp?: Emp
         { k: 'health', s: d.health ? 'pending' : 'skipped' },
       ]
   const r: Release = {
-    id: uid('rl'), ws: w.id, target: d.id, targetName: d.name, version: rb ? rb.version : '', sha: rb ? rb.sha : '', status: 'running', steps,
+    id: uid('rl'), ws: w.id, target: d.id, targetName: d.name, build: b?.name, version: rb ? rb.version : '', sha: rb ? rb.sha : '', status: 'running', steps,
     note: o.note?.slice(0, 500), by: o.by, emp: o.emp?.id, sid: o.sid, rollbackOf: rb?.id, started: Date.now(), servers: serversOf(d),
   }
   save(r)
@@ -96,7 +96,7 @@ function card(r: Release, w: Workspace): Card {
     id: `c-${r.id}`, type: 'generic', v: 1, state: r.status === 'running' ? 'open' : 'done', level: r.status === 'failed' ? 'danger' : 'info',
     data: {
       title: `发布 ${w.name} → ${r.targetName}${r.rollbackOf ? '（回滚）' : ''}`, tag: r.status === 'running' ? '发布中' : r.status === 'success' ? '发布成功' : '发布失败',
-      rows: [['版本', r.version || '…'], ...r.steps.filter((s) => s.s !== 'skipped').map((s) => [STEP_NAME[s.k], `${MARK[s.s]}${s.msg ? ' ' + s.msg : ''}`]), ...(r.error ? [['原因', r.error.slice(0, 300)]] : [])],
+      rows: [...(r.build ? [['编译组件', r.build]] : []), ['版本', r.version || '…'], ...r.steps.filter((s) => s.s !== 'skipped').map((s) => [STEP_NAME[s.k], `${MARK[s.s]}${s.msg ? ' ' + s.msg : ''}`]), ...(r.error ? [['原因', r.error.slice(0, 300)]] : [])],
       ...(r.buildUrl ? { url: r.buildUrl } : {}),
     },
     actions: [], result: r.status === 'running' ? null : r.status === 'success' ? '发布成功' : `发布失败：${(r.error ?? '').slice(0, 120)}`,
@@ -123,7 +123,7 @@ function pickFile(files: string[], pattern: string): string | undefined {
 
 async function run(r: Release, w: Workspace, d: Deploy, reuse?: Release) {
   const svs = serversOf(d).map((id) => get<Server>('servers', id)!)
-  const b = w.buildCfg
+  const b = build.buildForDeploy(w, d)
   let pkgName = ''
   if (reuse) {
     // 回滚：每台用留着的包，不重新编
@@ -226,6 +226,11 @@ async function sendTo(sv: Server, w: Workspace, rid: string, file: string, name:
   return x.code === 0 ? { ok: true, msg: '' } : { ok: false, msg: `解开失败：${x.out.slice(-200)}` }
 }
 
+/** 这个目标发的是编译出来的包（不是只跑部署命令） */
+function hasPkg(w: Workspace, d: Deploy): boolean {
+  try { return !!build.buildForDeploy(w, d) } catch { return false }
+}
+
 /** 在一台上部署：包里有部署脚本就跑它；没有就跑部署命令；都没有就把包里的东西复制进部署目录 */
 async function deployOn(sv: Server, w: Workspace, d: Deploy, r: Release, pkgRid: string): Promise<{ ok: boolean; code: number; out: string }> {
   const pkg = path.posix.join(pkgOn(sv.id, w, pkgRid), 'pkg')
@@ -233,12 +238,12 @@ async function deployOn(sv: Server, w: Workspace, d: Deploy, r: Release, pkgRid:
   const env: Record<string, string> = {
     OPERO_REF: r.sha, OPERO_VERSION: r.version, OPERO_RELEASE: r.id, KL_DEPLOY: r.id,
     ...(d.dir ? { OPERO_DIR: d.dir, KL_DIR: d.dir } : {}),
-    ...(w.buildCfg || r.rollbackOf ? { OPERO_PKG: pkg, KL_PKG: pkg } : {}),
+    ...(hasPkg(w, d) || r.rollbackOf ? { OPERO_PKG: pkg, KL_PKG: pkg } : {}),
   }
   const cmd = d.command ? fillSecrets(d.command) : undefined
   if (cmd && 'error' in cmd) return { ok: false, code: -1, out: cmd.error }
   let sh: string
-  if (w.buildCfg || r.rollbackOf) {
+  if (hasPkg(w, d) || r.rollbackOf) {
     const hasScript = (await execOnEnv(sv, `test -f ${q(pkg + '/' + scriptName)} && echo YES || true`, {}, 30_000)).out.includes('YES')
     sh = hasScript ? `cd ${q(pkg)} && bash ${q(pkg + '/' + scriptName)} ${q(pkg)} ${q(r.id)}`
       : cmd ? `${d.dir ? `mkdir -p ${q(d.dir)} && cd ${q(d.dir)} && ` : ''}${cmd.text}`
@@ -266,7 +271,7 @@ async function health(sv: Server, url: string): Promise<{ ok: boolean; code: str
 /** 部署 / 检查失败：自动退回上一个成功的版本（包还留着、环境开着自动回滚） */
 async function fail(r: Release, w: Workspace, d: Deploy, why: string) {
   const prev = last(w.id, d.id, r.id)
-  if (d.autoRollback !== false && prev && (prev.kept || !w.buildCfg) && !r.rollbackOf) {
+  if (d.autoRollback !== false && prev && (prev.kept || !hasPkg(w, d)) && !r.rollbackOf) {
     step(r, w, 'rollback', 'running', `退回 ${prev.version}`)
     const outs: string[] = []
     let ok = true

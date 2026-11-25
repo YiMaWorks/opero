@@ -42,9 +42,13 @@ export function patchSession(sid: string, patch: Partial<Session> & { clear?: ('
   emit({ t: 'put', coll: 'sessions', item: next })
 }
 
+const CARD_TITLE: Record<string, string> = { issue: '新问题', confirm: '要你确认', ask: '要你选', run: '这一轮做完了', generic: '卡片' }
+
 export function addMsg(sid: string, m: Omit<Message, 'id' | 'at'> & { id?: string }): Message {
   const ts = Date.now()
   const msg = { ...m, id: m.id ?? uid('m'), at: hhmm(ts), ts } as Message
+  // 卡片约定（docs/api/卡片.md）：每张都有 data.title，各端不认识的卡片按「标题 + 标签 + rows + 按钮」显示
+  if (msg.card && !String(msg.card.data?.title ?? '').trim()) msg.card = { ...msg.card, data: { ...msg.card.data, title: CARD_TITLE[msg.card.type] ?? '卡片' } }
   db.prepare('INSERT INTO messages (id, sid, ts, data) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET data = excluded.data').run(msg.id, sid, ts, JSON.stringify(msg))
   emit({ t: 'msg', sid, msg })
   return msg

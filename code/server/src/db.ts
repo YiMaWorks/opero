@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS push (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGE
 db.exec('CREATE TABLE IF NOT EXISTS inbox (id TEXT PRIMARY KEY, ch TEXT NOT NULL, ts INTEGER NOT NULL, data TEXT NOT NULL); CREATE INDEX IF NOT EXISTS inbox_ts ON inbox (ts);')
 // 用量按项目分：老库补一列
 try { db.exec('ALTER TABLE runs ADD COLUMN ws TEXT') } catch { /* 已经有了 */ }
+// 会话从哪来：web = 浏览器 / App 里嵌的网页（cookie），app = 原生 App（Bearer）。同一台设备两种各清各的，免得互相踢下线
+try { db.exec("ALTER TABLE auth_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'web'") } catch { /* 已经有了 */ }
 
 export type Coll =
   | 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries'

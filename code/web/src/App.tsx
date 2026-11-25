@@ -23,6 +23,7 @@ import { LIVE } from './mode'
 import { cardAction } from './live'
 import { LiveLogin, LiveSetup } from './pages/live'
 import { fromHash, toHash } from './router'
+import { EMBED, EmbedView } from './components/Embed'
 
 function useMobile() {
   const q = '(max-width: 860px)'
@@ -58,7 +59,7 @@ export default function App() {
   const authState = useStore((s) => s.auth)
   const sessions = useStore((s) => s.sessions)
   const verify = useStore((s) => s.verify)
-  const [splash, setSplash] = useState(true)
+  const [splash, setSplash] = useState(!EMBED) // 嵌在 App 里的单页不播开屏
   const hideSplash = useCallback(() => setSplash(false), [])
   // 刷新 / 重载后回到网址里记的那页（router.ts）
   const [start] = useState(() => fromHash(location.hash))
@@ -288,7 +289,7 @@ export default function App() {
   useEffect(() => { if (session?.unread && (!mobile || tab === 'chat')) markRead(session.id) }, [session?.id, session?.unread, mobile, tab])
   // App 点通知打开（票地址带 ?route=chat/<会话>）
   useEffect(() => {
-    if (!authState.loggedIn) return
+    if (!authState.loggedIn || EMBED) return // 嵌入模式的 ?route= 是给 EmbedView 的，别拿走
     const r = new URLSearchParams(location.search).get('route')
     if (!r) return
     history.replaceState(history.state, '', location.pathname)
@@ -330,6 +331,7 @@ export default function App() {
   if (authState.booting) main = null
   else if (!authState.loggedIn) main = LIVE ? <LiveLogin /> : <LoginPage />
   else if (!authState.setupDone) main = LIVE ? <LiveSetup /> : <Onboarding />
+  else if (EMBED) main = <EmbedView start={EMBED.route} />
   else if (mobile) {
     main = (
       <div className="app mobile">

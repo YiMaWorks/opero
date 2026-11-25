@@ -60,13 +60,32 @@ export function workspaceDir(name: string, host?: string) {
 const on = (w: Workspace) => ({ host: w.server, cwd: w.dir })
 
 export async function cloneWorkspace(w: Workspace): Promise<string> {
+  let busyDir = false // 目录已经在、里面有东西（比如员工在拉代码之前就开工了）
   if (hosts.isLocal(w.server)) {
     fs.mkdirSync(path.dirname(w.dir), { recursive: true, mode: 0o2770 })
     if (fs.existsSync(path.join(w.dir, '.git'))) return '已经拉过了'
+    busyDir = fs.existsSync(w.dir) && fs.readdirSync(w.dir).length > 0
   } else {
-    const r = await agents.exec(w.server!, `mkdir -p ${q(path.posix.dirname(w.dir))} && test -d ${q(w.dir + '/.git')} && echo HAVE || true`)
+    const r = await agents.exec(w.server!, `mkdir -p ${q(path.posix.dirname(w.dir))} && if test -d ${q(w.dir + '/.git')}; then echo HAVE; elif [ -n "$(ls -A ${q(w.dir)} 2>/dev/null)" ]; then echo BUSY; fi; true`)
     if (r.code !== 0) throw new Error(r.out.slice(-300) || '那台服务器的 Agent 没响应')
     if (r.out.includes('HAVE')) return '已经拉过了'
+    busyDir = r.out.includes('BUSY')
+  }
+  if (busyDir) {
+    // 先拉到旁边一个临时目录（不检出），把 .git 挪进去再检出：目录里原来的东西不动，跟踪的文件换成仓库里的
+    const tmp = `${w.dir}.clone-${Date.now().toString(36)}`
+    const c = await git(['clone', '--no-checkout', ...(w.branch ? ['--branch', w.branch] : []), w.repo, tmp], { cred: w.credential, timeoutMs: 600_000, host: w.server })
+    if (c.code !== 0) throw new Error(c.out.slice(-600) || '拉取失败')
+    if (hosts.isLocal(w.server)) { fs.renameSync(path.join(tmp, '.git'), path.join(w.dir, '.git')); fs.rmSync(tmp, { recursive: true, force: true }) }
+    else {
+      const m = await agents.exec(w.server!, `mv ${q(tmp + '/.git')} ${q(w.dir + '/.git')} && rm -rf ${q(tmp)}`)
+      if (m.code !== 0) throw new Error(m.out.slice(-300) || '挪不过去')
+    }
+    const co = await git(['reset', '--hard', '-q'], on(w))
+    if (co.code !== 0) throw new Error(co.out.slice(-300) || '检出失败')
+    await git(['config', 'core.sharedRepository', 'group'], on(w))
+    await handBack(w)
+    return '已拉下来（目录里原来就有东西：没动它们，跟踪的文件换成了仓库里的）'
   }
   const r = await git(['clone', ...(w.branch ? ['--branch', w.branch] : []), w.repo, w.dir], { cred: w.credential, timeoutMs: 600_000, host: w.server })
   if (r.code !== 0) throw new Error(r.out.slice(-600) || '拉取失败')
@@ -98,6 +117,10 @@ export async function inspect(w: Workspace): Promise<Partial<Workspace>> {
 export async function syncWorkspace(w: Workspace, o: { rebase?: boolean; push?: boolean }): Promise<string> {
   const lines: string[] = []
   const withCred = { ...on(w), cred: w.credential }
+  // 项目还没拉下来（接入时拉失败了）：直接重新拉
+  if ((await git(['rev-parse', '--git-dir'], on(w))).code !== 0) {
+    try { return `项目之前没拉下来，刚重新拉好了：${(await cloneWorkspace(w)).slice(-200)}` } catch (e) { return `项目还没拉下来，重新拉也失败了：${(e as Error).message}` }
+  }
   const f = await git(['fetch', '--all', '--prune'], withCred)
   lines.push(f.code === 0 ? '已拉取远端' : `拉取失败：${f.out.slice(-300)}`)
   if (f.code !== 0) { await handBack(w); return lines.join('\n') }

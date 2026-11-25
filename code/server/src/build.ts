@@ -1,9 +1,10 @@
-// 编译：每个项目一份编译设置（Workspace.buildCfg）。在哪编：云效流水线 / GitHub Actions / 自己的某台服务器（local）。
+// 编译：每个项目可以有好几个编译组件（Workspace.builds：网页、安卓、后台…），各自的模板、命令、在哪编、流水线；发布目标选发哪个（Deploy.build）。
+// 在哪编：云效流水线 / GitHub Actions / GitLab CI / Jenkins / 自己的某台服务器（local）。
 // 产物约定（三种一样，也和以前在云效上用的一样）：编译脚本把要发的东西放进 out/，最后写 out/SHA256SUMS、out/COMMIT、out/VERSION；
 //   node / go 模板打一个 <名字>-<版本>.tgz，包里带 deploy.sh（部署时 Agent 以 root 跑：bash deploy.sh <包目录> <发布编号>，
 //   OPERO_DIR / KL_DIR = 部署目录）；android 模板出 *-unsigned.apk（签名在部署时做，证书不进流水线）；custom 自己的命令自己放。
 // 云效：用 Codeup 仓库那个组织，「一键生成流水线」按模板建 / 改 YAML；跑的时候带分支，轮询状态，拿产物下载地址。
-// GitHub：把工作流文件 .github/workflows/opero-build.yml 提交进仓库（用项目的令牌，要有 workflow 权限），workflow_dispatch 触发，产物是 zip。
+// GitHub：把工作流文件 .github/workflows/opero-build-<组件>.yml 提交进仓库（用项目的令牌，要有 workflow 权限），workflow_dispatch 触发，产物是 zip。
 // 自己的服务器：在那台上拉一份干净的代码跑同一个脚本，out/ 打成 tgz 经 Opero 拿回来。
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -16,7 +17,7 @@ import { git, q } from './git.ts'
 import { execOnEnv } from './ssh.ts'
 import * as agents from './agents.ts'
 import * as hosts from './hosts.ts'
-import type { Server, Workspace } from './types.ts'
+import type { Deploy, Server, Workspace } from './types.ts'
 import { hostRes } from './resources.ts'
 import * as pipes from './pipelines.ts'
 import { resourceBlock } from './policy.ts'
@@ -43,7 +44,7 @@ export interface BuildCfg {
   file?: string
   /** 云效：令牌在哪个凭证、组织（默认 Codeup 地址里的）、流水线编号（一键生成后记下）、构建镜像 */
   yunxiao?: { cred: string; org?: string; pipelineId?: string; image?: string; at?: number }
-  /** GitHub：工作流文件名（默认 opero-build.yml）、生成时间 */
+  /** GitHub：工作流文件名（默认 opero-build-<组件编号>.yml）、生成时间 */
   github?: { workflow?: string; at?: number }
   /** GitLab CI：生成时间（流水线文件提交进仓库，令牌用项目的 GitLab 凭证） */
   gitlab?: { at?: number }
@@ -53,6 +54,36 @@ export interface BuildCfg {
   local?: { server: string }
   /** 自动建流水线没成功的原因（给主人看，能重新生成） */
   pipelineError?: string
+}
+
+/** 一个编译组件：编译设置 + 编号 + 名字（「网页」「安卓」）。一个项目可以有好几个 */
+export interface BuildComp extends BuildCfg { id: string; name: string }
+export const buildsOf = (w: Workspace): BuildComp[] => w.builds ?? []
+/** 按编号或名字找；不给的话项目只有一个组件就是它 */
+export function findBuild(w: Workspace, key?: string): BuildComp | undefined {
+  const list = buildsOf(w)
+  if (!key) return list.length === 1 ? list[0] : undefined
+  return list.find((b) => b.id === key) ?? list.find((b) => b.name === key)
+}
+/** 这个发布目标发哪个组件：build = 'none' 不编译（只跑部署命令）；没填且项目只有一个组件就用它 */
+export function buildForDeploy(w: Workspace, d: Deploy): BuildComp | undefined {
+  if (d.build === 'none') return undefined
+  const list = buildsOf(w)
+  if (d.build) {
+    const b = list.find((x) => x.id === d.build)
+    if (!b) throw new Error(`发布目标「${d.name}」选的编译组件已经删了：重新选一个`)
+    return b
+  }
+  if (list.length > 1) throw new Error(`「${w.name}」有 ${list.length} 个编译组件，发布目标「${d.name}」要选发哪个`)
+  return list[0]
+}
+/** 新组件的编号：名字里的字母数字（web、android），没有就随机；不和已有的重 */
+export function newBuildId(w: Workspace, name: string): string {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20) || `b${crypto.randomBytes(2).toString('hex')}`
+  const ids = new Set(buildsOf(w).map((b) => b.id))
+  let id = base
+  for (let i = 2; ids.has(id); i++) id = `${base}-${i}`
+  return id
 }
 
 /** 在哪编（以前 provider = local 就是「总是本地」） */
@@ -66,7 +97,8 @@ export const kindCmd = (k: BuildKind) => KIND_CMD[k]
 const sh = (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`
 const subdirOf = (b: BuildCfg) => (b.subdir ?? '').replace(/^\/+|\/+$/g, '') || '.'
 export const fileOf = (b: BuildCfg) => b.file || (b.kind === 'android' ? '*.apk' : b.kind === 'spring' ? 'bundle.tgz' : '*.tgz')
-export const codeOf = (w: Workspace) => w.name.replace(/[^\w.-]+/g, '-').toLowerCase().slice(0, 40) || 'app'
+/** 包名 / 产物名用的代号：项目名，组件不是 main 时后面带组件编号（opero-android） */
+export const codeOf = (w: Workspace, b?: { id: string }) => `${w.name.replace(/[^\w.-]+/g, '-').toLowerCase().slice(0, 40) || 'app'}${b && b.id !== 'main' ? `-${b.id}` : ''}`
 
 // ---------- 编译脚本（三种地方跑同一个） ----------
 function versionCmd(b: BuildCfg) {
@@ -249,9 +281,9 @@ export async function yunxiaoPipeline(credId: string, org: string, id: string): 
 }
 const yxToken = (b: BuildCfg) => { const t = b.yunxiao?.cred ? getSecret(b.yunxiao.cred) : undefined; if (!t) throw new Error('云效的令牌没配（凭证的值填云效个人访问令牌）'); return t }
 
-function yunxiaoYaml(w: Workspace, b: BuildCfg, repo: { path: string; https: string }, connection: string): string {
-  const body = script(b, codeOf(w)).split('\n').map((l) => `                ${l}`).join('\n')
-  return `# Opero「发布」生成（项目 ${w.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
+function yunxiaoYaml(w: Workspace, b: BuildComp, repo: { path: string; https: string }, connection: string): string {
+  const body = script(b, codeOf(w, b)).split('\n').map((l) => `                ${l}`).join('\n')
+  return `# Opero「发布」生成（项目 ${w.name}，编译组件 ${b.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
 sources:
   repo:
     type: codeup
@@ -267,7 +299,7 @@ stages:
     name: 编译
     jobs:
       build:
-        name: ${JSON.stringify(`编译 ${w.name}`.slice(0, 60))}
+        name: ${JSON.stringify(`编译 ${w.name} · ${b.name}`.slice(0, 60))}
         runsOn:
           group: public/cn-beijing
           container: ${b.yunxiao?.image || 'build-steps-public-registry.cn-beijing.cr.aliyuncs.com/build-steps/alinux3:latest'}
@@ -283,19 +315,25 @@ ${body}
             step: ArtifactUpload
             with:
               uploadType: flowPublic
-              artifact: opero-${codeOf(w)}
+              artifact: opero-${codeOf(w, b)}
               filePath:
                 - out/
 `
 }
 
 /** 一键生成 / 更新流水线；返回更新后的编译设置 */
-export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
-  if (b.provider === 'gitlab') { await pipes.gitlabGenerate(w, script(b, codeOf(w))); return { ...b, gitlab: { at: Date.now() } } }
+/** 一键生成 / 更新这个组件的流水线；返回更新后的组件 */
+export async function generate(w: Workspace, b: BuildComp): Promise<BuildComp> {
+  // GitLab：一个仓库一个 .opero/gitlab-ci.yml，里面放这个项目所有走 GitLab 的组件（每个一个任务，按 OPERO_COMPONENT 只跑对应的）
+  if (b.provider === 'gitlab') {
+    const comps = [...buildsOf(w).filter((x) => x.provider === 'gitlab' && x.id !== b.id), b]
+    await pipes.gitlabGenerate(w, comps.map((x) => ({ id: x.id, name: x.name, script: script(x, codeOf(w, x)) })))
+    return { ...b, gitlab: { at: Date.now() } }
+  }
   if (b.provider === 'jenkins') {
     if (!b.jenkins?.cred) throw new Error('选一个 Jenkins 凭证（凭证 → 其它 → Jenkins）')
-    const job = pipes.jenkinsJob(w, b.jenkins.job)
-    await pipes.jenkinsGenerate(w, b.jenkins.cred, job, script(b, codeOf(w)))
+    const job = pipes.jenkinsJob(w, b, b.jenkins.job)
+    await pipes.jenkinsGenerate(w, b.jenkins.cred, job, script(b, codeOf(w, b)))
     return { ...b, jenkins: { ...b.jenkins, job, at: Date.now() } }
   }
   if (b.provider === 'yunxiao') {
@@ -307,14 +345,14 @@ export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
     const conn = (Array.isArray(conns) ? conns : []).find((x: any) => String(x.type ?? '').toLowerCase() === 'codeup' && x.uuid)
     if (!conn) throw new Error('云效组织里没有 Codeup 服务连接：在云效「流水线 → 服务连接」里建一个')
     const yaml = yunxiaoYaml(w, b, repo, conn.uuid)
-    const name = `Opero · ${w.name}`.slice(0, 60)
+    const name = `Opero · ${w.name} · ${b.name}`.slice(0, 60)
     const id = b.yunxiao?.pipelineId
       ? (await yx(token, 'PUT', `/oapi/v1/flow/organizations/${org}/pipelines/${b.yunxiao.pipelineId}`, { name, content: yaml }), b.yunxiao.pipelineId)
       : String(await yx(token, 'POST', `/oapi/v1/flow/organizations/${org}/pipelines`, { name, content: yaml }))
     return { ...b, yunxiao: { ...b.yunxiao!, org, pipelineId: id, at: Date.now() } }
   }
   if (b.provider === 'github') {
-    const file = b.github?.workflow || 'opero-build.yml'
+    const file = workflowOf(b)
     const yml = githubYaml(w, b)
     // 用项目的令牌提交进仓库（要有 workflow 权限）：在 Opero 这台临时拉一份，改完推回去
     const tmp = path.join(cfg.data, 'tmp', `gh-${crypto.randomBytes(4).toString('hex')}`)
@@ -327,7 +365,7 @@ export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
       await git(['-C', tmp, 'add', '-A'])
       const st = await git(['-C', tmp, 'status', '--porcelain'])
       if (st.out.trim()) {
-        await git(['-C', tmp, '-c', 'user.name=Opero', '-c', 'user.email=opero@opero.local', 'commit', '-q', '-m', `ci: Opero build workflow (${b.kind})`])
+        await git(['-C', tmp, '-c', 'user.name=Opero', '-c', 'user.email=opero@opero.local', 'commit', '-q', '-m', `ci: Opero build workflow for ${b.id} (${b.kind})`])
         const p = await git(['-C', tmp, 'push', '-q', 'origin', 'HEAD'], { cred: w.credential, timeoutMs: 120_000 })
         if (p.code !== 0) throw new Error(`推送工作流失败（令牌要有 workflow 权限）：${p.out.slice(-200)}`)
       }
@@ -337,10 +375,13 @@ export async function generate(w: Workspace, b: BuildCfg): Promise<BuildCfg> {
   return b
 }
 
-function githubYaml(w: Workspace, b: BuildCfg): string {
-  const body = script({ ...b }, codeOf(w)).replace(/\/root\/\.cache\/opero/g, '$HOME/.cache/opero').split('\n').map((l) => `          ${l}`).join('\n')
-  return `# Opero「发布」生成（项目 ${w.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
-name: Opero build
+/** GitHub 工作流文件名：每个组件一个 */
+const workflowOf = (b: BuildComp) => b.github?.workflow || `opero-build-${b.id}.yml`
+
+function githubYaml(w: Workspace, b: BuildComp): string {
+  const body = script({ ...b }, codeOf(w, b)).replace(/\/root\/\.cache\/opero/g, '$HOME/.cache/opero').split('\n').map((l) => `          ${l}`).join('\n')
+  return `# Opero「发布」生成（项目 ${w.name}，编译组件 ${b.name}，模板 ${b.kind}）。在 Opero 里改编译设置后重新生成会覆盖这里
+name: ${JSON.stringify(`Opero build · ${b.name}`)}
 on:
   workflow_dispatch:
     inputs:
@@ -355,7 +396,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/opero
-          key: opero-\${{ runner.os }}-${b.kind}
+          key: opero-\${{ runner.os }}-${b.kind}-${b.id}
       - name: Build
         shell: bash
         env:
@@ -364,7 +405,7 @@ jobs:
 ${body}
       - uses: actions/upload-artifact@v4
         with:
-          name: opero-${codeOf(w)}
+          name: opero-${codeOf(w, b)}
           path: out/
 `
 }
@@ -373,15 +414,15 @@ ${body}
 export interface BuildRun { url?: string; dir: string; version: string; commit: string; files: string[] }
 type Step = (msg: string) => void
 
-export async function run(w: Workspace, b: BuildCfg, rid: string, sha: string, step: Step): Promise<BuildRun> {
+export async function run(w: Workspace, b: BuildComp, rid: string, sha: string, step: Step): Promise<BuildRun> {
   const dir = path.join(cfg.data, 'releases', rid)
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   const mode = await decideWhere(w, b, step)
   if (mode === 'local') await runLocal(w, { ...b, local: { server: b.local?.server || w.server || 'local' } }, rid, sha, dir, step)
   else if (b.provider === 'yunxiao') await runYunxiao(w, b, dir, step)
   else if (b.provider === 'github') await runGithub(w, b, rid, dir, step)
-  else if (b.provider === 'gitlab') await pipes.gitlabRun(w, rid, dir, step, unpack)
-  else if (b.provider === 'jenkins') await pipes.jenkinsRun(w, b.jenkins!.cred, pipes.jenkinsJob(w, b.jenkins?.job), sha, rid, dir, step, unpack)
+  else if (b.provider === 'gitlab') await pipes.gitlabRun(w, b.id, rid, dir, step, unpack)
+  else if (b.provider === 'jenkins') await pipes.jenkinsRun(w, b.jenkins!.cred, pipes.jenkinsJob(w, b, b.jenkins?.job), sha, rid, dir, step, unpack)
   else throw new Error('没有可用的流水线')
   return verify(dir)
 }
@@ -476,7 +517,7 @@ function unzip(buf: Buffer, dir: string) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-async function runYunxiao(w: Workspace, b: BuildCfg, dir: string, step: Step) {
+async function runYunxiao(w: Workspace, b: BuildComp, dir: string, step: Step) {
   const token = yxToken(b)
   const org = b.yunxiao?.org || codeupRepo(w.repo)?.org
   const id = b.yunxiao?.pipelineId
@@ -517,13 +558,13 @@ async function runYunxiao(w: Workspace, b: BuildCfg, dir: string, step: Step) {
   }
 }
 
-async function runGithub(w: Workspace, b: BuildCfg, rid: string, dir: string, step: Step) {
+async function runGithub(w: Workspace, b: BuildComp, rid: string, dir: string, step: Step) {
   const m = w.repo.replace(/\.git$/, '').match(/github\.com[/:]([^/]+\/[^/]+)$/)
   if (!m) throw new Error('GitHub Actions 要用 GitHub 的仓库')
   const repo = m[1]
   const token = w.credential ? getSecret(w.credential) : undefined
   if (!token) throw new Error('项目没配 GitHub 令牌')
-  const file = b.github?.workflow || 'opero-build.yml'
+  const file = workflowOf(b)
   const h = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Opero' }
   const gh = async (method: string, p: string, body?: unknown) => {
     const r = await fetch(`https://api.github.com${p}`, { method, headers: { ...h, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30_000) })
@@ -562,11 +603,11 @@ async function runGithub(w: Workspace, b: BuildCfg, rid: string, dir: string, st
 }
 
 /** 在自己的某台服务器上编：拉一份干净的代码跑同一个脚本，out/ 打包经 Opero 拿回来 */
-async function runLocal(w: Workspace, b: BuildCfg, rid: string, sha: string, dir: string, step: Step) {
+async function runLocal(w: Workspace, b: BuildComp, rid: string, sha: string, dir: string, step: Step) {
   const sv = b.local?.server ? get<Server>('servers', b.local.server) : undefined
   if (!sv) throw new Error('选一台编译的服务器')
   const h = sv.id === 'local' ? hosts.LOCAL : sv.id
-  const base = path.posix.join(hosts.workRoot(h), 'builds', codeOf(w), rid)
+  const base = path.posix.join(hosts.workRoot(h), 'builds', codeOf(w, b), rid)
   const src = path.posix.join(base, 'src')
   const mk = await execOnEnv(sv, `rm -rf ${q(base)} && mkdir -p ${q(src)}`, {}, 60_000)
   if (mk.code !== 0) throw new Error(`编译那台建目录失败：${mk.out.slice(-200)}`)
@@ -575,7 +616,7 @@ async function runLocal(w: Workspace, b: BuildCfg, rid: string, sha: string, dir
   const co = f.code === 0 ? await git(['-C', src, 'checkout', '-q', 'FETCH_HEAD'], { host: h, timeoutMs: 120_000 }) : f
   if (co.code !== 0) throw new Error(`拉代码失败：${co.out.slice(-300)}`)
   step(`在 ${sv.name} 上编`)
-  const r = await execOnEnv(sv, script(b, codeOf(w)), { OPERO_RELEASE: rid }, 60 * 60_000, src)
+  const r = await execOnEnv(sv, script(b, codeOf(w, b)), { OPERO_RELEASE: rid }, 60 * 60_000, src)
   fs.writeFileSync(path.join(dir, 'BUILD.log'), r.out.slice(-200_000))
   if (r.code !== 0) throw new Error(`编译失败（退出码 ${r.code}）：${r.out.slice(-600)}`)
   const tgz = path.posix.join(base, 'out.tgz')
@@ -631,11 +672,12 @@ export async function detectKind(w: Workspace): Promise<Pick<BuildCfg, 'kind' | 
   if (has('package.json')) return { kind: 'node', versionFile: 'package.json' }
   return { kind: 'custom', cmd: has('deploy') ? 'bash deploy/build.sh' : 'mkdir -p out && echo "写好编译命令，把要发的东西放进 out/"' }
 }
-/** 第一次：认出类型、选打包工具（Codeup → 云效，GitHub → Actions，别的先只能本地）、建流水线。失败不挡，记下原因 */
-export async function autoConfig(w: Workspace, codeupCred?: string): Promise<BuildCfg> {
+/** 第一次：认出类型、选打包工具（Codeup → 云效，GitHub → Actions，别的先只能本地）、建流水线，成为项目的第一个编译组件。失败不挡，记下原因 */
+const KIND_NAME: Record<BuildKind, string> = { node: 'Node', go: 'Go', android: '安卓', spring: 'Java', custom: '主程序' }
+export async function autoConfig(w: Workspace, codeupCred?: string): Promise<BuildComp> {
   const k = await detectKind(w)
   const provider: BuildCfg['provider'] = codeupRepo(w.repo) && codeupCred ? 'yunxiao' : /github\.com/i.test(w.repo) && w.credential ? 'github' : /gitlab/i.test(w.repo) && w.credential ? 'gitlab' : 'local'
-  let b: BuildCfg = { ...k, provider, where: 'auto', ...(provider === 'yunxiao' ? { yunxiao: { cred: codeupCred! } } : {}) }
+  let b: BuildComp = { id: 'main', name: KIND_NAME[k.kind], ...k, provider, where: 'auto', ...(provider === 'yunxiao' ? { yunxiao: { cred: codeupCred! } } : {}) }
   if (provider !== 'local') {
     try { b = { ...(await generate(w, b)), pipelineError: undefined } } catch (e) { b = { ...b, pipelineError: (e as Error).message.slice(0, 300) } }
   }

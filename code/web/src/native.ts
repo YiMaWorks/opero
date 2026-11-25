@@ -26,6 +26,10 @@ interface OperoNativeApi {
   setShell(json: string): void
   /** 说话转文字（手机自带的语音识别）；结果回 window.__operoNative.onVoice(text, err) */
   voice?(lang: string): void
+  /** 嵌入页（?embed=1）里点到别的页面：交给 App 打开（原生页或再开一个嵌入页）。route 同票的 route（employee;id=e1、chat;emp=<员工>） */
+  open?(route: string): void
+  /** 嵌入页最外层点了关闭：App 退回上一层 */
+  close?(): void
 }
 
 /** 这台手机（外壳）自己的设置，存在手机上 */
@@ -44,7 +48,7 @@ export interface ShellPrefs {
 declare global {
   interface Window {
     OperoNative?: OperoNativeApi
-    __operoNative?: { onVerify(id: string, ok: boolean, err?: string): void; open(route: string): void; onVoice?(text: string, err?: string): void }
+    __operoNative?: { onVerify(id: string, ok: boolean, err?: string): void; open(route: string): void; onVoice?(text: string, err?: string): void; back(): boolean }
     SpeechRecognition?: any
     webkitSpeechRecognition?: any
   }
@@ -69,6 +73,28 @@ window.__operoNative = {
   },
   // 点通知打开：外壳把路由交给网页（例如 chat/<会话>）
   open(route) { openHandlers.forEach((fn) => fn(route)) },
+  // App 的返回键（嵌入页）：网页里还有能退的（弹窗、子页）就退一层回 true；到顶了回 false，App 自己退
+  back() { try { return backHandler?.() ?? false } catch { return false } },
+}
+let backHandler: (() => boolean) | null = null
+/** 嵌入页接管 App 的返回键 */
+export function onNativeBack(fn: () => boolean) {
+  backHandler = fn
+  return () => { if (backHandler === fn) backHandler = null }
+}
+/** 嵌入页里要去别的页面：App 支持就交给 App（回 true），老外壳 / 浏览器里回 false，网页自己跳 */
+export function nativeOpen(route: string): boolean {
+  const n = native()
+  if (!inApp || !n?.open) return false
+  return safe(() => { n.open!(route); return true }, false)
+}
+/** App 能不能关掉嵌入页（老外壳 / 浏览器里不能，就不显示关闭按钮） */
+export const canNativeClose = () => inApp && !!native()?.close
+/** 嵌入页最外层关闭；不在 App 里回 false */
+export function nativeClose(): boolean {
+  const n = native()
+  if (!inApp || !n?.close) return false
+  return safe(() => { n.close!(); return true }, false)
 }
 
 /** 用手机的指纹验证本人；不在 App 里返回 null（走网页的验证弹窗） */

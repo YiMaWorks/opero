@@ -5,6 +5,13 @@
 - **运行时**：Node 22.18+ 直接跑 TypeScript（类型擦除，不用编译）；存储是 Node 自带的 `node:sqlite`；依赖只有 `ssh2`、`mysql2`、`pg`。
 - **写法约定**：只用能擦除的 TS 语法（不用 enum、参数属性、namespace），`import` 写 `.ts` 后缀；`npm run typecheck` 做类型检查。
 
+## 接口独立（给各端用）
+
+- 所有端（网页、安卓、苹果、Windows）都走同一套 `/api/*`：约定、登录、实时推送见 `docs/api/README.md`，全部接口见 `docs/api/接口清单.md`。
+- 原生 App 的登录：配对拿设备令牌 → `POST /api/app/session` 换会话令牌 → 调主人的接口带 `Authorization: Bearer <会话令牌>`（网页照旧用 cookie）。
+- `OPERO_WEB=none`：只提供接口，不托管网页（网页可以另外托管）。
+- 改了接口：接口上面写一行注释，再跑 `node scripts/api-list.mjs` 重新生成接口清单。
+
 ## 装在服务器上
 
 ```bash

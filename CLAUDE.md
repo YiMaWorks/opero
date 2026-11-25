@@ -13,7 +13,7 @@
 
 - `code/server`：后台（Node 22 直接跑 TypeScript，SQLite），说明见 `code/server/README.md`。
 - `code/web`：网页（React + Vite），说明见 `code/web/README.md`。
-- `code/android`、`code/desktop`：手机 App 外壳、桌面端。
+- `code/android`（Kotlin）、`code/apple`（SwiftUI：iPhone / iPad / Mac）、`code/windows`（C# + WinUI 3）：各平台的原生 App；`code/desktop`：Electron 过渡版。各端怎么分工、怎么连后台见 `docs/多端架构.md`，接口见 `docs/api/`。
 - `docs/设计.md`：设计和接口；`docs/规范/`：界面、数据、表单与卡片等规范；`docs/变更记录.md`：版本记录。
 
 ## 改代码时

@@ -35,7 +35,12 @@ interface Live {
   host: string
   proc: ChildProcess
   stdinOpen: boolean
-  pending: number // 已写进去、还没说完的话（Claude）
+  pending: number // 已写进去、执行器还没读进去的话（Claude）
+  /** 执行器会回显读进去的话（--replay-user-messages）：按回显数待处理的话；不支持的老版本按「一轮结束」数 */
+  replay: boolean
+  /** 执行器开新一轮的迹象（init / 回复 / 读进话）出过几次：一轮结束后还有待处理的话时，看接下来有没有新的一轮 */
+  activity: number
+  idle?: ReturnType<typeof setTimeout>
   statusId: string
   said: number // 这一轮说了几段话
   lastResult: string
@@ -61,6 +66,9 @@ const live = new Map<string, Live>()
 /** 进程还在起（第一次要先看执行器支不支持 --effort）：这时来的话先攒着，起好了再交过去 */
 const booting = new Map<string, { text: string; files: Attachment[] }[]>()
 const stopEarly = new Set<string>()
+/** 还在开工准备（拉代码、起执行器）的员工：放弃这一轮（停止、或准备太久） */
+const bootAbort = new Map<string, (why: string, requeue: boolean) => void>()
+const BOOT_LIMIT = 6 * 60_000
 const byToken = new Map<string, { emp: string; sid: string; runId: string; remote?: boolean }>()
 
 /** 干完一轮在收尾（提交记忆、提交推送代码）：这时也算在干活，新来的话排队 */
@@ -181,13 +189,13 @@ async function shimEnv(host: string, p: Policy): Promise<Record<string, string>>
   return { OPERO_SHIMS: dir, OPERO_POLICY: JSON.stringify(p), OPERO_NODE: hosts.nodeBin(host), OPERO_CHECK: check }
 }
 
-const helpCache = new Map<string, boolean>()
-async function supportsEffort(host: string): Promise<boolean> {
+/** 那台的 claude 支持哪些参数（看 --help；老版本没有的参数不加，免得起不来） */
+const helpCache = new Map<string, string>()
+async function claudeHelp(host: string): Promise<string> {
   if (helpCache.has(host)) return helpCache.get(host)!
   const r = await hosts.runAiOn(host, hosts.claudeBin(host), ['--help'], { timeoutMs: 20_000 })
-  const ok = r.out.includes('--effort')
-  if (r.code === 0) helpCache.set(host, ok) // 没跑成（比如 Agent 刚好断了）不记，下次再问
-  return ok
+  if (r.code === 0) helpCache.set(host, r.out) // 没跑成（比如 Agent 刚好断了）不记，下次再问
+  return r.out
 }
 
 // ---------- 员工的工作目录和规矩 ----------
@@ -398,20 +406,50 @@ function start(emp: Employee, text: string, files: Attachment[]) {
   patchSession(s.id, { working: '在想…' })
   byToken.set(token, { emp: emp.id, sid: s.id, runId, remote: !hosts.isLocal(host) })
   booting.set(emp.id, [])
+  // 开工准备每一步都写在状态上（卡住时看得出卡在哪）；6 分钟还没起来就放弃这一轮，不让「在想…」一直挂着
+  let lastStep = '在想…'
+  let aborted = false
+  const step = (t: string) => { if (aborted) return; lastStep = t; patchMsg(status.id, { text: `${emp.name} ${t}` }); patchSession(s.id, { working: t }) }
+  const abort = (why: string, requeue: boolean) => {
+    if (aborted) return
+    aborted = true
+    clearTimeout(guard)
+    bootAbort.delete(emp.id)
+    const early = booting.get(emp.id) ?? []
+    booting.delete(emp.id)
+    stopEarly.delete(emp.id)
+    delMsg(status.id)
+    patchSession(s.id, { clear: ['working'] })
+    byToken.delete(token)
+    system(s.id, why)
+    if (requeue) for (const x of early) hooks.busy?.(emp.id, x.text, x.files, '没开起工来，你这句先排队')
+  }
+  const guard = setTimeout(() => abort(`没能开工：「${lastStep.replace(/…$/, '')}」${BOOT_LIMIT / 60_000} 分钟还没完成，这一轮先放下了。再发一次试试；还卡就看看那台服务器的 Agent 在不在线`, true), BOOT_LIMIT)
+  bootAbort.set(emp.id, abort)
 
   const begin = async () => {
     let proc: ChildProcess
+    let replay = false
     // 记忆仓库（没有就建、Opero 管的那段对一遍）和项目（拉到最新）
     // 项目员工：记忆就是项目的 docs/，不另建
+    if (!ws) step('在准备记忆…')
     const mem = ws ? { dir: '', note: undefined as string | undefined } : await memory.ensureMemory(emp, host)
+    if (aborted) return
+    if (ws) step('在拉项目最新代码…')
     const pre = ws ? await autogit.preSync(ws, emp) : ''
     const before = ws ? await autogit.head(ws) : ''
+    if (aborted) return // 放弃了就别再动项目（你可能已经又发了一句，新的一轮在拉代码）
     // 只读参考的项目也拉到最新（比如从上游仓库同步代码的项目，要读上游最新的）
+    if (emp.reads?.length) step('在拉参考项目的代码…')
     const readNotes = (await Promise.all((emp.reads ?? []).map((id) => get<Workspace>('workspaces', id)).filter((w): w is Workspace => !!w && (w.server ?? hosts.LOCAL) === host).map((w) => autogit.refreshRead(w)))).filter(Boolean).join('\n')
     const notes = [mem.note && `（Opero：${mem.note}）`, pre, readNotes].filter(Boolean).join('\n')
     if (notes) text = `${notes}\n\n${text}`
+    if (aborted) return
     const memDirs = ws || mem.note ? [] : [mem.dir]
+    step('在准备环境…')
     Object.assign(env, await shimEnv(host, policyOf(get<Server>('servers', host))))
+    if (aborted) return
+    step('在启动执行器…')
     if (kind === 'claude') {
       const pm = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : 'acceptEdits'
       const mcp = { mcpServers: { opero: { command: hosts.nodeBin(host), args: ['--disable-warning=ExperimentalWarning', mcpScript], env: mcpEnv } } }
@@ -423,7 +461,9 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       // 显示名（Opus 5.5）换成型号；从接口读到的完整型号（claude-…）直接用
       const mid = MODEL_IDS[emp.model] ?? (/^claude-[\w.-]+$/.test(emp.model ?? '') ? emp.model : '')
       if (mid) args.push('--model', mid)
-      if (emp.effort && (await supportsEffort(host))) args.push('--effort', emp.effort)
+      const help = await claudeHelp(host)
+      if (emp.effort && help.includes('--effort')) args.push('--effort', emp.effort)
+      if (help.includes('--replay-user-messages')) { args.push('--replay-user-messages'); replay = true }
       if (emp.resumeId) args.push('--resume', emp.resumeId)
       proc = hosts.spawnAiOn(host, hosts.claudeBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     } else {
@@ -449,7 +489,11 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       args.push('-')
       proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     }
-    const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
+    if (aborted) { killTree(proc); return } // 准备太久已经放弃了 / 你按了停止
+    clearTimeout(guard)
+    bootAbort.delete(emp.id)
+    step('在想…')
+    const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, replay, activity: 0, statusId: status.id,
       said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0, before, cred }
     // 内存上限（这台的规矩）：本机在这里看着，远程由 Agent 看着、超了在 stderr 里说一句
     const { memPct, cpuPct } = policyOf(get<Server>('servers', host))
@@ -491,6 +535,9 @@ function start(emp: Employee, text: string, files: Attachment[]) {
     proc.on('close', (code) => finish(l, code))
   }
   begin().catch((e) => {
+    clearTimeout(guard)
+    bootAbort.delete(emp.id)
+    if (aborted) return
     booting.delete(emp.id)
     delMsg(status.id)
     patchSession(s.id, { clear: ['working'] })
@@ -519,8 +566,22 @@ function toolLine(name: string, input: any): string {
   return `${label[name] ?? `在用 ${name}`}${short ? '：' + short : ''}`
 }
 
+/** 不再往执行器里写：它把手上的做完就退出 */
+function endInput(l: Live) {
+  if (l.idle) { clearTimeout(l.idle); l.idle = undefined }
+  if (!l.stdinOpen) return
+  l.stdinOpen = false
+  l.proc.stdin!.end()
+}
+
 function onClaude(l: Live, emp: Employee, ev: any) {
+  // 新一轮开始的迹象（一轮结束后的零星事件不算）
+  if (ev.type === 'assistant' || ev.type === 'user' || (ev.type === 'system' && ev.subtype === 'init')) l.activity++
   switch (ev.type) {
+    case 'user':
+      // 执行器读进了一句我们写的话（中途插的话可能直接并进正在做的这一轮，也可能另起一轮）
+      if (ev.isReplay && l.replay) l.pending = Math.max(0, l.pending - 1)
+      return
     case 'system':
       if (ev.subtype === 'init' && ev.session_id && ev.session_id !== emp.resumeId) saveEmp(emp.id, { resumeId: ev.session_id })
       return
@@ -548,9 +609,13 @@ function onClaude(l: Live, emp: Employee, ev: any) {
         limitHit(l, why)
       }
       l.said = 0
-      l.pending = Math.max(0, l.pending - 1)
-      if (l.pending === 0 && l.stdinOpen) { l.stdinOpen = false; l.proc.stdin!.end() }
-      else setStatus(l, `${emp.name} 在看你插的话…`)
+      if (!l.replay) l.pending = Math.max(0, l.pending - 1)
+      if (l.pending === 0) { endInput(l); return }
+      // 还有没读的话：执行器会马上另起一轮（立刻有 system init）。10 秒一点动静都没有，说明插的话已经并进刚才那一轮做完了，收尾，别一直挂着「在看你插的话」
+      setStatus(l, `${emp.name} 在看你插的话…`)
+      const seen = l.activity
+      if (l.idle) clearTimeout(l.idle)
+      l.idle = setTimeout(() => { l.idle = undefined; if (l.activity === seen) { l.pending = 0; endInput(l) } }, 10_000)
       return
     }
   }
@@ -600,6 +665,7 @@ function finish(l: Live, code: number | null) {
   finishing.add(l.emp)
   live.delete(l.emp)
   l.unwatch()
+  if (l.idle) { clearTimeout(l.idle); l.idle = undefined }
   setTimeout(() => byToken.delete(l.token), 10_000)
   cancelPending(l.runId, '员工这一轮已经结束')
   const emp = get<Employee>('employees', l.emp)
@@ -689,6 +755,9 @@ export function stop(empId: string): boolean {
   const l = live.get(empId)
   if (!l) {
     if (!booting.has(empId)) return false
+    // 还在开工准备：立刻放下（状态清掉），不用等它起来再杀
+    const ab = bootAbort.get(empId)
+    if (ab) { ab('你让员工停下了', false); return true }
     stopEarly.add(empId)
     booting.set(empId, [])
     system(sessionFor(empId).id, '你让员工停下了')

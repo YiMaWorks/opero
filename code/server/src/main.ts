@@ -7,7 +7,7 @@ import { cfg } from './config.ts'
 import { all, kvGet, kvSet } from './db.ts'
 import { clientIp, HttpError, json, match, parseCookies, readBody, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { expireStaleCards, interruptedRuns, migrateEmployeeCreds } from './api.ts'
+import { expireStaleCards, interruptedRuns, migrateBuilds, migrateEmployeeCreds } from './api.ts'
 import * as runner from './runner.ts'
 import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
@@ -75,6 +75,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const p = url.pathname
   if (!p.startsWith('/api/') && !p.startsWith('/hook/')) {
     if (req.method !== 'GET' && req.method !== 'HEAD') { json(res, 405, { message: '不支持' }); return }
+    if (!cfg.web) { json(res, 404, { message: '这套 Opero 只提供接口（OPERO_WEB=none）', code: 'NO_WEB' }); return }
     serveStatic(req, res, p)
     return
   }
@@ -86,11 +87,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     // Agent 的请求要验签名（签的是请求体）：先把请求体读出来
     let pre: Buffer | null = null
     if ((m.r.auth === 'agent' || p === '/api/agent/register') && req.method !== 'GET' && req.method !== 'HEAD') pre = await readBody(req, m.r.raw ? 300 * 1024 * 1024 : 4 * 1024 * 1024) // raw = 发布产物
-    if (m.r.auth === 'owner' || m.r.auth === 'none') c.sess = auth.findSession(parseCookies(req.headers.cookie)[auth.COOKIE]) ?? undefined
+    // 主人的登录：网页用 cookie；原生 App 用 POST /api/app/session 换来的令牌放 Authorization: Bearer
+    let viaBearer = false
+    if (m.r.auth === 'owner' || m.r.auth === 'none') {
+      c.sess = auth.findSession(parseCookies(req.headers.cookie)[auth.COOKIE]) ?? undefined
+      if (!c.sess && bearer) { c.sess = auth.findSession(bearer) ?? undefined; viaBearer = !!c.sess }
+    }
     if (m.r.auth === 'owner') {
       if (!c.sess) throw new HttpError(401, '要先登录', 'AUTH')
-      // 防跨站：改东西的请求要带自定义头（别的网站的表单 / 图片带不了）
-      if (req.method !== 'GET' && req.headers['x-opero'] !== '1') throw new HttpError(403, '缺少请求头', 'CSRF')
+      // 防跨站：改东西的请求要带自定义头（别的网站的表单 / 图片带不了）；Bearer 浏览器跨站带不上，不用再查
+      if (!viaBearer && req.method !== 'GET' && req.headers['x-opero'] !== '1') throw new HttpError(403, '缺少请求头', 'CSRF')
     } else if (m.r.auth === 'device') {
       const h = auth.sha(bearer)
       const d = bearer && all<Device>('devices').find((x) => x.tokenHash === h)
@@ -136,6 +142,7 @@ ensureLocal()
 const interrupted = interruptedRuns()
 expireStaleCards()
 migrateEmployeeCreds()
+migrateBuilds()
 const server = http.createServer((req, res) => { handle(req, res).catch((e) => { console.error(e); try { json(res, 500, { message: '出错了' }) } catch { /* 已经断了 */ } }) })
 server.requestTimeout = 0 // SSE、长轮询、上传
 server.headersTimeout = 60_000

@@ -165,8 +165,11 @@ cd ../server && npm install && npm start   # http://127.0.0.1:7300
 ```
 code/server          Backend (Node 22, TypeScript run directly, node:sqlite) + installer
 code/web             Web UI (React 19 + Vite + TypeScript)
-code/android         Android app shell (Kotlin, WebView + push + fingerprint)
-code/desktop         Desktop app (Electron: tray, notifications)
+code/android         Android app (Kotlin, going native; today WebView + push + fingerprint)
+code/apple           Apple app: iPhone / iPad / Mac from one codebase (Swift + SwiftUI, not started)
+code/windows         Windows app (C# + WinUI 3, not started)
+code/desktop         Interim desktop app (Electron: tray, notifications)
+docs/api             API docs shared by all clients
 code/design-mockups  Scripts that generate the design images and logo
 docs/                Specs and design docs (start with docs/设计.md)
 deploy/              Build and deploy scripts

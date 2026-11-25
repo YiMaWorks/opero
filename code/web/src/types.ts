@@ -157,14 +157,19 @@ export interface Workspace {
   /** 发布目标：一台服务器 + 一条命令 */
   deploys?: Deploy[]
   budget?: number // 这个项目每月预算（美元）
-  buildCfg?: BuildCfg // 编译设置
+  /** 编译组件（网页、安卓、后台…）：各自的模板、在哪编、流水线；发布目标选发哪个 */
+  builds?: BuildComp[]
 }
 
 /** 发布环境：发到哪几台、部署目录、部署脚本 / 命令、签名、检查、留几个版本、员工能不能发 */
 export interface Deploy {
   id: string; name: string; servers: string[]; dir?: string; script?: string; command?: string
+  /** 发哪个编译组件（编号）；'none' = 不编译，只跑部署命令；不填 = 项目只有一个组件时就是它 */
+  build?: string
   sign?: string; health?: string; keep?: number; ai?: 'auto' | 'ask' | 'off'; autoRollback?: boolean; last?: string; lastOk?: boolean
 }
+/** 编译组件：编号 + 名字（「网页」「安卓」）+ 编译设置 */
+export type BuildComp = BuildCfg & { id: string; name: string }
 /** 编译设置：模板、在哪编 */
 export interface BuildCfg {
   kind: 'node' | 'go' | 'android' | 'spring' | 'custom'
@@ -188,7 +193,7 @@ export interface ServerDir { path: string; mode: 'read' | 'write' | 'deploy'; no
 export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
 /** 真的一套的一次发布 */
 export interface LiveRelease {
-  id: string; ws: string; target: string; targetName: string; version: string; sha: string; status: 'running' | 'success' | 'failed'
+  id: string; ws: string; target: string; targetName: string; build?: string; version: string; sha: string; status: 'running' | 'success' | 'failed'
   steps: ReleaseStep[]; note?: string; by: string; emp?: string; sid?: string; rollbackOf?: string; servers?: string[]; pkgName?: string; buildUrl?: string; kept?: boolean
   started: number; ended?: number; error?: string; tail?: string
 }

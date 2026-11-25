@@ -1,4 +1,6 @@
-# Opero 桌面端
+# Opero 桌面端（过渡用）
+
+> 这是 Electron + WebView 的过渡版本。原生桌面端在做：Mac 在 `code/apple`（SwiftUI），Windows 在 `code/windows`（WinUI 3），见 `docs/多端架构.md`。它们能用以后删掉这个目录；在那之前只修 bug，不加新功能。
 
 一个窗口打开你自己的 Opero（不是官网）；托盘显示「等你处理」的数量；要你决定的事、出错弹系统通知，点了直接到那个会话。关窗口只是藏到托盘，托盘里「退出」才退出。
 

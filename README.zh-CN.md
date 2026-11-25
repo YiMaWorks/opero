@@ -163,8 +163,11 @@ cd ../server && npm install && npm start   # http://127.0.0.1:7300
 ```
 code/server          后台（Node 22，直接跑 TypeScript，node:sqlite）+ 安装脚本
 code/web             网页界面（React 19 + Vite + TypeScript）
-code/android         安卓外壳（Kotlin，WebView + 推送 + 指纹）
-code/desktop         桌面端（Electron：托盘、系统通知）
+code/android         安卓 App（Kotlin，逐步原生化；现在是 WebView + 推送 + 指纹）
+code/apple           苹果 App：iPhone / iPad / Mac 一套（Swift + SwiftUI，还没开工）
+code/windows         Windows App（C# + WinUI 3，还没开工）
+code/desktop         桌面端过渡版（Electron：托盘、系统通知）
+docs/api             接口文档（各端共用）
 code/design-mockups  生成设计图和 Logo 的脚本
 docs/                规范和设计文档（从 docs/设计.md 看起）
 deploy/              构建、部署脚本

@@ -2,6 +2,10 @@
 
 界面全在网页里（`code/web`），外壳只做网页做不了的事。设计、JS 桥、后台接口见 `docs/规范/App外壳.md`。
 
+> **方向：逐步原生化**（`docs/多端架构.md`）。新页面用 Kotlin + Jetpack Compose 写，先做核心：登录（账号密码 `POST /api/app/login`，开了两步验证再 `/api/app/login/mfa`；配对码登录保留为可选；拿到设备令牌 + 会话令牌，带 `Authorization: Bearer`）、会话列表、聊天（消息、卡片、状态行、停止、插话 / 排队、附件）；其它页面继续用 WebView 打开网页（`/api/app/ticket`），再一页页换。现有的推送、指纹、App 内更新、通知渠道照用。接口照 `docs/api/`；要后台改接口交给后台负责人，不改 `code/server`。
+>
+> 进度：- [ ] Compose 工程结构 - [ ] 原生登录 - [ ] bootstrap + SSE - [ ] 会话列表 - [ ] 聊天 - [ ] 其它页面嵌网页
+
 | 文件 | 是什么 |
 |---|---|
 | `MainActivity.kt` | 唯一的界面：WebView、连接页 / 票、返回键、选文件、麦克风、锁屏、点通知直达、检查更新 |

@@ -1,7 +1,7 @@
 // 发布（照 KidLock「研发 → 发布」）：看板（每个项目一张卡、每个环境一行）→ 项目的发布页（每个环境一张卡：线上版本、最近一次、发到哪、发布 / 回滚）
 // → 发布 / 回滚弹窗（这次带上哪些提交、说明）→ 发布详情（步骤时间线、失败原因、输出）。员工能发的它也能发，发生产照旧要你验证本人。
 import { useEffect, useState } from 'react'
-import type { Deploy, LiveRelease, ReleaseStep, Server, Workspace } from '../types'
+import type { BuildComp, Deploy, LiveRelease, ReleaseStep, Server, Workspace } from '../types'
 import { useStore } from '../store'
 import { call } from '../live'
 import { Empty, PageHeader, Segmented, Sheet, Tag } from '../components/ui'
@@ -18,7 +18,11 @@ const pad = (n: number) => String(n).padStart(2, '0')
 const at = (ts?: number) => { if (!ts) return ''; const d = new Date(ts); return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}` }
 const ms = (n: number) => { const s = Math.max(0, Math.round(n / 1000)); return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s` }
 const took = (r: LiveRelease) => (r.ended ? ms(r.ended - r.started) : '')
-const buildText = (w: Workspace) => (w.buildCfg ? `${KIND[w.buildCfg.kind] ?? w.buildCfg.kind} · ${w.buildCfg.where === 'local' || w.buildCfg.provider === 'local' ? '本地编' : w.buildCfg.where === 'pipeline' ? PIPE[w.buildCfg.provider] : `自动（本地 / ${PIPE[w.buildCfg.provider]}）`}` : '不编译 · 直接跑部署命令')
+const compText = (b: BuildComp) => `${KIND[b.kind] ?? b.kind} · ${b.where === 'local' || b.provider === 'local' ? '本地编' : b.where === 'pipeline' ? PIPE[b.provider] : `自动（本地 / ${PIPE[b.provider]}）`}`
+/** 项目怎么编：一个组件写怎么编；好几个就列名字 */
+const buildText = (w: Workspace) => { const l = w.builds ?? []; return !l.length ? '不编译 · 直接跑部署命令' : l.length === 1 ? compText(l[0]) : `${l.length} 个编译组件：${l.map((b) => b.name).join('、')}` }
+/** 这个环境发哪个组件（不编译 / 没选清楚 = undefined） */
+const compOfDeploy = (w: Workspace, d: Deploy) => (d.build === 'none' ? undefined : d.build ? w.builds?.find((x) => x.id === d.build) : w.builds?.length === 1 ? w.builds[0] : undefined)
 const repoShort = (u: string) => u.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '')
 
 /** 这个环境「像不像生产」：看它发到的服务器的环境标签 */
@@ -177,8 +181,9 @@ function ProjectReleases({ w, nav, list, servers }: { w: Workspace; nav: Nav; li
                 )}
                 <dl className="rel-kv">
                   <div><dt>服务器</dt><dd>{d.servers.map((id) => <span key={id} className={'rel-chip' + (sv(id) ? '' : ' bad')} onClick={() => sv(id) && nav.push({ page: 'server', params: { id } })}>{sv(id)?.name ?? `${id}（不在了）`}</span>)}</dd></div>
+                  {((w.builds?.length ?? 0) > 1 || d.build === 'none') && <div><dt>编译组件</dt><dd>{compOfDeploy(w, d)?.name ?? (d.build === 'none' ? '不编译' : '还没选')}</dd></div>}
                   {d.dir && <div><dt>部署目录</dt><dd className="mono" data-no-i18n="">{d.dir}</dd></div>}
-                  <div><dt>怎么部署</dt><dd>{d.command ? <span className="mono" data-no-i18n="">{d.command.length > 60 ? d.command.slice(0, 60) + '…' : d.command}</span> : w.buildCfg ? <>包里的 <span className="mono">{d.script || 'deploy.sh'}</span></> : '把包里的东西放进部署目录'}</dd></div>
+                  <div><dt>怎么部署</dt><dd>{d.command ? <span className="mono" data-no-i18n="">{d.command.length > 60 ? d.command.slice(0, 60) + '…' : d.command}</span> : compOfDeploy(w, d) ? <>包里的 <span className="mono">{d.script || 'deploy.sh'}</span></> : '把包里的东西放进部署目录'}</dd></div>
                   {d.health && <div><dt>发完检查</dt><dd className="mono" data-no-i18n="">{d.health}</dd></div>}
                   <div><dt>其它</dt><dd>{[d.sign && '签名', `留 ${d.keep ?? 5} 个版本能回滚`, d.autoRollback !== false && '失败自动退回'].filter(Boolean).join(' · ')}</dd></div>
                 </dl>
@@ -250,7 +255,7 @@ function ReleaseSheet({ w, d, mode, servers, nav, onClose }: { w: Workspace; d: 
             {unfinished > 0 && <div className="banner b-warn">{`有 ${unfinished} 个提交标着「[未完成]」（员工中途停下自动提交的），确认代码能用再发`}</div>}
             <div className="rel-dlg-label">说明（可选）</div>
             <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="这次改了什么" />
-            <p className="field-hint">{w.buildCfg ? '会先编译远端最新提交' : '会在服务器上跑部署命令'}，发到 {d.servers.map((id) => servers.find((s) => s.id === id)?.name ?? id).join('、')}{d.health ? '，发完检查' : ''}；失败自动退回上一版。{env.prod ? '这是生产环境，会要你验证本人。' : ''}</p>
+            <p className="field-hint">{compOfDeploy(w, d) ? `会先编译「${compOfDeploy(w, d)!.name}」（远端最新提交）` : '会在服务器上跑部署命令'}，发到 {d.servers.map((id) => servers.find((s) => s.id === id)?.name ?? id).join('、')}{d.health ? '，发完检查' : ''}；失败自动退回上一版。{env.prod ? '这是生产环境，会要你验证本人。' : ''}</p>
           </>
         )}
         {c && mode === 'rollback' && (

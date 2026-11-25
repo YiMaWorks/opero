@@ -20,8 +20,8 @@ export const cfg = {
   data,
   /** 员工干活的目录（项目、员工自己的目录）：AI 用户能读写 */
   work: path.resolve(env.OPERO_WORK || path.join(data, 'work')),
-  /** 网页（code/web 打包出来的 dist） */
-  web: path.resolve(env.OPERO_WEB || path.join(ROOT, 'code/web/dist')),
+  /** 网页（code/web 编出来的 dist）；OPERO_WEB=none：只提供接口，网页另外托管或只用原生 App */
+  web: env.OPERO_WEB === 'none' ? '' : path.resolve(env.OPERO_WEB || path.join(ROOT, 'code/web/dist')),
   /** AI 执行器用哪个系统用户跑（安装脚本建的 opero-ai）；空 = 和 Opero 同一个用户（只适合本机开发） */
   aiUser: env.OPERO_AI_USER || '',
   /** 对外地址（https://opero.example.com），用于 Webhook 地址、App 配对；空 = 按请求的 Host 算 */

@@ -30,6 +30,35 @@ interface Props {
 const EMPTY: Message[] = []
 const NO_PHRASES: string[] = []
 
+// 输入法在组字时按回车（拼音模式打英文、回车上屏）不算发送。有的浏览器这时 isComposing 已经是 false：
+// Safari 先结束组字再给回车（keyCode 229），安卓输入法上屏后紧跟一个真回车——都按「刚组完字」挡掉
+let composedAt = 0
+const onComposeEnd = () => { composedAt = Date.now() }
+const imeEnter = (e: React.KeyboardEvent) => e.nativeEvent.isComposing || e.keyCode === 229 || Date.now() - composedAt < 150
+
+// 输入框草稿：切到别的会话 / 页面再回来还在。文字存本机（刷新、关掉再开也在），已传好的附件留在内存里
+const DRAFTS = 'opero.drafts'
+const loadDrafts = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(DRAFTS) ?? '{}') } catch { return {} } }
+function saveDraft(sid: string, text: string) {
+  const d = loadDrafts()
+  if ((d[sid] ?? '') === text) return
+  if (text) d[sid] = text
+  else delete d[sid]
+  try { localStorage.setItem(DRAFTS, JSON.stringify(d)) } catch { /* 存不了就算了 */ }
+}
+// 「上下文快满了」点了「先不换」：这一段上下文（员工 + 第几个 work）里不再提示，切页面、刷新也记得；开新会话后重新算
+const CTX_OFF = 'opero.ctxDismissed'
+const ctxKey = (empId: string, work?: number) => `${empId}:${work ?? 0}`
+const ctxOff = (k: string): boolean => { try { return (JSON.parse(localStorage.getItem(CTX_OFF) ?? '[]') as string[]).includes(k) } catch { return false } }
+function setCtxOff(k: string) {
+  try {
+    const list = (JSON.parse(localStorage.getItem(CTX_OFF) ?? '[]') as string[]).filter((x) => x !== k)
+    localStorage.setItem(CTX_OFF, JSON.stringify([...list, k].slice(-200)))
+  } catch { /* 存不了就只管这一次 */ }
+}
+type Pend = { key: string; name: string; image: boolean; preview?: string; busy: boolean; err?: string; att?: QAtt }
+const pendDrafts = new Map<string, Pend[]>()
+
 export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile, onSearch, onSettings }: Props) {
   const emp = useStore((s) => s.employees.find((e) => e.id === session.employee))
   const raw = useStore((s) => s.messages[session.id] ?? EMPTY)
@@ -57,11 +86,12 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const fallback = useStore((s) => s.settings.fallback)
   const listRef = useRef<HTMLDivElement>(null)
   const stuck = useRef(true)
-  const [text, setText] = useState('')
+  const [text, setText] = useState(() => loadDrafts()[session.id] ?? '')
+  useEffect(() => saveDraft(session.id, text), [session.id, text])
   const [voice, setVoice] = useState(mobile && !LIVE) // 语音转文字还没接：真的一套默认打字
   const [sheet, setSheet] = useState<null | 'more' | 'attach' | 'work' | 'menus' | 'attachD' | 'phrases'>(null)
-  // 「先不换」：这一档（每 10%）不再提醒，涨到下一档再提醒；换不换由主人决定
-  const [ctxDismissed, setCtxDismissed] = useState('')
+  // 「先不换」：这一段上下文里不再提醒（记在本机）；换不换由主人决定
+  const [, setCtxTick] = useState(0)
   const phrases = useStore((s) => s.settings.phrases) ?? NO_PHRASES
   const [rec, setRec] = useState<null | { start: number; y: number; cancel: boolean; secs: number }>(null)
   // 像 IM：往上翻着看时来了新消息，右下角出「↓ N 条新消息」
@@ -75,7 +105,14 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   // 真的一套：附件先传（输入框上面一排），跟着下一句话一起发；员工在干活时可以排队（带着附件）
   const allQueue = useStore((s) => s.queue)
   const myQueue = allQueue.filter((q) => q.emp === session.employee).sort((a, b) => a.at - b.at)
-  const [pend, setPend] = useState<{ key: string; name: string; image: boolean; preview?: string; busy: boolean; err?: string; att?: QAtt }[]>([])
+  const [pend, setPendState] = useState<Pend[]>(() => pendDrafts.get(session.id) ?? [])
+  // 附件可能在切走以后才传完：先改缓存，再改界面（界面已经不在了也没关系，回来从缓存拿）
+  const setPend = (f: Pend[] | ((p: Pend[]) => Pend[])) => {
+    const next = typeof f === 'function' ? f(pendDrafts.get(session.id) ?? []) : f
+    if (next.length) pendDrafts.set(session.id, next)
+    else pendDrafts.delete(session.id)
+    setPendState(next)
+  }
   const [sending, setSending] = useState(false)
   // 说话转文字（真的一套）：点一下说一句，文字接在输入框后面
   const [listening, setListening] = useState(false)
@@ -297,11 +334,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         </Sheet>
       )}
 
-      {((emp.contextUsed ?? 0) >= 80 || (LIVE && messages.length >= 300)) && !session.working && ctxDismissed !== `${session.id}:${Math.floor((emp.contextUsed ?? 0) / 10)}` && (
+      {((emp.contextUsed ?? 0) >= 80 || (LIVE && messages.length >= 300)) && !session.working && !ctxOff(ctxKey(emp.id, emp.works?.[0]?.no)) && (
         <div className="ctx-warn">
           <span>{(emp.contextUsed ?? 0) >= 80 ? `上下文用了 ${emp.contextUsed}%，快满了` : '这个会话很长了'}</span>
           {!LIVE && <button className="btn ghost sm" onClick={() => compactContext(session.id, emp.id)}>压缩</button>}
-          <button className="btn ghost sm" onClick={() => setCtxDismissed(`${session.id}:${Math.floor((emp.contextUsed ?? 0) / 10)}`)}>先不换</button>
+          <button className="btn ghost sm" onClick={() => { setCtxOff(ctxKey(emp.id, emp.works?.[0]?.no)); setCtxTick((n) => n + 1) }}>先不换</button>
           <button className="btn primary sm" onClick={() => switchWork(session.id, emp.id, '上下文快满了')}>{LIVE ? '开新会话接着做' : '换 work'}</button>
         </div>
       )}
@@ -325,7 +362,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <span className="queue-n">{i + 1}</span>
               {editQ?.id === q.id
                 ? <textarea className="queue-edit" autoFocus rows={2} value={editQ.text} onChange={(e) => setEditQ({ id: q.id, text: e.target.value })}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveQ() } if (e.key === 'Escape') setEditQ(null) }} onBlur={saveQ} data-no-i18n="" />
+                    onCompositionEnd={onComposeEnd} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !imeEnter(e)) { e.preventDefault(); saveQ() } if (e.key === 'Escape') setEditQ(null) }} onBlur={saveQ} data-no-i18n="" />
                 : <span className="queue-text" data-no-i18n="" title="点一下改" onClick={() => setEditQ({ id: q.id, text: q.text })}>{q.text || '（只有附件）'}</span>}
               {q.files.length > 0 && (
                 <span className="queue-files">
@@ -379,7 +416,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
                   {rec ? '松开 发送' : '按住 说话'}
                 </button>
               ) : (
-                <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) send() }}
+                <input value={text} onChange={(e) => setText(e.target.value)} onCompositionEnd={onComposeEnd} onKeyDown={(e) => { if (e.key === 'Enter' && !imeEnter(e)) send() }}
                   placeholder={session.working ? (codex ? '在干活，这时发 = 排队' : '在干活，这时发 = 插话') : `跟「${emp.name}」说点什么`} enterKeyHint="send" />
               )}
               {!voice && (text.trim() || (LIVE && readyAtts.length > 0))
@@ -417,8 +454,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <button className="icon-btn boxed" onClick={() => setSheet('attachD')} aria-label="发图片 / 文件" title="发图片 / 文件 / 截图"><IconPlus /></button>
               {LIVE && canDictate() && <button className={'icon-btn boxed' + (listening ? ' on' : '')} onClick={talk} aria-label="说话" title={listening ? '在听…' : '说话转文字'}><IconMic /></button>}
               <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2}
-                onPaste={onPaste}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send() } }}
+                onPaste={onPaste} onCompositionEnd={onComposeEnd}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !imeEnter(e)) { e.preventDefault(); send() } }}
                 placeholder={session.working ? (codex ? `「${emp.name}」在干活，这时发的话会排队…` : `「${emp.name}」在干活，这时发的话会插进去…`) : `跟「${emp.name}」说点什么…`} />
               {LIVE && session.working && !codex && <button className="btn default" disabled={sending || !canSend} onClick={() => send('queue')} title="等这一轮做完再发（图片、文件一起）">排队</button>}
               <button className="btn primary" onClick={() => send()} disabled={sending || !(LIVE ? canSend : text.trim())}><IconSend />{LIVE && session.working ? (codex ? '排队' : '插话') : '发送'}</button>
@@ -520,6 +557,18 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
 
 const msgText = (m: Message) => m.text ?? (m.card ? String(m.card.data.title ?? '') : m.file?.name ?? '')
 
+/** 状态那行字超过 10 秒没变，就在后面走秒：长时间思考 / 跑长命令时也看得出它还在动 */
+function Since() {
+  const [t0] = useState(() => Date.now())
+  const [now, setNow] = useState(t0)
+  useEffect(() => { const t = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  const sec = Math.floor((now - t0) / 1000)
+  if (sec < 10) return null
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return <span className="typing-since">{m ? `已 ${m} 分 ${s} 秒` : `已 ${s} 秒`}</span>
+}
+
 // 像微信：每条消息左边（对方）/ 右边（我）带头像，气泡带小尖角；时间不一样时中间插一条时间
 function MessageView({ m, foot, owner, showTime, onCardAction, onMenu, onCopy, onForward, working, onStop }: {
   m: Message; foot?: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void; onCopy: () => void; onForward: () => void
@@ -539,6 +588,7 @@ function MessageView({ m, foot, owner, showTime, onCardAction, onMenu, onCopy, o
             <div className="bubble typing">
               <span className="typing-dots"><i /><i /><i /></span>
               <span className="typing-what">{what || '在想…'}</span>
+              <Since key={what} />
               {onStop && <button type="button" className="typing-stop" onClick={onStop} title="让它停下">停止</button>}
             </div>
           </div>

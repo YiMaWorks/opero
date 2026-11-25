@@ -1,5 +1,7 @@
 # App 外壳规范（安卓，v0.1，2026-11-22）
 
+> **2026-11-25 起方向变了**：各端改成原生实现（安卓 Kotlin + Compose，核心页面先原生、其它页面先嵌网页），见 `docs/多端架构.md`。下面写的是现在这个 WebView 外壳的做法（推送、指纹、配对、更新这些照用），其中「界面全在网页里、不用原生写」那条不再适用。
+>
 > 代码在 `code/android/`，网页那边是 `code/web/src/native.ts`。
 > 外壳做的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 30 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
 > 聊天、卡片、表单不用原生写：如果每种卡片网页和 App 各写一遍，加一种卡片就要发 App。Opero 的界面**全在网页里**，外壳只做网页做不了的事；加功能只发网页，不用发 App。
@@ -39,11 +41,14 @@
 | `unpair()` | 断开这台手机，回到连接页 |
 | `getShell()` / `setShell(json)` | 「这台手机」的设置：`lockOn`、`lockAfter`（秒，0 = 每次）、`pushEnabled`、`insistent`；网页设置页在 App 里多一组「这台手机」 |
 | `pair(server, code)` | 只给外壳自带的连接页用 |
+| `open(route)`（可选） | 嵌入页（`?embed=1`）里点到别的页面：App 开原生页或再开一个嵌入页；`chat;emp=<员工>` = 打开聊天。外壳没有它，网页就在自己里面跳 |
+| `close()`（可选） | 嵌入页最外层点了关闭：App 退回上一层。外壳没有它，网页不显示关闭按钮 |
 
 | 外壳调网页 | 做什么 |
 |---|---|
 | `window.__operoNative.open(route)` | 点通知打开：`chat/<会话编号>` → 打开那个会话（`App.tsx` 的 `onNativeOpen`） |
 | `window.__operoNative.onVerify(id, ok, err)` | 验证本人的结果 |
+| `window.__operoNative.back()` → `boolean`（嵌入页） | 返回键：网页有弹窗 / 子页就退一层回 `true`；回 `false` = 到顶了，App 自己退 |
 
 **安全**：桥只在自己那套 Opero 的页面（同协议 + 主机 + 端口）和 `file:///android_asset/` 里起作用；别的网站的链接一律交给系统浏览器，进不了这个 WebView。
 
@@ -52,7 +57,9 @@
 | 接口 | 用途 | 返回 |
 |---|---|---|
 | `POST /api/app/pair` `{code, deviceId, name, platform, appVersion}`（不带令牌） | 用网页给的 6 位配对码（10 分钟有效、用一次作废）换设备令牌 | `{deviceToken}` |
-| `POST /api/app/ticket` `{route}` | 要一张一次性的票（1 分钟有效） | `{url}`：打开它，后台种好登录 cookie 再跳到首页（带 route 就跳到那里） |
+| `POST /api/app/ticket` `{route, embed?}` | 要一张一次性的票（1 分钟有效）；`embed: true` = 只显示 `route` 那一页（原生 App 嵌网页用，见 `docs/api/README.md`「嵌网页」） | `{url}`：打开它，后台种好登录 cookie 再跳到首页（带 route 就跳到那里） |
+| `POST /api/app/login` `{email, password, deviceId, name, platform, appVersion}`（不带令牌） | App 自己用账号密码登录（不依赖网页给配对码）；开了两步验证先回票，再 `POST /api/app/login/mfa` `{ticket, code, …}` | `{deviceToken, token, deviceId}` 或 `{mfa: true, ticket}` |
+| `POST /api/app/session` | 原生页面用：换一个会话令牌，调主人的接口带 `Authorization: Bearer`；和网页的 cookie 会话各记各的，不互相踢 | `{token}` |
 | `POST /api/app/verified` | 这台手机刚验过本人：后台按「这次登录」记 30 分钟 | `{}` |
 | `POST /api/app/devices` `{deviceId, platform, brand, model, osVersion, appVersion, enabled}` | 登记这台手机 | `{}` |
 | `GET /api/app/push?device=&after=&wait=25` | 长轮询：没新的就等最多 25 秒；后台存 24 小时 | `{items: [PushItem], last}`；没这台手机回 `404 {code: "DEVICE_NOT_FOUND"}` |

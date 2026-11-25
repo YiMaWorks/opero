@@ -2,7 +2,8 @@
 //   派活前：拉远端、带着没提交的改动变基到最新（--autostash）；有冲突就撤回，告诉员工先解决。
 //   干完：有改动就提交（出错的、你点停止的都标「[未完成]」照样提交），再推送；被拒（别人先推了）就变基一次再推。
 // 令牌只在 Opero 这边用（git.ts），员工拿不到。
-import { git, handBackDir, inspect } from './git.ts'
+import { cloneWorkspace, git, handBackDir, inspect } from './git.ts'
+import { cloneFailed } from './cloneNotice.ts'
 import { get, put } from './db.ts'
 import { emit } from './bus.ts'
 import type { Employee, Workspace } from './types.ts'
@@ -13,6 +14,19 @@ export const autoOn = (w?: Workspace) => !!w && w.autoSync !== false
 
 /** 派活前同步；返回要告诉员工的话（没事返回空）。员工设了自己的分支就先切过去（没有就从主分支拉一个），没设就切回主分支 */
 export async function preSync(w: Workspace, emp?: Employee): Promise<string> {
+  // 项目根本没拉下来（接入时失败了）：先重新拉；拉不下来告诉主人和员工
+  if ((await git(['rev-parse', '--git-dir'], on(w)).catch(() => ({ code: 1, out: '' }))).code !== 0) {
+    try {
+      await cloneWorkspace(w)
+      const cur = get<Workspace>('workspaces', w.id)
+      if (cur) inspect(cur).then((info) => { const next = { ...cur, ...info }; put('workspaces', next); emit({ t: 'put', coll: 'workspaces', item: next }) }).catch(() => {})
+      return '（Opero：这个项目之前没拉下来，刚重新拉好了）'
+    } catch (e) {
+      const msg = (e as Error).message
+      cloneFailed(w, msg)
+      return `（Opero：这个项目的代码还没拉下来，刚才重新拉也失败了：${msg.slice(-300)}。已经告诉主人；先别改代码，跟主人说清楚卡在哪）`
+    }
+  }
   if (!autoOn(w)) return ''
   try {
     const notes: string[] = []
@@ -49,6 +63,8 @@ export async function preSync(w: Workspace, emp?: Employee): Promise<string> {
 export async function postSync(w: Workspace, emp: Employee, o: { ok: boolean; stopped: boolean; ask: string }): Promise<string> {
   // 停下的也提交推送（标「[未完成]」），和 KidLock 一样：远端随时是最新，做了一半的也不丢
   if (!autoOn(w)) return ''
+  // 项目根本没拉下来：没什么可提交的（开工时已经告诉过主人和员工）
+  if ((await git(['rev-parse', '--git-dir'], on(w)).catch(() => ({ code: 1, out: '' }))).code !== 0) return ''
   const done = o.ok && !o.stopped
   const lines: string[] = []
   try {

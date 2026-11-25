@@ -30,12 +30,14 @@ export function setPassword(pwd: string) {
   const o = owner()
   if (o) kvSet('owner', { ...o, ...hashPassword(pwd) })
   db.prepare('DELETE FROM auth_sessions').run() // 改了密码：所有地方都要重新登录
+  db.prepare("DELETE FROM docs WHERE coll = 'devices'").run() // App / 桌面端的设备令牌也作废，不然它们会用设备令牌悄悄换个新会话
 }
 
-export function newSession(device: string | null = null): string {
+export type SessionKind = 'web' | 'app'
+export function newSession(device: string | null = null, kind: SessionKind = 'web'): string {
   const token = crypto.randomBytes(32).toString('base64url')
   const now = Date.now()
-  db.prepare('INSERT INTO auth_sessions (token, created, seen, verified, device) VALUES (?, ?, ?, 0, ?)').run(sha(token), now, now, device)
+  db.prepare('INSERT INTO auth_sessions (token, created, seen, verified, device, kind) VALUES (?, ?, ?, 0, ?, ?)').run(sha(token), now, now, device, kind)
   return token
 }
 
@@ -53,7 +55,11 @@ export function endSession(token: string) { db.prepare('DELETE FROM auth_session
 export function markVerified(token: string) { db.prepare('UPDATE auth_sessions SET verified = ? WHERE token = ?').run(Date.now(), sha(token)) }
 /** App 用指纹验过：这台手机打开的网页会话都算验过 */
 export function markDeviceVerified(device: string) { db.prepare('UPDATE auth_sessions SET verified = ? WHERE device = ?').run(Date.now(), device) }
-export function endDeviceSessions(device: string) { db.prepare('DELETE FROM auth_sessions WHERE device = ?').run(device) }
+/** 断开设备：两种会话都清；只给 kind 时只清这一种（原生 App 换令牌只作废它自己以前的，不踢掉 App 里嵌的网页，反过来也一样） */
+export function endDeviceSessions(device: string, kind?: SessionKind) {
+  if (kind) db.prepare('DELETE FROM auth_sessions WHERE device = ? AND kind = ?').run(device, kind)
+  else db.prepare('DELETE FROM auth_sessions WHERE device = ?').run(device)
+}
 
 export const sha = (s: string) => crypto.createHash('sha256').update(s).digest('hex')
 

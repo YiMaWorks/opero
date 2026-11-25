@@ -70,6 +70,7 @@ curl -fsS --retry 3 -X PUT --data-binary @/tmp/opero-out.tgz "$OPERO_UPLOAD"`
 
 // ---------- GitLab CI ----------
 // 在仓库里放 .opero/gitlab-ci.yml（只在带 OPERO_UPLOAD 变量触发时跑），根目录 .gitlab-ci.yml include 它（没有就建）。
+// 一个项目有几个走 GitLab 的编译组件，这个文件里就有几个任务（opero-build-<组件>），触发时带 OPERO_COMPONENT 只跑对应的那个。
 // 跑：POST /projects/:id/pipeline 带变量；查状态；失败取出错 job 的日志。令牌用项目的 GitLab 凭证（api 权限）。
 function gitlabOf(w: Workspace) {
   const m = /^(https?:\/\/[^/]+)\/(.+?)(?:\.git)?\/?$/.exec(w.repo.trim())
@@ -84,21 +85,24 @@ function gitlabOf(w: Workspace) {
   }
   return { api }
 }
-export function gitlabYaml(w: Workspace, script: string): string {
-  const body = script.split('\n').map((l) => `      ${l}`).join('\n')
+export interface GitlabJob { id: string; name: string; script: string }
+export function gitlabYaml(w: Workspace, jobs: GitlabJob[]): string {
+  const indent = (t: string) => t.split('\n').map((l) => `      ${l}`).join('\n')
   return `# Opero 生成（项目 ${w.name}）：只在 Opero 触发（带 OPERO_UPLOAD 变量）时跑，编完把 out/ 传回 Opero。在 Opero 里改编译设置后重新生成会覆盖这里
-opero-build:
+` + jobs.map((j) => `
+# 编译组件：${j.name}
+opero-build-${j.id}:
   image: node:22-bookworm
   rules:
-    - if: '$OPERO_UPLOAD'
+    - if: '$OPERO_UPLOAD && $OPERO_COMPONENT == "${j.id}"'
   script:
     - |
-${body}
+${indent(j.script)}
     - |
-${uploadSteps.split('\n').map((l) => `      ${l}`).join('\n')}
-`
+${indent(uploadSteps)}
+`).join('')
 }
-export async function gitlabGenerate(w: Workspace, script: string): Promise<void> {
+export async function gitlabGenerate(w: Workspace, jobs: GitlabJob[]): Promise<void> {
   const { api } = gitlabOf(w)
   const ref = w.branch || 'main'
   const put = async (file: string, content: string, msg: string) => {
@@ -106,7 +110,7 @@ export async function gitlabGenerate(w: Workspace, script: string): Promise<void
     const exists = await api('GET', `/repository/files/${enc}?ref=${encodeURIComponent(ref)}`).then(() => true).catch(() => false)
     await api(exists ? 'PUT' : 'POST', `/repository/files/${enc}`, { branch: ref, content, commit_message: msg })
   }
-  await put('.opero/gitlab-ci.yml', gitlabYaml(w, script), 'ci: Opero build job')
+  await put('.opero/gitlab-ci.yml', gitlabYaml(w, jobs), 'ci: Opero build jobs')
   const root = await api('GET', `/repository/files/.gitlab-ci.yml/raw?ref=${encodeURIComponent(ref)}`).catch(() => null)
   const inc = 'include:\n  - local: .opero/gitlab-ci.yml\n'
   if (root === null) await put('.gitlab-ci.yml', `# Opero：编译任务在 .opero/gitlab-ci.yml\n${inc}`, 'ci: include Opero build job')
@@ -115,10 +119,10 @@ export async function gitlabGenerate(w: Workspace, script: string): Promise<void
     await put('.gitlab-ci.yml', `${String(root).replace(/\s*$/, '\n')}\n${inc}`, 'ci: include Opero build job')
   }
 }
-export async function gitlabRun(w: Workspace, rid: string, dir: string, step: Step, unpack: (file: string, dir: string) => void): Promise<void> {
+export async function gitlabRun(w: Workspace, component: string, rid: string, dir: string, step: Step, unpack: (file: string, dir: string) => void): Promise<void> {
   const { api } = gitlabOf(w)
   const up = uploadUrl(rid)
-  const p = await api('POST', '/pipeline', { ref: w.branch || 'main', variables: [{ key: 'OPERO_UPLOAD', value: up.url }, { key: 'OPERO_RELEASE', value: rid }] })
+  const p = await api('POST', '/pipeline', { ref: w.branch || 'main', variables: [{ key: 'OPERO_UPLOAD', value: up.url }, { key: 'OPERO_RELEASE', value: rid }, { key: 'OPERO_COMPONENT', value: component }] })
   step(`GitLab 流水线 #${p.id} 开始了：${p.web_url ?? ''}`)
   const t0 = Date.now()
   for (;;) {
@@ -188,7 +192,8 @@ export async function jenkinsJobConfig(credId: string, job: string): Promise<str
   const text = await (await call('GET', `/job/${encodeURIComponent(job)}/config.xml`)).text()
   return text.slice(0, 20_000)
 }
-export const jenkinsJob = (w: Workspace, job?: string) => job || `opero-${w.name.replace(/[^\w.-]+/g, '-').toLowerCase()}`
+/** Jenkins 任务名：opero-<项目>（组件不是 main 时再带 -<组件>） */
+export const jenkinsJob = (w: Workspace, b: { id: string }, job?: string) => job || `opero-${w.name.replace(/[^\w.-]+/g, '-').toLowerCase()}${b.id !== 'main' ? `-${b.id}` : ''}`
 export async function jenkinsGenerate(w: Workspace, credId: string, job: string, script: string): Promise<void> {
   const { call } = jenkinsOf(credId)
   const conf = jenkinsConfig(w, script)

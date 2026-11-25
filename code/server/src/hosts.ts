@@ -48,9 +48,12 @@ export function runAiOn(host: string | undefined, bin: string, args: string[], o
     p.stdout!.on('data', (b) => { out += b })
     p.stderr!.on('data', (b) => { out += b })
     p.stdin!.end(opts.input ?? '')
-    const t = setTimeout(() => killTree(p), opts.timeoutMs ?? 30_000)
-    p.on('close', (code) => { clearTimeout(t); resolve({ code: code ?? -1, out: out.trim(), ms: Date.now() - t0 }) })
-    p.on('error', (e) => { clearTimeout(t); resolve({ code: -1, out: String(e), ms: Date.now() - t0 }) })
+    let done = false
+    const end = (code: number, o: string) => { if (done) return; done = true; clearTimeout(t); resolve({ code, out: o.trim(), ms: Date.now() - t0 }) }
+    // 超时杀掉；远程的可能等不到「已退出」，再等 5 秒没有就按超时返回
+    const t = setTimeout(() => { killTree(p); setTimeout(() => end(-1, `${out}\n（超时）`), 5000).unref() }, opts.timeoutMs ?? 30_000)
+    p.on('close', (code) => end(code ?? -1, out))
+    p.on('error', (e) => end(-1, String(e)))
   })
 }
 

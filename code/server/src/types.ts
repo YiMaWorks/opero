@@ -1,6 +1,6 @@
 import type { SysInfo } from './sysinfo.ts'
 import type { Policy } from './policy.ts'
-import type { BuildCfg } from './build.ts'
+import type { BuildComp } from './build.ts'
 // 后台用到的数据结构：和网页 code/web/src/types.ts 一致（网页直接拿去用），这里只列后台要读写的字段。
 /** 环境标签：随便起名（见 env.ts） */
 export type EnvTag = string
@@ -229,14 +229,16 @@ export interface Workspace {
   deploys?: Deploy[]
   /** 这个项目每月预算（美元，0 / 不填 = 不单独限） */
   budget?: number
-  /** 编译设置：在哪编（云效 / GitHub Actions / 自己的服务器）、用哪个模板（build.ts） */
-  buildCfg?: BuildCfg
+  /** 编译组件（网页、安卓、后台…）：每个有自己的模板、命令、在哪编、流水线（build.ts）；发布目标选发哪个 */
+  builds?: BuildComp[]
 }
 
-/** 发布环境：发到哪几台、部署目录、包里的部署脚本 / 部署命令、签不签名、发完检查哪个地址、留几个版本、员工能不能自己发（编译设置在 Workspace.buildCfg） */
+/** 发布环境：发哪个编译组件、发到哪几台、部署目录、包里的部署脚本 / 部署命令、签不签名、发完检查哪个地址、留几个版本、员工能不能自己发 */
 export interface Deploy {
   id: string
   name: string
+  /** 发哪个编译组件（Workspace.builds 的编号）；'none' = 不编译，只跑部署命令；不填 = 项目只有一个组件时就是它 */
+  build?: string
   /** 发到哪几台（每台都要在「目录」里把部署目录登记成「能部署」） */
   servers: string[]
   /** 部署目录（OPERO_DIR = KL_DIR） */
@@ -262,6 +264,8 @@ export interface Release {
   ws: string
   target: string
   targetName: string
+  /** 发的哪个编译组件（名字，给人看；不编译的没有） */
+  build?: string
   version: string
   sha: string
   status: 'running' | 'success' | 'failed'

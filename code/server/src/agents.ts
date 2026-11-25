@@ -275,7 +275,10 @@ export function exec(serverId: string, command: string, o: { timeoutMs?: number;
     p.stdout!.on('data', add)
     p.stderr!.on('data', add)
     p.stdin!.end()
-    const t = setTimeout(() => { p.kill(); out += '\n[超时，已停止]' }, o.timeoutMs ?? 60_000)
-    p.on('close', (code: number | null) => { clearTimeout(t); resolve({ code: code ?? -1, out, ms: Date.now() - t0 }) })
+    let done = false
+    const end = (code: number) => { if (done) return; done = true; clearTimeout(t); resolve({ code, out, ms: Date.now() - t0 }) }
+    // 超时先停；Agent 那边连不上时可能永远等不到「已退出」，再等 5 秒还没有就按超时返回，别把调用方（比如员工开工前的准备）挂死
+    const t = setTimeout(() => { p.kill(); out += '\n[超时，已停止]'; setTimeout(() => end(-1), 5000).unref() }, o.timeoutMs ?? 60_000)
+    p.on('close', (code: number | null) => end(code ?? -1))
   })
 }

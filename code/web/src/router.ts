@@ -16,14 +16,15 @@ export interface Loc {
 const TABS: Tab[] = ['chat', 'people', 'workspace', 'apps', 'me']
 const enc = encodeURIComponent
 
-function seg(r: Route): string {
+/** 一页 ↔ 一段（employee;id=e1）：网址里用，App 嵌网页的 route 也是这个格式 */
+export function seg(r: Route): string {
   const ps = Object.entries(r.params ?? {})
     .filter(([, v]) => typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean')
     .map(([k, v]) => `;${enc(k)}=${enc(String(v))}`)
   return enc(r.page) + ps.join('')
 }
 
-function unseg(s: string): Route | null {
+export function unseg(s: string): Route | null {
   const [page, ...ps] = s.split(';')
   const name = decodeURIComponent(page)
   if (!/^[A-Za-z]+$/.test(name)) return null
