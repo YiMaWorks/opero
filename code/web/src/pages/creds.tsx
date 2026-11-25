@@ -5,6 +5,7 @@ import type { Credential, CredGroup, Employee } from '../types'
 import { toast, useStore } from '../store'
 import { call } from '../live'
 import { CRED_META, fillUrl, groupMeta, typeLabel, typeMeta, type CredType } from '../credmeta'
+import { parseConn, type ConnInfo } from '../connstr'
 import { Drawer, Empty, Field, PageHeader, Row, Section, Segmented, Tag, Toggle } from '../components/ui'
 import { IconPlus } from '../components/icons'
 import { headNav, type PageProps } from './nav'
@@ -16,6 +17,9 @@ const GENERIC: CredType = { kind: '', fields: [], user: { label: '用户名 / �
 /** 分类的颜色（卡片上的图标） */
 const GROUP_COLOR: Record<string, string> = { 代码仓库: '#5B4FE9', 数据库: '#0EA5E9', 服务器: '#10B981', 云账号: '#F59E0B', AI: '#8B5CF6', 签名证书: '#EC4899', 消息渠道: '#14B8A6', 其它: '#64748B' }
 type TestRes = { ok: boolean; msg: string; user?: string; details?: { title: string; items: string[]; total?: number }[]; write?: boolean | null }
+/** 贴的连接串是别的类型：先换类型（表单会重建），拆出来的值带过去 */
+let carry: ConnInfo | null = null
+
 const copy = (t: string) => { navigator.clipboard?.writeText(t).catch(() => {}); toast('已复制') }
 const usersOf = (emps: Employee[], id: string) => emps.filter((e) => e.creds?.includes(id))
 
@@ -76,7 +80,7 @@ export function LiveCredentialEditPage({ params, nav }: PageProps) {
   const emps = useStore((s) => s.employees)
   const [group, setGroup] = useState<CredGroup | ''>(existing?.group ?? (params.group as CredGroup) ?? '')
   const gm = group ? groupMeta(group) : undefined
-  const [kind, setKind] = useState<string>(existing?.kind ?? gm?.types[0]?.kind ?? '')
+  const [kind, setKind] = useState<string>(existing?.kind ?? (gm?.types.find((x) => x.kind.toLowerCase() === String(params.kind ?? '').toLowerCase())?.kind) ?? gm?.types[0]?.kind ?? '')
   const t = group ? typeMeta(group, kind) ?? (existing ? GENERIC : undefined) : undefined
 
   // ---- 第一步：选分类 ----
@@ -109,10 +113,23 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
 }) {
   const gm = groupMeta(group)!
   const source = useStore((s) => s.dataSources.find((d) => d.credential === existing?.id))
-  const initMeta = () => Object.fromEntries((t?.fields ?? []).map((f) => [f.key, existing?.meta?.[f.key] ?? f.def ?? '']))
+  const [carried] = useState(() => { const c = carry; carry = null; return c })
+  const initMeta = () => Object.fromEntries((t?.fields ?? []).map((f) => [f.key, (carried as Record<string, string | undefined> | null)?.[f.key] ?? existing?.meta?.[f.key] ?? f.def ?? '']))
   const [meta, setMeta] = useState<Record<string, string>>(initMeta)
-  const [user, setUser] = useState(existing?.user ?? (t?.user && t.user !== 'auto' ? t.user.def ?? '' : ''))
-  const [secret, setSecret] = useState('')
+  const [user, setUser] = useState(carried?.user ?? existing?.user ?? (t?.user && t.user !== 'auto' ? t.user.def ?? '' : ''))
+  const [secret, setSecret] = useState(carried?.password ?? '')
+  const [conn, setConn] = useState('')
+  // 贴连接串：认出来就拆进下面各格（类型不对先换类型）
+  const pasteConn = (v: string) => {
+    setConn(v)
+    const c = parseConn(v)
+    if (!c) return
+    if (c.kind && c.kind !== kind && groupMeta(group)?.types.some((x) => x.kind === c.kind)) { carry = c; setKind(c.kind); return }
+    setMeta((m) => ({ ...m, ...(c.host ? { host: c.host } : {}), ...(c.port ? { port: c.port } : {}), ...(c.db ? { db: c.db } : {}) }))
+    if (c.user) setUser(c.user)
+    if (c.password) setSecret(c.password)
+    toast(`认出来了：${[c.kind, c.host, c.db].filter(Boolean).join(' · ')}${c.password ? '，密码也填好了' : '，密码要自己填'}`)
+  }
   const [name, setName] = useState(existing?.name ?? '')
   const [env, setEnv] = useState(existing?.env ?? '生产')
   const [aiAllowed, setAiAllowed] = useState(existing?.aiAllowed ?? true)
@@ -178,8 +195,8 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
             {t.guide.perms && <p className="field-hint">要给的权限：{t.guide.perms}</p>}
             {t.guide.snippet && (
               <div className="cred-snippet">
-                <div className="cred-snippet-head"><span>{t.guide.snippet.label}</span><button type="button" className="btn ghost sm" onClick={() => copy(t.guide.snippet!.code.split('{db}').join(meta.db || '库名'))}>复制</button></div>
-                <pre className="console small" data-no-i18n="">{t.guide.snippet.code.split('{db}').join(meta.db || '库名')}</pre>
+                <div className="cred-snippet-head"><span>{t.guide.snippet.label}</span><button type="button" className="btn ghost sm" onClick={() => copy(t.guide.snippet!.code.split('{db}').join(meta.db || (/MySQL|MariaDB/.test(kind) ? '*' : '库名')))}>复制</button></div>
+                <pre className="console small" data-no-i18n="">{t.guide.snippet.code.split('{db}').join(meta.db || (/MySQL|MariaDB/.test(kind) ? '*' : '库名'))}</pre>
               </div>
             )}
           </div>
@@ -187,6 +204,11 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
 
         {group === '签名证书' ? <SignCertFields onChange={setSecret} /> : t && (
           <>
+            {group === '数据库' && !existing && (
+              <Field label="连接串（有就贴，没有跳过）" hint="项目配置里那一串：mysql://用户:密码@地址:3306/库、jdbc:…、Server=…;Database=…、mysql -h … 都认，贴进来自动拆到下面">
+                <input className="mono" value={conn} onChange={(e) => pasteConn(e.target.value)} placeholder="mysql://user:pass@10.0.0.5:3306/shop" autoComplete="off" spellCheck={false} />
+              </Field>
+            )}
             {t.fields.length > 0 && (
               <div className="inline-form">
                 {t.fields.map((f) => (

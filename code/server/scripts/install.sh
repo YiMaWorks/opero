@@ -56,14 +56,19 @@ die() { printf '\033[1;31m出错：\033[0m%s\n' "$*" >&2; exit 1; }
 
 # 只装 Agent（--agent）：不装后台、不编网页，只要 code/server 里的 agent.ts + mcp.ts（只用 Node 自带的东西）
 install_agent() {
-  local NEW=$HOME_DIR/app.new
-  rm -rf $NEW && mkdir -p $NEW
-  tar -C "$CHECKOUT" --exclude=node_modules --exclude=.git --exclude=.opero-data -cf - code/server LICENSE | tar -C $NEW -xf -
-  [ -f $NEW/code/server/src/agent.ts ] || die "代码不对（没有 code/server/src/agent.ts）"
-  rm -rf $HOME_DIR/app.old
-  if [ -d $APP ]; then mv $APP $HOME_DIR/app.old; fi
-  mv $NEW $APP
-  chown -R root:root $APP && chmod -R a+rX $APP
+  # 这台已经装了 Opero 后台（在 Opero 自己这台上加 Agent，给它一条 root 通道）：程序目录是后台的，不动它，Agent 直接用里面的 agent.ts
+  if [ -f /etc/systemd/system/opero.service ] && [ -f $APP/code/server/src/agent.ts ]; then
+    say "这台装着 Opero 后台：只加 Agent，不动 Opero 的程序"
+  else
+    local NEW=$HOME_DIR/app.new
+    rm -rf $NEW && mkdir -p $NEW
+    tar -C "$CHECKOUT" --exclude=node_modules --exclude=.git --exclude=.opero-data -cf - code/server LICENSE | tar -C $NEW -xf -
+    [ -f $NEW/code/server/src/agent.ts ] || die "代码不对（没有 code/server/src/agent.ts）"
+    rm -rf $HOME_DIR/app.old
+    if [ -d $APP ]; then mv $APP $HOME_DIR/app.old; fi
+    mv $NEW $APP
+    chown -R root:root $APP && chmod -R a+rX $APP
+  fi
 
   mkdir -p $WORK $ETC /var/lib/opero-agent
   chown opero-ai:opero-work /srv/opero $WORK && chmod 2770 $WORK && chmod 755 /srv/opero
@@ -118,10 +123,10 @@ case "\${1:-}" in
   stop) systemctl stop opero-agent ;;
   start) systemctl start opero-agent ;;
   update) shift; [ "\$(id -u)" = 0 ] || { echo "要 root：sudo opero update"; exit 1; }
-    R=\${OPERO_REPO:-$REPO}; B=\${OPERO_BRANCH:-$BRANCH}
-    [ -d $SRC/.git ] || git clone --quiet --depth 1 --branch "\$B" "\$R" $SRC || exit 1
-    git -C $SRC remote set-url origin "\$R" && git -C $SRC fetch --quiet --depth 1 origin "\$B" && git -C $SRC reset --quiet --hard FETCH_HEAD || exit 1
-    exec bash $SRC/code/server/scripts/install.sh --update "\$@" ;;
+    # 从连着的那套 Opero 拿安装脚本和程序（和后台同一个版本；不依赖 GitHub）
+    S=\$(grep -E '^OPERO_SERVER=' $ETC/agent.env | cut -d= -f2-)
+    curl -fsSL "\${S%/}/api/install.sh" -o /tmp/opero-install.sh || { echo "连不上 \$S"; exit 1; }
+    exec bash /tmp/opero-install.sh --update "\$@" ;;
   ai) shift; sudo -u opero-ai -H bash -l "\$@" ;;
   fingerprint) set -a; . $ETC/agent.env; set +a; exec $NODE_DIR/bin/node --disable-warning=ExperimentalWarning $APP/code/server/src/agent.ts --fingerprint ;;
   # 换上报地址（Opero 迁移了）：opero agent-url https://新地址 [新那套 Opero 的指纹（换成另一套时才要）]
@@ -178,7 +183,8 @@ case "$(uname -m)" in x86_64|amd64) ARCH=x64 ;; aarch64|arm64) ARCH=arm64 ;; *) 
 
 # ---------- 基础工具 ----------
 need=""
-for c in curl tar git sudo; do command -v $c >/dev/null || need="$need $c"; done
+for c in curl tar sudo; do command -v $c >/dev/null || need="$need $c"; done
+[ $AGENT = 1 ] || command -v git >/dev/null || need="$need git"
 # script（util-linux）：网页里登录 Claude 账号要靠它给登录界面一个伪终端
 if ! command -v script >/dev/null; then
   if command -v apt-get >/dev/null; then need="$need bsdutils"; else need="$need util-linux"; fi
@@ -204,7 +210,12 @@ if ! node_ok; then
   BASE=https://nodejs.org/dist/latest-v22.x
   [ $CN = 1 ] && BASE=https://npmmirror.com/mirrors/node/latest-v22.x
   say "下载 Node 22（$BASE）"
-  SUMS=$(curl -fsSL "$BASE/SHASUMS256.txt")
+  SUMS=$(curl -fsSL --max-time 30 "$BASE/SHASUMS256.txt" || true)
+  if [ -z "$SUMS" ] && [ $CN = 0 ]; then
+    BASE=https://npmmirror.com/mirrors/node/latest-v22.x; CN=1
+    say "nodejs.org 连不上，改用国内镜像（$BASE）"
+    SUMS=$(curl -fsSL "$BASE/SHASUMS256.txt")
+  fi
   FILE=$(echo "$SUMS" | grep -o "node-v22[0-9.]*-linux-$ARCH.tar.gz" | head -1)
   [ -n "$FILE" ] || die "找不到 Node 安装包"
   TMP=$(mktemp -d)
@@ -224,7 +235,23 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)
 CHECKOUT=""
 if [ -n "$HERE" ] && [ -f "$HERE/../src/main.ts" ] && [ -f "$HERE/../../web/package.json" ]; then CHECKOUT=$(cd "$HERE/../../.." && pwd); fi
 mkdir -p $HOME_DIR
-if [ -z "$CHECKOUT" ] || [ "$CHECKOUT" = "$APP" ]; then
+# Agent：程序从它连的那套 Opero 拿（/api/agent/code.tgz，和后台同一个版本），不用 GitHub；这台装着后台的不用拿
+if [ $AGENT = 1 ] && [ -z "$CHECKOUT" ] && [ -z "${OPERO_REPO:-}" ] && ! [ -f /etc/systemd/system/opero.service ]; then
+  [ -n "$AGENT_URL" ] || AGENT_URL=$(grep -E '^OPERO_SERVER=' $ETC/agent.env 2>/dev/null | cut -d= -f2- || true)
+  if [ -n "$AGENT_URL" ]; then
+    AGENT_SRC=$HOME_DIR/agent-src
+    say "从 Opero 拿程序：${AGENT_URL%/}/api/agent/code.tgz"
+    TMPC=$(mktemp -d)
+    if curl -fsSL "${AGENT_URL%/}/api/agent/code.tgz" -o "$TMPC/code.tgz" && tar -xzf "$TMPC/code.tgz" -C "$TMPC" && [ -f "$TMPC/code/server/src/agent.ts" ]; then
+      rm -f "$TMPC/code.tgz"; rm -rf "$AGENT_SRC"; mv "$TMPC" "$AGENT_SRC"; CHECKOUT=$AGENT_SRC
+    else
+      rm -rf "$TMPC"; say "从 Opero 拿不到程序，改从 $REPO 拉"
+    fi
+  fi
+fi
+# 这台装着 Opero 后台、只是加 Agent：Agent 用后台程序里的，不用再拉代码
+if [ $AGENT = 1 ] && [ -z "$CHECKOUT" ] && [ -f /etc/systemd/system/opero.service ] && [ -f $APP/code/server/src/agent.ts ]; then CHECKOUT=$APP; fi
+if [ -z "$CHECKOUT" ] || { [ "$CHECKOUT" = "$APP" ] && [ $AGENT = 0 ]; }; then
   # curl | bash 进来的：把代码拉到 $SRC（已经有就更新到最新）
   if [ -d $SRC/.git ]; then
     say "更新代码：$REPO（$BRANCH）"
@@ -352,6 +379,8 @@ fi
 systemctl daemon-reload
 systemctl enable opero >/dev/null 2>&1
 systemctl restart opero
+# 这台也装了 Agent（给本机的 root 通道）：它跑的是同一份程序，跟着重启用上新代码
+if [ -f /etc/systemd/system/opero-agent.service ]; then systemctl restart opero-agent || true; fi
 sleep 2
 systemctl is-active --quiet opero || { journalctl -u opero -n 40 --no-pager; die "Opero 没起来，看上面的日志"; }
 rm -rf $HOME_DIR/app.old

@@ -112,47 +112,39 @@ function DigestCard({ card, onAction }: { card: Card; onAction: OnAction }) {
 
 const usd = (n: number) => (n >= 10 ? `$${n.toFixed(1)}` : n >= 0.01 ? `$${n.toFixed(2)}` : n > 0 ? '<$0.01' : '$0')
 
-/** 一轮做完的小结：做完没有 + 提交推送（一行）→ 改了几个文件（点开看清单）→ 用量 → 撤销 / 发布 */
-function RunCard({ card, onAction }: { card: Card; onAction: OnAction }) {
+/** 一轮做完的小结：一行小字跟在员工最后一句话下面（和 KidLock 一样），不单独占一条消息。
+ *  ✓ 本次完成 · 已推送 abc1234 · 3 个文件 +12 −4 · 本次 $0.42 / 会话 $3.10（订阅额度） · 发布这次改动 · 撤销 */
+export function RunFoot({ card, onAction }: { card: Card; onAction: OnAction }) {
   const d = card.data
   const [more, setMore] = useState(false)
   const list = (d.list as { f: string; a: number; d: number }[] | undefined) ?? []
-  const state = d.ok ? 'ok' : d.stopped ? 'stop' : 'fail'
-  const head = d.ok ? '本次完成' : d.stopped ? '你让停下了' : '这一轮没做完'
   const files = Number(d.files) || 0
+  const git = String(d.git ?? '')
+  const hash = git.match(/推送到远端（([0-9a-f]{7,})/)?.[1]
+  const gitShort = hash ? `已推送 ${hash}` : /推送失败|没推上去/.test(git) ? '没推送上去' : /已提交/.test(git) ? '已提交' : git
+  const open = card.state === 'open'
   return (
-    <div className={'card run-card run-' + state}>
-      <div className="run-head">
-        <span className="run-ico">{d.ok ? <IconCheck size={14} /> : d.stopped ? '■' : '!'}</span>
-        <span className="run-title">{head}</span>
-        {d.git && <span className="run-git">{String(d.git)}</span>}
-      </div>
-      {files > 0 && (
-        <>
-          <button className={'run-diff' + (more ? ' open' : '')} onClick={() => setMore(!more)}>
-            <span className="run-files">{`${files} 个文件`}</span>
-            <span className="mono add" data-no-i18n="">+{d.ins}</span>
-            <span className="mono del" data-no-i18n="">−{d.del}</span>
-            <span className="run-bar" aria-hidden><i style={{ flexGrow: Number(d.ins) || 0 }} /><b style={{ flexGrow: Number(d.del) || 0 }} /></span>
-            <IconChevron />
+    <div className={'run-foot' + (d.ok ? '' : ' warn')}>
+      <div className="run-foot-line">
+        <span className="run-foot-state">{d.ok ? <IconCheck size={12} /> : d.stopped ? '■' : '!'} {d.ok ? '本次完成' : d.stopped ? '你让停下了' : '这一轮没做完'}</span>
+        {gitShort && <span title={git} data-no-i18n={hash ? '' : undefined}>{gitShort}</span>}
+        {files > 0 && (
+          <button type="button" className="run-foot-chip" onClick={() => setMore(!more)} title="看改了哪些文件">
+            {`${files} 个文件`} <span className="add" data-no-i18n="">+{d.ins}</span> <span className="del" data-no-i18n="">−{d.del}</span>
           </button>
-          {more && (
-            <div className="run-list" data-no-i18n="">
-              {list.map((x) => (
-                <div key={x.f} className="run-file"><span className="mono">{x.f}</span><span className="mono add">+{x.a}</span><span className="mono del">−{x.d}</span></div>
-              ))}
-              {files > list.length && <div className="sub">{`还有 ${files - list.length} 个文件`}</div>}
-            </div>
-          )}
-        </>
-      )}
-      <div className="run-usage">
-        <span>本次</span><b data-no-i18n="">{usd(Number(d.cost) || 0)}</b>
-        <span className="run-dot" />
-        <span>会话累计</span><b data-no-i18n="">{usd(Number(d.sessionCost) || 0)}</b>
-        <span className={'run-bill ' + d.billing}>{d.billing === 'sub' ? '计入订阅额度' : '按量计费'}</span>
+        )}
+        <span title={d.billing === 'sub' ? '计入订阅额度（执行器报的估算）' : '按量计费'}>本次 <b data-no-i18n="">{usd(Number(d.cost) || 0)}</b> · 会话 <b data-no-i18n="">{usd(Number(d.sessionCost) || 0)}</b>（{d.billing === 'sub' ? '订阅' : '按量'}）</span>
+        {open && card.actions.map((a) => (
+          <button key={a.id} type="button" title={a.label} className={'run-foot-chip' + (a.style === 'primary' ? ' strong' : '')} onClick={() => onAction(card, a)}>{a.id === 'revert' ? '撤销' : a.label.replace('这次改动', '').replace(/^发布到/, '发到 ') || '发布'}</button>
+        ))}
+        {!open && card.result && <span className="run-foot-result">{card.result}</span>}
       </div>
-      {card.state === 'open' ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
+      {more && list.length > 0 && (
+        <div className="run-foot-files" data-no-i18n="">
+          {list.map((x) => <div key={x.f}><span className="mono">{x.f}</span><span className="add">+{x.a}</span><span className="del">−{x.d}</span></div>)}
+          {files > list.length && <div className="sub">{`还有 ${files - list.length} 个文件`}</div>}
+        </div>
+      )}
     </div>
   )
 }
@@ -262,21 +254,13 @@ export function CardView({ card, onAction }: { card: Card; onAction: OnAction })
       )
 
     case 'confirm':
-      return (
-        <div className={cls}>
-          <Head card={card} title={d.title} tag={d.tag} tagCls="t-danger" />
-          <div className="sql mono">{d.detail}</div>
-          <p className="note">{d.note}</p>
-          {open && <div className="banner b-warn">{d.why}</div>}
-          {open ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
-        </div>
-      )
+      return <ConfirmCard card={card} onAction={onAction} cls={cls} />
 
     case 'ask':
       return <AskCard card={card} onAction={onAction} />
 
     case 'run':
-      return <RunCard card={card} onAction={onAction} />
+      return <RunFoot card={card} onAction={onAction} />
 
     default:
       if (d.ch) return <MsgCard card={card} onAction={onAction} />
@@ -294,6 +278,28 @@ export function CardView({ card, onAction }: { card: Card; onAction: OnAction })
         </div>
       )
   }
+}
+
+/** 要你确认：先说人话（要做什么、为什么要你点），命令收起来，想看再展开 */
+function ConfirmCard({ card, onAction, cls }: { card: Card; onAction: OnAction; cls: string }) {
+  const d = card.data
+  const open = card.state === 'open'
+  const [show, setShow] = useState(false)
+  const detail = String(d.detail ?? '')
+  return (
+    <div className={cls}>
+      <Head card={card} title={d.title} tag={d.tag} tagCls="t-danger" />
+      {d.note && <p className="confirm-who">{d.note}</p>}
+      {open && d.why && <div className="banner b-warn">{d.why}</div>}
+      {detail && (
+        <div className="confirm-cmd">
+          <button type="button" className="confirm-toggle" onClick={() => setShow(!show)}>{show ? '收起' : '看具体命令 / 内容'}</button>
+          {show && <pre className="sql mono confirm-detail" data-no-i18n="">{detail}</pre>}
+        </div>
+      )}
+      {open ? <Actions card={card} onAction={onAction} /> : <Done card={card} />}
+    </div>
+  )
 }
 
 function AskCard({ card, onAction }: { card: Card; onAction: OnAction }) {

@@ -43,17 +43,19 @@ export interface CredGroupMeta {
 }
 
 const DB_STEPS = (extra: string) => [
-  '地址填 Opero 这台能连到的内网 IP 或域名；云数据库（阿里云 RDS、腾讯云 CDB 等）要先把 Opero 这台服务器的 IP 加进数据库的白名单 / 安全组',
-  '建议专门建一个只读账号给员工用（下面的语句改一下密码直接跑）；要让员工改数据再给写权限，并打开下面的「允许改数据」',
+  '有连接串（项目配置里的 mysql://… / postgres://… / jdbc:… / Server=…;Database=…）直接贴到最上面的「连接串」，地址、端口、账号、密码、库名自动拆好',
+  '库名可以不填：整个实例交给员工，这个账号能看到的库它都能查，查的时候自己挑；只想给一个库就填上',
+  '地址填 Opero 这台能连到的内网 IP 或域名；云数据库（阿里云 RDS、腾讯云 CDB 等）要先把 Opero 这台服务器的 IP 加进白名单 / 安全组',
+  '现成的账号直接用就行，密码加密存在 Opero，员工拿不到；生产库想更稳就用下面的语句建一个只读账号',
   extra,
-  '填好点「测试连接」，通了再保存；保存后员工在「数据」里就能查到这个库（还要在员工档案「能用的凭证」里给它勾上）',
+  '点「测试连接」会读出能看到哪些库、哪些表、这个账号能不能改数据',
 ]
 const dbFields = (port: string, db: CredField | null): CredField[] => [
   { key: 'host', label: '地址', placeholder: '10.0.0.5 或 db.example.com' },
   { key: 'port', label: '端口', def: port, numeric: true },
   ...(db ? [db] : []),
 ]
-const DB_NAME: CredField = { key: 'db', label: '库名', placeholder: 'shop' }
+const DB_NAME: CredField = { key: 'db', label: '库名', placeholder: '不填 = 整个实例', optional: true }
 
 export const CRED_META: CredGroupMeta[] = [
   {

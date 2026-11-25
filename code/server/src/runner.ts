@@ -13,7 +13,7 @@ import { get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit, push } from './bus.ts'
 import { addMsg, delMsg, empSays, getMsg, monthCost, monthCostOf, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
 import { getSecret, scrub } from './vault.ts'
-import type { Card, CardAction, Employee, Server, Session, Workspace } from './types.ts'
+import type { Card, CardAction, Credential, Employee, Server, Session, Workspace } from './types.ts'
 import * as hosts from './hosts.ts'
 import * as agents from './agents.ts'
 import * as tunnel from './tunnel.ts'
@@ -51,6 +51,8 @@ interface Live {
   ws?: Workspace
   unwatch: () => void
   warned: number
+  /** 这一轮用的 Claude 账号（凭证 id） */
+  cred?: string
   /** 开工时项目的提交（干完的小结和它比） */
   before: string
 }
@@ -69,7 +71,7 @@ export const workingList = () => [...live.keys()]
 
 // ---------- AI 执行器的账号（在「AI 执行器」页配，值在保险箱） ----------
 /** claudeEgress / codexEgress：网络出口，空 = 从干活那台直连，'local' = 经 Opero 这台，其它 = 经那台 Agent（tunnel.ts） */
-export interface AiConf { claudeCred?: string; claudeBaseUrl?: string; codexCred?: string; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string }
+export interface AiConf { claudeCred?: string; claudeAccounts?: string[]; claudeBaseUrl?: string; codexCred?: string; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string }
 export const aiConf = () => kvGet<AiConf>('ai', {})
 
 /** 执行器的网络出口：让它的 HTTPS 请求走干活那台本机的代理，经 Opero 隧道从选的出口出去（出口就是干活那台时直连） */
@@ -89,12 +91,33 @@ export function egressEnv(kind: 'claude' | 'codex', host: string): Record<string
   return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, NO_PROXY: noProxy, no_proxy: noProxy }
 }
 
-function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL): { env: Record<string, string>; secrets: string[] } {
+/** 登录过的 Claude 账号（凭证 id）：可以有好几个（买了多个订阅），登录新的不会让旧的失效；claudeCred 是默认那个 */
+export function claudeAccounts(): string[] {
+  const c = aiConf()
+  const list = [...new Set([...(c.claudeAccounts ?? []), ...(c.claudeCred ? [c.claudeCred] : [])])]
+  return list.filter((id) => !!getSecret(id))
+}
+/** 用量到上限的账号：到这个时间之前先换别的用 */
+const limitedUntil = () => kvGet<Record<string, number>>('claudeLimited', {})
+export function markLimited(id: string, ms = 60 * 60_000) { kvSet('claudeLimited', { ...limitedUntil(), [id]: Date.now() + ms }) }
+/** 这一轮用哪个账号：员工指定的 → 默认的 → 其它的；到上限的往后排（都到上限就还按原顺序） */
+export function pickClaude(emp?: Employee): string | undefined {
+  const all = claudeAccounts()
+  if (!all.length) return undefined
+  const c = aiConf()
+  const order = [...new Set([emp?.claudeAccount, c.claudeCred, ...all].filter((x): x is string => !!x && all.includes(x)))]
+  const lim = limitedUntil()
+  return order.find((id) => !(lim[id] > Date.now())) ?? order[0]
+}
+
+function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL, emp?: Employee): { env: Record<string, string>; secrets: string[]; cred?: string } {
   const c = aiConf()
   const env: Record<string, string> = {}
   const secrets: string[] = []
+  let cred: string | undefined
   if (kind === 'claude') {
-    const k = c.claudeCred ? getSecret(c.claudeCred) : undefined
+    cred = pickClaude(emp)
+    const k = cred ? getSecret(cred) : undefined
     if (k) { secrets.push(k); env[k.startsWith('sk-ant-oat') ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
     if (c.claudeBaseUrl) env.ANTHROPIC_BASE_URL = c.claudeBaseUrl
     Object.assign(env, { MCP_TIMEOUT: '60000', MCP_TOOL_TIMEOUT: '1900000', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000' })
@@ -104,7 +127,7 @@ function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL): { env: Rec
     if (c.codexBaseUrl) env.OPENAI_BASE_URL = c.codexBaseUrl
   }
   Object.assign(env, egressEnv(kind, host))
-  return { env, secrets }
+  return { env, secrets, cred }
 }
 
 /** 一次性问 AI（不进任何会话）：整理收件箱、写回复建议用。先用 Claude Code（便宜的模型），不行再用 Codex；返回最后的文字 */
@@ -234,7 +257,12 @@ function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: stri
 - 服务器、数据库、代码仓库、云的账号都在 Opero 的保险箱里，你拿不到，也不要去找、不要让主人发给你。
 - 连服务器用 opero 的 server_exec（先 list_servers 看有哪些）；看日志用 log_scan（按时间统计、第一次 / 最近出现、异常汇总，别整份 cat）；改服务器上的文件用 file_write（自动备份）；要密码 / 令牌就在命令里写 {{secret:凭证名}}（list_credentials 看有哪些），Opero 替你填，你看不到值。
 - 查库用 db_query（先 list_databases）；同步 / 推送代码用 git_sync；${emp.dns?.length ? '改域名解析用 dns_list / dns_set / dns_delete（只限主人开给你的域名，改前先看、改后用 dig 确认）；' : ''}${emp.workBranch ? `你在自己的分支 ${emp.workBranch} 上改，做完用 pr_create 提合并请求（pr_status 看合没合）；` : ''}发布用 release_publish（release_list 看有哪些目标、你有没有权限发，release_status 看结果）。
-- 编译 / 打包由 Opero 管（build_info 看现在怎么编）：配或改编译、建流水线按这个顺序——build_info 看现状 → 需要的话写好 deploy/build.sh（把要发的东西放进 out/）和包里的 deploy.sh → 提交推送 → build_set 改设置 → build_generate 建 / 更新流水线（云效、GitHub Actions）→ build_try 试编 → build_status 看日志，改到编通 → release_list 看发布目标。建流水线、试编译不用问主人；发生产要主人确认。在哪编默认「自动」：编译那台资源够就本地编，不够走流水线；不要自己在服务器上硬跑大编译（Android、Docker 这类）。
+- 接入、编译、发布是你的活，不是主人的：主人只管给 key 和批生产。先 setup_info 看现场（仓库平台、主人有哪些凭证、平台上已有的流水线、服务器、缺什么），再看仓库里已有的（.github/workflows、.gitlab-ci.yml、Jenkinsfile、Dockerfile、deploy/、README 的部署说明）。三种情况：① 已有流水线 / 部署脚本：pipeline_read 读出来，照着它的步骤配 Opero（build_set 的 cmd、release_target_set 的 command 或包里的 deploy.sh），不另起一套；② 什么都没有：自己写 deploy/build.sh 和 deploy.sh，build_set → build_generate → build_try 编通 → release_target_set 建测试 / 生产目标；③ 缺 key（仓库令牌、云效流水线权限、Jenkins Token、数据库账号…）：request_credential 说清楚要什么权限、拿来干嘛，然后等它（主人存好你会收到消息）。不要让主人「去网页上配编译 / 发布 / 目录」，能自己做的都做完再汇报。
+- 跑命令时 description 用中文写清楚这一步做什么、为什么（比如「去掉部署脚本里重启失败计数那一行，再检查语法」）：要主人确认时卡片标题就是它，主人看不懂命令。删根目录 / 家目录、格式化、关机重启、curl | sh 这类会被直接拒绝：被拒了别换写法再试，跟主人说清楚由他来做。
+- 等发布 / 编译结果不要用 sleep 干等：release_publish 发起后，发完 Opero 会把结果发给你；build_try 隔一会用 build_status 查一次，没编完就先做别的或者这一轮先结束。
+- 配置类的事都是你用工具配，不要让主人去页面上填：定时 / Webhook 任务用 schedule_set（schedule_list、schedule_delete），服务器目录用 server_dir_set，日志用 log_register，发布目标用 release_target_set，编译用 build_set。主人一句话说清楚的直接配好，配完一句话告诉他配了什么；说不清的地方先自己查（list_servers、server_exec 看路径），实在定不了再 ask_owner 给几个选项。
+- 编译的细节：build_info 看现在怎么编；顺序是写好 deploy/build.sh（把要发的东西放进 out/）和包里的 deploy.sh → 提交推送 → build_set → build_generate（云效、GitHub Actions、GitLab CI、Jenkins）→ build_try → build_status 看日志改到编通。建流水线、试编译、建发布目标都不用问主人；发生产要主人确认。在哪编默认「自动」：编译那台资源够就本地编，不够走流水线；不要自己在服务器上硬跑大编译（Android、Docker 这类）。
+- Opero 给自己发版（发布目标就是 Opero 跑的那台、部署脚本会重启 Opero）：发布中途 Opero 会跟着重启，健康检查和回滚走不完——这种先告诉主人，用别的发布渠道或者在部署脚本里把重启放到最后、用 systemd-run 之类脱离出去。
 - 线上问题记进问题清单：issue_report（同一个问题用同一个 key），修好了 issue_update 标 fixed；issue_list 看现在有哪些。
 - 要主人在几个方案里选，用 ask_owner；做不可撤销或影响生产的事之前用 confirm；要给主人看结构化的结果用 send_card；要把文件或图片发给主人用 send_file。
 - 按约定直接做，少问：只有删重要数据、影响生产（发生产、改生产服务器 / 生产库）这类不可撤销的事才用 confirm；同步代码、建临时文件、清理自己的临时目录、在测试 / 开发环境改东西这些都直接做，不要问主人。
@@ -258,6 +286,15 @@ function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: stri
 let hooks: { busy?: (emp: string, text: string, files: Attachment[], why?: string) => void; idle?: (emp: string, stopped: boolean) => void; freed?: (host: string) => void } = {}
 export function setHooks(h: typeof hooks) { hooks = h }
 /** 员工在干活、而且现在能插话（Claude Code 的输入通道开着，或者进程正在起） */
+/** 员工刚说完、在收尾（关输入、提交推送、算小结）的那几秒：主人这时说的话不进排队，照常显示，收尾完马上接着做 */
+const nextUp = new Map<string, { text: string; files: Attachment[] }[]>()
+export function sendNext(empId: string, text: string, files: Attachment[] = []): boolean {
+  const l = live.get(empId)
+  if (!finishing.has(empId) && !(l && l.kind === 'claude' && !l.stdinOpen)) return false
+  nextUp.set(empId, [...(nextUp.get(empId) ?? []), { text, files }])
+  return true
+}
+
 export function canInterject(empId: string) {
   if (booting.has(empId)) return true
   const l = live.get(empId)
@@ -352,7 +389,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
   files = place(emp, host, files)
   const runId = uid('r')
   const token = crypto.randomBytes(24).toString('base64url')
-  const { env, secrets } = aiEnv(kind, host)
+  const { env, secrets, cred } = aiEnv(kind, host, emp)
   const mcpEnv = { OPERO_API: hosts.apiBase(host), OPERO_TOKEN: token }
   const uploads = hosts.isLocal(host) ? path.join(empHome(emp), 'uploads') : path.posix.join(homeOn(emp, host), 'uploads')
   const mkdirs = hosts.isLocal(host) ? [] : [uploads, cwd]
@@ -413,7 +450,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     }
     const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, statusId: status.id,
-      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0, before }
+      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0, before, cred }
     // 内存上限（这台的规矩）：本机在这里看着，远程由 Agent 看着、超了在 stderr 里说一句
     const { memPct, cpuPct } = policyOf(get<Server>('servers', host))
     if (hosts.isLocal(host)) l.unwatch = watchResources(proc.pid, { memPct, cpuPct }, {
@@ -505,7 +542,11 @@ function onClaude(l: Live, emp: Employee, ev: any) {
       if (ev.session_id) saveEmp(emp.id, { resumeId: ev.session_id })
       if (l.said === 0 && typeof ev.result === 'string' && ev.result.trim()) say(l, ev.result)
       if (ev.subtype === 'error_max_turns') system(l.sid, `这一轮步数用完了（${ev.num_turns ?? cfg.maxTurns} 步），说「继续」接着做`)
-      else if (ev.is_error && ev.subtype !== 'success') system(l.sid, `这一轮出错了：${scrub(String(ev.result ?? ev.subtype ?? ''), l.secrets).slice(0, 500)}`)
+      else if (ev.is_error && ev.subtype !== 'success') {
+        const why = scrub(String(ev.result ?? ev.subtype ?? ''), l.secrets)
+        system(l.sid, `这一轮出错了：${why.slice(0, 500)}`)
+        limitHit(l, why)
+      }
       l.said = 0
       l.pending = Math.max(0, l.pending - 1)
       if (l.pending === 0 && l.stdinOpen) { l.stdinOpen = false; l.proc.stdin!.end() }
@@ -583,16 +624,20 @@ function finish(l: Live, code: number | null) {
     finishing.delete(l.emp)
     delMsg(l.statusId)
     patchSession(l.sid, { clear: ['working'] })
+    // 收尾时主人说的话：马上开下一轮（几句合成一句）
+    const next = nextUp.get(l.emp)
+    if (next?.length) { nextUp.delete(l.emp); void send(l.emp, next.map((x) => x.text).filter(Boolean).join('\n\n'), next.flatMap((x) => x.files)) }
     after(l, code, emp)
   })
 }
 
 /** 订阅登录（计入订阅额度）还是 API Key（按量计费）：执行器报的花费对订阅只是估算 */
-function billing(kind: 'claude' | 'codex'): 'sub' | 'api' {
+function billing(kind: 'claude' | 'codex', cred?: string): 'sub' | 'api' {
   const c = aiConf()
   if (kind === 'codex') return c.codexCred ? 'api' : 'sub'
   if (c.claudeBaseUrl) return 'api'
-  const k = c.claudeCred ? getSecret(c.claudeCred) : ''
+  const id = cred ?? c.claudeCred
+  const k = id ? getSecret(id) : ''
   return !k || k.startsWith('sk-ant-oat') ? 'sub' : 'api'
 }
 
@@ -605,13 +650,32 @@ function runSummary(l: Live, ok: boolean, git: string, sessCost: number, d: auto
   if (w && changed && d!.pushed) for (const t of (w.deploys ?? []).filter((x) => x.servers?.length).slice(0, 2)) actions.push({ id: `release:${t.id}`, label: (w.deploys!.length > 1 ? `发布到${t.name}` : '发布这次改动'), style: 'primary' })
   const card: Card = { id: uid('c'), type: 'run', v: 1, state: actions.length ? 'open' : 'done', level: 'info', actions,
     data: { ok, stopped: l.stopped, git, ws: w?.id ?? '', before: l.before, after: d?.after ?? '', files: d?.files ?? 0, ins: d?.ins ?? 0, del: d?.del ?? 0, list: d?.list ?? [],
-      cost: l.cost, sessionCost: sessCost, tokens: l.tokens, billing: billing(l.kind), title: l.ask.replace(/\s+/g, ' ').trim().slice(0, 60) } }
+      cost: l.cost, sessionCost: sessCost, tokens: l.tokens, billing: billing(l.kind, l.cred), title: l.ask.replace(/\s+/g, ' ').trim().slice(0, 60) } }
   addMsg(l.sid, { from: l.emp, kind: 'card', card })
+}
+
+/** 账号用量到上限（订阅的 5 小时 / 每周额度、429）：记下来，后面的活先换别的账号，并告诉主人 */
+function limitHit(l: Live, text: string) {
+  if (l.kind !== 'claude' || !l.cred || !/usage limit|rate.?limit|limit reached|429|quota|too many requests|5-hour limit|weekly limit/i.test(text)) return
+  const m = text.match(/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i)
+  let ms = 60 * 60_000
+  if (m) {
+    let h = Number(m[1]) % 12 + (/pm/i.test(m[3] ?? '') ? 12 : 0)
+    if (!m[3]) h = Number(m[1])
+    const t = new Date(); t.setHours(h, Number(m[2] ?? 0), 0, 0)
+    if (t.getTime() <= Date.now()) t.setDate(t.getDate() + 1)
+    ms = Math.min(7 * 86400_000, t.getTime() - Date.now())
+  }
+  markLimited(l.cred, ms)
+  const name = get<Credential>('credentials', l.cred)?.name ?? '这个账号'
+  const next = claudeAccounts().filter((id) => id !== l.cred && !(limitedUntil()[id] > Date.now()))
+  system(l.sid, next.length ? `「${name}」用量到上限了，后面的活先换「${get<Credential>('credentials', next[0])?.name ?? '另一个账号'}」；说「继续」就用新账号接着做` : `「${name}」用量到上限了，也没有别的可用账号：等额度恢复，或者在「我 → AI 执行器」再登录一个账号`)
 }
 
 function after(l: Live, code: number | null, emp: Employee | undefined) {
   if (!l.stopped && !l.ok && code !== 0) {
     const err = scrub(l.stderr.trim(), l.secrets).split('\n').slice(-6).join('\n')
+    limitHit(l, err)
     const hint = /auth|login|api key|401|credential|unauthorized|OAuth/i.test(err) ? '\n\n像是执行器没登录：到「我 → AI 执行器」配 API Key，或者在服务器上用 AI 用户登录一次。'
       : /not found|No such file|command not found/i.test(err) ? '\n\n像是服务器上没装这个执行器：到「我 → AI 执行器」看安装方法。' : ''
     system(l.sid, `执行器退出了（${code}）${err ? '：\n' + err : ''}${hint}`)

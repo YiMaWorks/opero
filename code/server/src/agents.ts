@@ -8,7 +8,7 @@ import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { PassThrough, Writable } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
-import { all, get, put, uid } from './db.ts'
+import { all, del, get, put, uid } from './db.ts'
 import { emit } from './bus.ts'
 import { cleanSys } from './sysinfo.ts'
 import { audit } from './chat.ts'
@@ -45,7 +45,7 @@ export function register(b: { token?: string; machineId?: string; hostname?: str
   }
   const sv: Server = {
     ...base, via: 'agent', agent: 'Opero Agent', agentKeyHash: sha(key), machineId, ...(apub ? { agentPub: apub, agentFp: fp } : {}), agentVersion: String(b.version ?? ''), agentUrl: String(b.server ?? ''),
-    ip: ip || base.ip, os: String(b.os || base.os), lastSeen: Date.now(), online: true, credential: undefined, hostKey: undefined,
+    ip: ip || base.ip, os: String(b.os || base.os), lastSeen: Date.now(), joinedAt: Date.now(), online: true, credential: undefined, hostKey: undefined,
   }
   put('servers', sv)
   emit({ t: 'put', coll: 'servers', item: pub(sv) })
@@ -83,7 +83,16 @@ const pub2 = (s: Server) => pub(s)
 export function decide(id: string, accept: boolean) {
   const sv = get<Server>('servers', id)
   if (!sv || sv.via !== 'pending') throw new Error('不是待接入的机器')
-  const next: Server = { ...sv, via: accept ? 'agent' : 'rejected', lastSeen: accept ? Date.now() : sv.lastSeen }
+  // 装在 Opero 这台上的：挂到「本机」上，不多出一台
+  const local = get<Server>('servers', 'local')
+  if (accept && local && sv.machineId && local.machineId === sv.machineId) {
+    const merged: Server = { ...local, via: 'agent', agentPub: sv.agentPub, agentFp: sv.agentFp, lastSeen: Date.now(), joinedAt: Date.now(), online: true }
+    put('servers', merged); del('servers', sv.id)
+    emit({ t: 'put', coll: 'servers', item: pub(merged) }); emit({ t: 'del', coll: 'servers', id: sv.id })
+    audit({ via: '—', action: 'agent.accept', target: `本机 · ${sv.agentFp}`, level: '危险', result: '成功', how: '本人核对指纹（已验证）· 装在 Opero 这台上，挂到本机' })
+    return merged
+  }
+  const next: Server = { ...sv, via: accept ? 'agent' : 'rejected', lastSeen: accept ? Date.now() : sv.lastSeen, ...(accept ? { joinedAt: Date.now() } : {}) }
   put('servers', next)
   emit({ t: 'put', coll: 'servers', item: pub(next) })
   audit({ via: '—', action: accept ? 'agent.accept' : 'agent.reject', target: `${sv.name} · ${sv.agentFp}`, level: '危险', result: '成功', how: '本人核对指纹（已验证）' })
@@ -108,7 +117,8 @@ export function remove(id: string) {
   if (!sv) return
   const { agentKeyHash: _k, ...rest } = sv
   // 只是作废密钥：那台机器的 Agent 下一次来就会被拒；服务器记录留着（员工、项目还指着它），可以再接入
-  const next: Server = { ...rest, online: false, via: 'ssh' } // 指纹留着：这台再用同一对密钥来就拒绝，除非重新用令牌接入
+  // 本机去掉 Agent：回到「Opero 自己的用户」，本机还是在线的
+  const next: Server = sv.id === 'local' ? { ...rest, via: undefined, online: true } : { ...rest, online: false, via: 'ssh' } // 指纹留着：这台再用同一对密钥来就拒绝，除非重新用令牌接入
   put('servers', next)
   emit({ t: 'put', coll: 'servers', item: pub(next) })
   for (const p of procs.values()) if (p.serverId === id) p.fail('Agent 已被移除')
@@ -135,7 +145,8 @@ const num = (v: unknown) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)
 /** 心跳断了 90 秒：标成离线 */
 export function sweep() {
   for (const sv of all<Server>('servers')) {
-    if (isAgent(sv) && sv.online && !agentOnline(sv)) {
+    // 本机的 Agent 掉线只是少了 root 通道，本机（和上面的员工）照常：不算离线
+    if (sv.id !== 'local' && isAgent(sv) && sv.online && !agentOnline(sv)) {
       const next = { ...sv, online: false, error: 'Agent 没有心跳（机器关了、网络断了，或 opero-agent 服务停了）' }
       put('servers', next)
       emit({ t: 'put', coll: 'servers', item: pub(next) })

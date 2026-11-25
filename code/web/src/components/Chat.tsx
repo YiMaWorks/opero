@@ -1,5 +1,5 @@
 // 聊天：顶栏 · 消息 · 「在做什么」+ 停止 · 底部菜单 · 输入（文字 / 按住说话 / 附件）
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Card, CardAction, Message, Session } from '../types'
 import { append, compactContext, empName, getState, now, patchSession, removeMsg, sessionFor, setSettings, toast, newTopic, restartWork, saveFlowFromChat, sendFile, sendMessage, setWork, stopWorking, switchWork, toggleMute, togglePin, useStore } from '../store'
 import { APPROVALS, EFFORTS, approvalShort, effortLabel, modelsFor } from '../work'
@@ -10,7 +10,7 @@ import { call, upload } from '../live'
 import type { QAtt } from '../types'
 import { WorkSheet } from './WorkSheet'
 import { Avatar } from './Avatar'
-import { CardView } from './cards'
+import { CardView, RunFoot } from './cards'
 import { Empty, Row, Sheet } from './ui'
 import { canDictate, dictate, nativeHaptic } from '../native'
 import { resolve as langOf, loadPref } from '../i18n'
@@ -32,7 +32,27 @@ const NO_PHRASES: string[] = []
 
 export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile, onSearch, onSettings }: Props) {
   const emp = useStore((s) => s.employees.find((e) => e.id === session.employee))
-  const messages = useStore((s) => s.messages[session.id] ?? EMPTY)
+  const raw = useStore((s) => s.messages[session.id] ?? EMPTY)
+  // 「正在输入」气泡（这一轮开始时建的）永远放在最下面；空的系统行不显示
+  const messages = useMemo(() => {
+    const shown = raw.filter((m) => !((m.kind === 'system' || m.kind === 'status') && !m.spinning && !(m.text ?? '').trim()))
+    return [...shown.filter((m) => !(m.kind === 'status' && m.spinning)), ...shown.filter((m) => m.kind === 'status' && m.spinning)]
+  }, [raw])
+  // 一轮的小结（run 卡片）跟在员工上一条消息下面当小字，不单独占一条：key = 那条消息的 id
+  const feet = useMemo(() => {
+    const at = new Map<string, Message>()
+    messages.forEach((m, i) => {
+      if (m.card?.type !== 'run') return
+      for (let j = i - 1; j >= 0; j--) {
+        const p = messages[j]
+        if (p.kind === 'status' || p.kind === 'system') continue
+        if (p.from === m.from && p.card?.type !== 'run' && !at.has(p.id)) at.set(p.id, m)
+        break
+      }
+    })
+    return at
+  }, [messages])
+  const attached = useMemo(() => new Set([...feet.values()].map((m) => m.id)), [feet])
   const aiDown = useStore((s) => s.settings.aiDown)
   const fallback = useStore((s) => s.settings.fallback)
   const listRef = useRef<HTMLDivElement>(null)
@@ -74,10 +94,29 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
     if (!el) return
     const added = messages.length - seenLen.current
     seenLen.current = messages.length
+    // 自己刚发的（或排队的那句发出去了）：不管翻到哪都回到底部
+    if (added > 0 && messages.slice(-added).some((m) => m.from === 'me')) { stuck.current = true; setUnseen(0) }
     if (!stuck.current) { if (added > 0) setUnseen((n) => n + added); return }
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    pin()
   }, [messages])
-  const toBottom = () => { const el = listRef.current; el?.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); stuck.current = true; setUnseen(0) }
+  // 贴底：直接跳（不用平滑滚动——滚到一半内容又变高，会被当成「翻上去了」就不再跟），等这一帧排好版再跳一次
+  const pin = () => {
+    const el = listRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => { if (stuck.current && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight })
+  }
+  const toBottom = () => { stuck.current = true; setUnseen(0); pin() }
+  // 贴在底部时，内容后来又变高（图片加载完、Markdown 排好、正在输入气泡出现、小结挂上）也跟着到底
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => { if (stuck.current) el.scrollTop = el.scrollHeight })
+    for (const c of Array.from(el.children)) ro.observe(c)
+    const mo = new MutationObserver(() => { for (const c of Array.from(el.children)) ro.observe(c); if (stuck.current) el.scrollTop = el.scrollHeight })
+    mo.observe(el, { childList: true })
+    return () => { ro.disconnect(); mo.disconnect() }
+  }, [session.id])
 
   // 开新会话接着做：交接预填在输入框里，看一下再发
   useEffect(() => {
@@ -99,12 +138,14 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
     const t = text.trim()
     if (!LIVE) {
       if (!t) return
+      toBottom()
       sendMessage(session.id, t)
       setText('')
       return
     }
     if (pend.some((p) => p.busy)) { toast('附件还在传，等一下'); return }
     if (!t && !readyAtts.length) return
+    toBottom()
     setSending(true)
     const r = await call<{ queued?: { id: string }; sent?: boolean }>('POST', `/api/sessions/${session.id}/messages`, {
       text: t, files: readyAtts.map((p) => ({ id: p.att!.id, w: p.att!.w, h: p.att!.h })), mode,
@@ -211,11 +252,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
       <div className={'msgs msgs-bg-' + (emp.bg ?? 'plain')} ref={listRef}
         onScroll={(e) => { const el = e.currentTarget; stuck.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; if (stuck.current) setUnseen(0) }}>
         {messages.length === 0 && <p className="hint center">还没有消息，跟「{emp.name}」说点什么吧。</p>}
-        {messages.map((m, i) => (
-          <MessageView key={m.id} m={m} owner={emp.id} showTime={!!m.at && m.at !== messages[i - 1]?.at && m.kind !== 'status'}
+        {messages.map((m, i) => attached.has(m.id) ? null : (
+          <MessageView key={m.id} m={m} foot={feet.get(m.id)} owner={emp.id} showTime={!!m.at && m.at !== messages[i - 1]?.at && m.kind !== 'status'}
             onCardAction={onCardAction} onMenu={(x, y) => { nativeHaptic(); setMsgMenu({ m, x, y }) }}
             onCopy={() => { navigator.clipboard?.writeText(msgText(m)); toast('已复制') }} onForward={() => setForward(m)}
-            working={session.working} onStop={session.working ? () => stopWorking(session.id) : undefined} />
+            working={session.working} onStop={() => stopWorking(session.id)} />
         ))}
         <div className="msgs-end" />
       </div>
@@ -480,8 +521,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
 const msgText = (m: Message) => m.text ?? (m.card ? String(m.card.data.title ?? '') : m.file?.name ?? '')
 
 // 像微信：每条消息左边（对方）/ 右边（我）带头像，气泡带小尖角；时间不一样时中间插一条时间
-function MessageView({ m, owner, showTime, onCardAction, onMenu, onCopy, onForward, working, onStop }: {
-  m: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void; onCopy: () => void; onForward: () => void
+function MessageView({ m, foot, owner, showTime, onCardAction, onMenu, onCopy, onForward, working, onStop }: {
+  m: Message; foot?: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void; onCopy: () => void; onForward: () => void
   working?: string; onStop?: () => void
 }) {
   const press = useRef<number | null>(null)
@@ -507,6 +548,8 @@ function MessageView({ m, owner, showTime, onCardAction, onMenu, onCopy, onForwa
     return <div className="status-line"><i className="dot-ok" /><span>{m.text}</span></div>
   }
   const me = m.from === 'me'
+  // 前面没有员工的话可挂：小结自己一行小字（和头像对齐，不要气泡）
+  if (m.card?.type === 'run') return <div className="msg-row run-row"><span className="msg-av" /><div className="msg-col"><RunFoot card={m.card} onAction={onCardAction} /></div></div>
   // 长按 0.5 秒（手机）/ 右键（电脑）出菜单
   const hold = {
     onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); onMenu(e.clientX, e.clientY) },
@@ -531,7 +574,16 @@ function MessageView({ m, owner, showTime, onCardAction, onMenu, onCopy, onForwa
         <div className="msg-col">
           {!me && m.from !== owner && <span className="bubble-who">{empName(m.from)}</span>}
           {body}
-          {(m.text || m.card || m.file) && (
+          {/* 复制 / 转发：有小结时和它放一行末尾（鼠标放上去才出现，不单独占一行） */}
+          {foot?.card ? (
+            <div className="msg-under">
+              <RunFoot card={foot.card} onAction={onCardAction} />
+              <span className="msg-acts">
+              {(m.text || m.card) && <button type="button" title="复制" onClick={onCopy}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>复制</button>}
+                <button type="button" title="转发给别的员工" onClick={onForward}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l6 6-6 6" /><path d="M21 11H9a6 6 0 0 0-6 6v2" /></svg>转发</button>
+              </span>
+            </div>
+          ) : (m.text || m.card || m.file) && (
             <span className="msg-acts">
               {(m.text || m.card) && <button type="button" title="复制" onClick={onCopy}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>复制</button>}
               <button type="button" title="转发给别的员工" onClick={onForward}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l6 6-6 6" /><path d="M21 11H9a6 6 0 0 0-6 6v2" /></svg>转发</button>

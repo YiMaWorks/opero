@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder'
 import { kvSet, put, uid } from './db.ts'
 import { emit } from './bus.ts'
 import { audit } from './chat.ts'
-import { setSecret } from './vault.ts'
+import { getSecret, setSecret } from './vault.ts'
 import { cfg } from './config.ts'
 import * as runner from './runner.ts'
 import * as hosts from './hosts.ts'
@@ -204,9 +204,9 @@ async function verifyToken(j: Job, token: string, alt: string, failPrefix: strin
   if ((v.code !== 0 || !/OK/.test(v.out)) && alt && alt !== token) { const v2 = await check(alt); if (v2.code === 0 && /OK/.test(v2.out)) { v = v2; token = alt } }
   if (job !== j || j.state !== 'verifying') return // 中途被取消了
   if (v.code !== 0 || !/OK/.test(v.out)) return done('fail', `${failPrefix}用它跑 Claude Code 被拒绝：${v.out.split(token).join('••••').slice(-300) || `退出码 ${v.code}`}`)
-  saveClaudeToken(token)
+  await saveClaudeToken(token)
   log('验证通过，已加密保存\n')
-  done('ok', '已登录，员工可以干活了')
+  done('ok', `已登录（共 ${runner.claudeAccounts().length} 个账号，原来的照常能用），员工可以干活了`)
 }
 
 function kill() {
@@ -246,15 +246,32 @@ export function cancelJob() {
   if (job && job.state !== 'ok' && job.state !== 'fail') done('fail', '已取消')
 }
 
-function saveClaudeToken(token: string) {
+/** 登录 / 贴令牌：加一个账号（同一个令牌已经有了就用那个），设成默认。原来的账号和令牌都留着、照样能用——
+ *  setup-token 每次发一个新的长期令牌，不会让别的令牌失效（别的项目在用的不受影响） */
+async function saveClaudeToken(token: string) {
   const conf = runner.aiConf()
-  const id = conf.claudeCred ?? uid('cr')
-  setSecret(id, token)
-  const cred: Credential = { id, name: 'Claude Code 的登录令牌', group: 'AI', kind: 'Token', env: '生产', scope: 'Claude 订阅（一年有效）', usedBy: [], updated: new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16), aiAllowed: true }
-  put('credentials', cred)
-  emit({ t: 'put', coll: 'credentials', item: { ...cred, hasSecret: true } })
-  kvSet('ai', { ...conf, claudeCred: id })
-  audit({ via: '—', action: 'ai.login', target: 'Claude Code（订阅）', level: '危险', result: '成功', how: '网页登录，令牌已加密保存' })
+  const have = runner.claudeAccounts().find((id) => getSecret(id) === token)
+  const id = have ?? uid('cr')
+  if (!have) {
+    setSecret(id, token)
+    const email = await accountEmail(token)
+    const n = runner.claudeAccounts().length + 1
+    const cred: Credential = { id, name: email ? `Claude · ${email}` : `Claude 账号 ${n}`, group: 'AI', kind: 'Token', env: '生产', scope: 'Claude 订阅（一年有效）', usedBy: [], updated: new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16), aiAllowed: true, ...(email ? { user: email } : {}) }
+    put('credentials', cred)
+    emit({ t: 'put', coll: 'credentials', item: { ...cred, hasSecret: true } })
+  }
+  const accounts = [...new Set([...(conf.claudeAccounts ?? []), ...(conf.claudeCred ? [conf.claudeCred] : []), id])]
+  kvSet('ai', { ...conf, claudeCred: id, claudeAccounts: accounts })
+  audit({ via: '—', action: 'ai.login', target: 'Claude Code（订阅）', level: '危险', result: '成功', how: have ? '已有的账号，设成默认' : `加了一个账号（共 ${accounts.length} 个），原来的照常能用` })
+}
+/** 订阅令牌是哪个账号（邮箱）：读不到就算了 */
+async function accountEmail(token: string): Promise<string> {
+  try {
+    const r = await fetch('https://api.anthropic.com/api/oauth/profile', { headers: { Authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(8000) })
+    if (!r.ok) return ''
+    const j: any = await r.json()
+    return String(j?.account?.email_address ?? j?.account?.email ?? '').slice(0, 80)
+  } catch { return '' }
 }
 
 // ---------- 小终端模拟器：只还原屏幕上的字（光标移动、擦除、换行滚屏），颜色等一律忽略 ----------

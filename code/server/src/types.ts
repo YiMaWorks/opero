@@ -38,6 +38,8 @@ export interface Employee {
   memCred?: string
   /** 能建 / 改别的员工（emp_create / emp_update，都要主人点确认） */
   canManage?: boolean
+  /** 用哪个 Claude 账号（凭证 id，「AI 执行器」里登录的那几个）；不设 = 默认账号 */
+  claudeAccount?: string
   /** 能只读看的别的项目（最多 8 个，要和员工在同一台机器上） */
   reads?: string[]
   /** 这个员工每月预算（美元，0 / 不填 = 不单独限） */
@@ -132,6 +134,8 @@ export interface Server {
   agentKeyHash?: string
   machineId?: string
   agentVersion?: string
+  /** 最近一次接入（用令牌注册 / 你接受）的时间：网页「已接入」按它认，不按心跳 */
+  joinedAt?: number
   lastSeen?: number
   agentUrl?: string
   executors?: { claude?: string | null; codex?: string | null }
@@ -180,6 +184,8 @@ export interface DataSource {
   credential?: string
   writable: boolean
   tables: { name: string; rows: string; cols: string[] }[]
+  /** 没填库名（整个实例）：这个账号能看到的库，员工查的时候挑一个 */
+  dbs?: string[]
 }
 
 export interface SavedQuery { id: string; source: string; name: string; sql: string }

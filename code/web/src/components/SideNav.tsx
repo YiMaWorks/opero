@@ -58,6 +58,7 @@ export function SideNav({ tab, active, onPick }: Props) {
     body = (
       <>
         {item({ page: 'workspaces' }, '全部项目', <TabIcon tab="workspace" />, <em>{s.workspaces.length}</em>)}
+        {LIVE && item({ page: 'releases' }, '发布', letter('发'), s.liveReleases.some((r) => r.status === 'running') ? <em className="hot">发布中</em> : undefined)}
         {item({ page: 'issues' }, '问题清单', letter('问'), open ? <em className="hot">{open}</em> : undefined)}
         <div className="side-sep" />
         {s.workspaces.filter((w) => match(w.name + w.repo)).map((w) =>

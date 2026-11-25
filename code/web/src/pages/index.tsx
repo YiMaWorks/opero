@@ -17,7 +17,8 @@ import {
 } from './live'
 import { LiveCredentialEditPage, LiveCredentialsPage } from './creds'
 import { LiveHistoryPage, LiveIssuePage, LiveIssuesPage, LiveMemoryPage } from './live2'
-import { DomainPage, DomainsPage, LiveReleasePage, LiveReleasesPage } from './live3'
+import { DomainPage, DomainsPage } from './live3'
+import { LiveReleasePage, LiveReleasesPage } from './release'
 import { LiveChannelsPage, LiveInboxPage } from './live4'
 
 /** 真的一套里还没做的页面 */

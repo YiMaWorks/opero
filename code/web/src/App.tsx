@@ -143,6 +143,7 @@ export default function App() {
   // 卡片按钮 = 工具调用（正式版走网关：判定 → 审计 → 执行）；这里按原型演示处理
   const onCardAction = (sid: string) => (card: Card, action: CardAction, extra?: Record<string, unknown>) => {
     if (action.panel === 'diff') { setPanel([{ page: 'diff', params: { sid } }]); return }
+    if (action.panel === 'credentialEdit') { setPanel([{ page: 'credentialEdit', params: (action.args ?? {}) as Record<string, string> }]); return }
     if (action.panel === 'query') { setPanel([{ page: 'queryResult', params: { sid, cardId: card.id } }]); return }
     if (LIVE) { cardAction(card, action, extra); return }
     const emp = sessions.find((s) => s.id === sid)?.employee ?? ''

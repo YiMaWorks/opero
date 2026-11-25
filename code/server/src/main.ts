@@ -4,10 +4,10 @@ import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import { cfg } from './config.ts'
-import { all } from './db.ts'
+import { all, kvGet, kvSet } from './db.ts'
 import { clientIp, HttpError, json, match, parseCookies, readBody, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { expireStaleCards, migrateEmployeeCreds } from './api.ts'
+import { expireStaleCards, interruptedRuns, migrateEmployeeCreds } from './api.ts'
 import * as runner from './runner.ts'
 import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
@@ -133,6 +133,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 }
 
 ensureLocal()
+const interrupted = interruptedRuns()
 expireStaleCards()
 migrateEmployeeCreds()
 const server = http.createServer((req, res) => { handle(req, res).catch((e) => { console.error(e); try { json(res, 500, { message: '出错了' }) } catch { /* 已经断了 */ } }) })
@@ -146,6 +147,16 @@ server.listen(cfg.port, cfg.host, () => {
   inbox.start()
   startLocalProxy()
   startTriggerLoop()
+  // 被重启打断的员工：等几秒（Agent、执行器连好）让它接着做；10 分钟内同一个会话只续一次，免得「发版 → 重启 → 续上又发版」转圈
+  setTimeout(() => {
+    const last = kvGet<Record<string, number>>('resumedAt', {})
+    for (const x of interrupted) {
+      if (Date.now() - (last[x.sid] ?? 0) < 10 * 60_000) continue
+      last[x.sid] = Date.now()
+      void runner.send(x.emp, '（Opero 刚重启过，你上一轮做到一半被打断了：先看清楚做到哪一步，接着做完。要是在等发布结果，用 release_status 查，别再重新发；别用 sleep 干等。）')
+    }
+    kvSet('resumedAt', last)
+  }, 5000)
 })
 
 const bye = () => { runner.stopAll(); server.close(); setTimeout(() => process.exit(0), 1500).unref() }

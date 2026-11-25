@@ -7,6 +7,7 @@ import { PathInput } from '../components/PathPicker'
 import { Markdown } from '../components/Markdown'
 import { Empty, Field, PageHeader, Row, Section, Segmented, Tag, Toggle } from '../components/ui'
 import { headNav, type PageProps } from './nav'
+import { AskBar } from '../components/AskBar'
 
 // ======================= 员工档案里的：记忆、会话、执行器 =======================
 export function EmployeeWorkSections({ e, nav }: { e: Employee; nav: PageProps['nav'] }) {
@@ -275,6 +276,7 @@ export function PolicySection({ s }: { s: Server }) {
 export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProps['nav'] }) {
   const servers = useStore((s) => s.servers)
   const releases = useStore((s) => s.liveReleases)
+  const projEmp = useStore((s) => s.employees.find((e) => e.workspace === w.id)?.id)
   const [list, setList] = useState<Deploy[]>(w.deploys ?? [])
   const [editing, setEditing] = useState<Deploy | 'new' | null>(null)
   useEffect(() => { setList(w.deploys ?? []) }, [w.deploys])
@@ -287,12 +289,22 @@ export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProp
   }
   return (
     <>
+      {nav && (
+        <AskBar nav={nav} emp={projEmp} title="编译、发布交给员工配" placeholder="比如：加一个测试环境，发到 aws-dev 的 /srv/shop"
+          context={`（在项目「${w.name}」的设置页说的：编译 / 发布 / 流水线你自己配，先 setup_info 看现场；缺 key 用 request_credential 找我）`}
+          suggestions={[
+            { label: '把编译和发布配好', text: '把这个项目的编译和发布配好：已有流水线或部署脚本就照着配，没有就自己建，试编通过、建好发布目标后告诉我' },
+            { label: '读出已有的流水线', text: '看看我平台上和仓库里已有的流水线 / 部署脚本，照着它配 Opero 的编译和发布' },
+            { label: '试编一次', text: '试编一次，编不过就查日志修到通过' },
+            { label: '加测试环境', text: '加一个测试环境的发布目标：先看有哪些服务器，挑测试 / 开发那台，部署目录按项目习惯定，建好告诉我' },
+          ]} />
+      )}
       <Section title="自动同步">
         <label className="lrow"><span className="row-main"><span className="row-title">干完自动提交推送</span><span className="row-sub">员工开工前拉到最新（冲突会告诉它先解决）；这一轮干完有改动就提交（出错的、你点停止的都标「[未完成]」照样提交，做了一半的不丢）再推送，被拒就变基一次再推。要配了令牌才推送</span></span><Toggle on={w.autoSync !== false} onChange={(v) => call('PUT', `/api/workspaces/${w.id}`, { autoSync: v }, v ? '已开自动同步' : '已关：员工自己用 git_sync')} /></label>
       </Section>
       <BuildSection w={w} />
-      <Section title={`发布环境 · ${list.length}`} right={<button className="btn ghost sm" onClick={() => setEditing('new')}>添加</button>}>
-        {list.length === 0 && !editing && <Empty>还没有：一个发布环境 = 发到哪几台 + 部署目录（要在那台的「目录」里登记成「能部署」）。有编译设置时，发的是编出来的包（包里的部署脚本自己装）；没有就在每台跑部署命令</Empty>}
+      <Section title={`发布环境 · ${list.length}`} right={<button className="btn ghost sm" onClick={() => setEditing('new')}>手动加</button>}>
+        {list.length === 0 && !editing && <Empty>还没有：跟上面的员工说一句「加一个测试环境」，它会看好服务器、目录建好；发生产时会先问你</Empty>}
         {list.map((d) => {
           const lastR = releases.filter((r) => r.ws === w.id && r.target === d.id).sort((a, b) => b.started - a.started)[0]
           return editing && editing !== 'new' && editing.id === d.id
@@ -362,7 +374,7 @@ function BuildSection({ w }: { w: Workspace }) {
   const gen = async () => { setBusy(true); await call('POST', `/api/workspaces/${w.id}/build/generate`, undefined, '流水线已建好 / 更新'); setBusy(false) }
   const cur = w.buildCfg
   return (
-    <Section title="编译" right={<button className="btn ghost sm" onClick={() => setOpen(!open)}>{open ? '收起' : cur ? '改' : '设置'}</button>}>
+    <Section title="编译" right={<button className="btn ghost sm" onClick={() => setOpen(!open)}>{open ? '收起' : '手动改'}</button>}>
       {!open && (cur ? (
         <>
           <Row title={`${KIND[cur.kind]} · ${WHERE[whereOf(cur)].replace(/（.*）/, '')}`}
@@ -379,7 +391,7 @@ function BuildSection({ w }: { w: Workspace }) {
           )}
           {last && showLog && <pre className="console small" data-no-i18n="">{last.log.join('\n')}{last.error ? `\n\n${last.error}` : ''}</pre>}
         </>
-      ) : <Empty>不编译：发布时直接在服务器上跑部署命令（适合 git pull 型的项目）。接入项目时会自动认出类型、建好流水线；要现在设就点「设置」</Empty>)}
+      ) : <Empty>还没配编译：跟上面的员工说「把编译和发布配好」，它会看仓库和已有的流水线配好（不编译的项目发布时直接跑部署命令）</Empty>)}
       {open && (
         <div className="pad form boxed">
           <label className="lrow"><span className="row-main"><span className="row-title">要编译</span><span className="row-sub">打开时按仓库里的文件自动认出项目类型（package.json / go.mod / pom.xml / 安卓），编出来的包发到每台服务器</span></span><Toggle on={!!b} onChange={(v) => { if (!v) { setB(null); return } if (!b) void detect().then(setB) }} /></label>

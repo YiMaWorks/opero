@@ -1,10 +1,11 @@
 // 触发器：到点了 / 有人调 Webhook，就给员工派一句活（日志巡检、每日汇总都靠它）。
 // 定时规则（中文）：每 30 分钟 · 每 2 小时 · 每天 09:00 · 工作日 09:30 · 每周一 10:00
-import { all, get, put } from './db.ts'
+import crypto from 'node:crypto'
+import { all, get, put, uid } from './db.ts'
 import { emit } from './bus.ts'
 import { hhmm, sessionFor, system } from './chat.ts'
 import * as runner from './runner.ts'
-import type { Trigger } from './types.ts'
+import type { Employee, Trigger } from './types.ts'
 
 type Rule = { every: number } | { at: [number, number]; days: number[] }
 const WEEK: Record<string, number> = { 日: 0, 天: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6 }
@@ -23,6 +24,21 @@ export function parseRule(rule: string): Rule | null {
   m = r.match(/^每周([一二三四五六日天])(\d{1,2})[:：](\d{2})$/)
   if (m) return { at: [Number(m[2]), Number(m[3])], days: [WEEK[m[1]]] }
   return null
+}
+
+/** 新建 / 改一个触发器（网页和员工的 schedule_set 共用）：不对就抛错 */
+export function makeTrigger(b: any, old?: Trigger): Trigger {
+  const kind = b.kind === 'Webhook' ? 'Webhook' : b.kind === '定时' ? '定时' : old?.kind === 'Webhook' ? 'Webhook' : '定时'
+  const rule = String(b.rule ?? old?.rule ?? '').trim()
+  if (kind === '定时' && !parseRule(rule)) throw new Error('认不出这个时间：写成「每 30 分钟」「每 2 小时」「每天 09:00」「工作日 09:30」「每周一 10:00」')
+  const employee = String(b.employee ?? old?.employee ?? '')
+  if (!get('employees', employee)) throw new Error('选一个员工')
+  const name = String(b.name ?? old?.name ?? '').trim() || `${get<Employee>('employees', employee)?.name ?? ''} · ${kind === 'Webhook' ? 'Webhook' : rule}`
+  return {
+    id: old?.id ?? uid('t'), name: name.slice(0, 60), kind, rule: kind === 'Webhook' ? '有人调 Webhook 地址时' : rule, employee, enabled: b.enabled ?? old?.enabled ?? true,
+    last: old?.last ?? '还没触发', prompt: String(b.prompt ?? old?.prompt ?? '').slice(0, 4000), lastTs: old?.lastTs ?? Date.now(),
+    hookToken: kind === 'Webhook' ? (old?.hookToken ?? crypto.randomBytes(18).toString('base64url')) : undefined,
+  }
 }
 
 function due(t: Trigger, now: number): boolean {

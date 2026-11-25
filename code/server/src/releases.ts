@@ -302,8 +302,11 @@ function finish(r: Release, w: Workspace, d: Deploy, ok: boolean, error?: string
   }
   fs.rmSync(path.join(cfg.data, 'releases', r.id), { recursive: true, force: true })
   audit({ via: r.by, action: 'release.end', target: `${w.name} → ${d.name} ${r.version}`, level: '危险', result: ok ? '成功' : '失败', how: (error ?? '').slice(0, 80) })
-  if (ok) prune(w, d).catch(() => {})
-  else {
+  if (ok) {
+    prune(w, d).catch(() => {})
+    // 员工发的、它还在这一轮里（多半在等结果）：告诉它发完了，别再干等 / 重发
+    if (r.emp && runner.isWorking(r.emp)) void runner.send(r.emp, `【系统自动】发布 ${w.name} → ${d.name}（${r.version}）成功了。需要的话核对一下线上，简短告诉主人结果，不用再等。`)
+  } else {
     push({ kind: 'decide', error: true, title: `发布失败：${w.name} → ${d.name}`, body: (error ?? '').slice(0, 120), route: r.sid ? `chat/${r.sid}` : '' })
     backToEmployee(r, w, d)
   }

@@ -176,6 +176,18 @@ ${uploadSteps}`
   <buildWrappers/>
 </project>`
 }
+/** 主人 Jenkins 上已有的任务（接入时读出来，员工照着配 Opero 的编译） */
+export async function jenkinsJobs(credId: string): Promise<{ name: string; url: string }[]> {
+  const { call } = jenkinsOf(credId)
+  const d: any = await (await call('GET', '/api/json?tree=jobs[name,url]')).json()
+  return (d?.jobs ?? []).slice(0, 100).map((j: any) => ({ name: String(j.name), url: String(j.url ?? '') }))
+}
+/** 某个任务的配置（config.xml：里面的 shell 步骤就是它怎么编、怎么发的） */
+export async function jenkinsJobConfig(credId: string, job: string): Promise<string> {
+  const { call } = jenkinsOf(credId)
+  const text = await (await call('GET', `/job/${encodeURIComponent(job)}/config.xml`)).text()
+  return text.slice(0, 20_000)
+}
 export const jenkinsJob = (w: Workspace, job?: string) => job || `opero-${w.name.replace(/[^\w.-]+/g, '-').toLowerCase()}`
 export async function jenkinsGenerate(w: Workspace, credId: string, job: string, script: string): Promise<void> {
   const { call } = jenkinsOf(credId)

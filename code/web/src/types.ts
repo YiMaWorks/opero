@@ -21,6 +21,7 @@ export interface User {
 }
 
 export interface Employee {
+  claudeAccount?: string // 用哪个 Claude 账号（不设 = 默认）
   id: string
   name: string
   avatar: string // 头像上的字
@@ -273,6 +274,7 @@ export interface Server {
   /** Agent 的指纹（SHA256:…），Opero 按它认机器 */
   agentFp?: string
   agentVersion?: string
+  joinedAt?: number // 最近一次接入的时间（不是心跳）
   lastSeen?: number
   executors?: { claude?: string | null; codex?: string | null }
   /** 机器信息（Agent 心跳 / Opero 这台自己读，自动填） */
@@ -344,6 +346,7 @@ export interface DataSource {
   credential?: string
   writable: boolean
   tables: { name: string; rows: string; cols: string[] }[]
+  dbs?: string[] // 没填库名（整个实例）：能看到的库
 }
 
 export interface SavedQuery {
@@ -454,7 +457,7 @@ export interface Settings {
 }
 
 // ---------- 界面 ----------
-export type PanelKind = 'diff' | 'query' | 'menu' | 'profile'
+export type PanelKind = 'diff' | 'query' | 'menu' | 'profile' | 'credentialEdit'
 
 export type Tab = 'chat' | 'people' | 'workspace' | 'apps' | 'me'
 

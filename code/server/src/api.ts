@@ -2,6 +2,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { cfg } from './config.ts'
 import { all, db, del, get, kvGet, kvSet, put, uid } from './db.ts'
 import { addClient, emit, push, waitPush } from './bus.ts'
@@ -19,13 +20,14 @@ import * as releases from './releases.ts'
 import * as autogit from './autogit.ts'
 import * as build from './build.ts'
 import { checkServer, execOn, isReadOnly, LOCAL_ID } from './ssh.ts'
-import { isReadSql, loadSchema, runQuery } from './dbconn.ts'
+import { applyDirs, cleanDirs, cleanLogs, shq } from './serverdirs.ts'
+import { isReadSql, runQuery, schemaOf } from './dbconn.ts'
 import { gitRepos, isSqlKind, testCred } from './creds.ts'
-import { cloneWorkspace, git, inspect, providerOf, remoteBranches, workspaceDir } from './git.ts'
+import { cloneWorkspace, git, handBackDir, inspect, providerOf, remoteBranches, workspaceDir } from './git.ts'
 import { switchAndTell } from './branch.ts'
 import * as pipes from './pipelines.ts'
 import * as buildjobs from './buildjobs.ts'
-import { fire, parseRule } from './triggers.ts'
+import { fire, makeTrigger } from './triggers.ts'
 import { PRESETS } from './presets.ts'
 import * as execs from './executors.ts'
 import * as agents from './agents.ts'
@@ -103,7 +105,13 @@ function bootstrap(c: Ctx) {
     settings: settings(),
   }
 }
-const instanceInfo = () => ({ version: cfg.version, isolated: !!cfg.aiUser, aiUser: cfg.aiUser })
+const instanceInfo = () => ({ version: cfg.version, web: webVersion(), isolated: !!cfg.aiUser, aiUser: cfg.aiUser })
+/** 网页包的版本（单独换了网页也要让开着的页面刷新）：看打包出来的 index.html 改没改，用它的修改时间 */
+function webVersion() {
+  try { return String(Math.floor(fs.statSync(path.join(cfg.web, 'index.html')).mtimeMs)) } catch { return '' }
+}
+// 开着的网页隔一会 / 切回来时问一下：版本变了就刷新（不用登录，只有版本号）
+route('GET', '/api/version', () => ({ version: cfg.version, web: webVersion() }), { auth: 'none' })
 
 route('GET', '/api/health', () => ({ ok: true, version: cfg.version }), { auth: 'none' })
 route('GET', '/api/bootstrap', (c) => bootstrap(c), { auth: 'none' })
@@ -264,7 +272,9 @@ async function executors(host = hosts.LOCAL) {
     host, aiUser: remote ? 'opero-ai' : cfg.aiUser, isolated: remote || !!cfg.aiUser,
     claude: cc.code === 0 ? cc.out.split('\n')[0] : null,
     codex: cx.code === 0 ? cx.out.split('\n').pop() : null,
-    claudeKey: !!(c.claudeCred && hasSecret(c.claudeCred)), claudeBaseUrl: c.claudeBaseUrl ?? '', claudeEgress: c.claudeEgress ?? '', codexEgress: c.codexEgress ?? '',
+    claudeKey: !!(c.claudeCred && hasSecret(c.claudeCred)),
+    claudeAccounts: claudeAccountList(),
+    claudeBaseUrl: c.claudeBaseUrl ?? '', claudeEgress: c.claudeEgress ?? '', codexEgress: c.codexEgress ?? '',
     codexKey: !!(c.codexCred && hasSecret(c.codexCred)), codexBaseUrl: c.codexBaseUrl ?? '',
     install: {
       claude: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'curl -fsSL https://claude.ai/install.sh | bash'`,
@@ -273,14 +283,50 @@ async function executors(host = hosts.LOCAL) {
     },
   }
 }
+/** 登录过的几个 Claude 账号：默认哪个、谁在用、到没到用量上限（到什么时候） */
+function claudeAccountList() {
+  const c = runner.aiConf()
+  const lim = kvGet<Record<string, number>>('claudeLimited', {})
+  return runner.claudeAccounts().map((id) => {
+    const cr = get<Credential>('credentials', id)
+    return { id, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === c.claudeCred, limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0, employees: all<Employee>('employees').filter((e) => e.claudeAccount === id).map((e) => e.name), sub: (getSecret(id) ?? '').startsWith('sk-ant-oat') }
+  })
+}
+route('GET', '/api/ai/claude-accounts', () => claudeAccountList())
 route('GET', '/api/ai', (c) => executors(hostParam(c.url.searchParams.get('host'))))
+// Claude 账号：设成默认 / 改名 / 从 Opero 去掉（只是 Opero 不再用它，账号和令牌本身不受影响、别的项目照常用）
+route('PUT', '/api/ai/claude-accounts/:id', (c) => {
+  const conf = runner.aiConf()
+  const id = c.params.id
+  if (!runner.claudeAccounts().includes(id)) throw new HttpError(404, '没有这个账号')
+  if (c.body?.isDefault) kvSet('ai', { ...conf, claudeCred: id })
+  const name = String(c.body?.name ?? '').trim().slice(0, 60)
+  const cr = get<Credential>('credentials', id)
+  if (name && cr) put1('credentials', { ...cr, name })
+  if (c.body?.clearLimit) { const lim = kvGet<Record<string, number>>('claudeLimited', {}); delete lim[id]; kvSet('claudeLimited', lim) }
+  return { ok: true }
+})
+route('DELETE', '/api/ai/claude-accounts/:id', (c) => {
+  const conf = runner.aiConf()
+  const id = c.params.id
+  const rest = runner.claudeAccounts().filter((x) => x !== id)
+  kvSet('ai', { ...conf, claudeAccounts: rest, claudeCred: conf.claudeCred === id ? rest[0] : conf.claudeCred })
+  for (const e of all<Employee>('employees').filter((x) => x.claudeAccount === id)) put1('employees', { ...e, claudeAccount: undefined })
+  const cr = get<Credential>('credentials', id)
+  del1('credentials', id); delSecret(id)
+  audit({ via: '—', action: 'ai.account.remove', target: cr?.name ?? id, level: '写', result: '成功', how: '本人（只从 Opero 去掉，令牌本身没作废）' })
+  return { ok: true }
+})
 route('PUT', '/api/ai', async (c) => {
   const b = c.body ?? {}
   const conf = runner.aiConf()
   const saveKey = (field: 'claudeCred' | 'codexCred', name: string, value: unknown) => {
     if (value === undefined) return
     const v = String(value).trim()
-    const id = conf[field] ?? uid('cr')
+    // Claude：每个 Key / 令牌是一个账号，新加的不覆盖原来的（别的项目可能还在用原来那个）
+    const same = field === 'claudeCred' ? runner.claudeAccounts().find((id) => getSecret(id) === v) : undefined
+    const id = field === 'claudeCred' ? (same ?? uid('cr')) : (conf[field] ?? uid('cr'))
+    if (field === 'claudeCred' && v) conf.claudeAccounts = [...new Set([...(conf.claudeAccounts ?? []), ...(conf.claudeCred ? [conf.claudeCred] : []), id])]
     if (!v) { delSecret(id); return }
     setSecret(id, v)
     const sub = v.startsWith('sk-ant-oat')
@@ -288,7 +334,10 @@ route('PUT', '/api/ai', async (c) => {
     conf[field] = id
   }
   // 用「凭证 → AI」里已经存的 Key（不用再贴一遍）
-  for (const [f, k] of [['claudeCred', b.claudeCredId], ['codexCred', b.codexCredId]] as const) if (k && get<Credential>('credentials', String(k)) && hasSecret(String(k))) conf[f] = String(k)
+  for (const [f, k] of [['claudeCred', b.claudeCredId], ['codexCred', b.codexCredId]] as const) if (k && get<Credential>('credentials', String(k)) && hasSecret(String(k))) {
+    conf[f] = String(k)
+    if (f === 'claudeCred') conf.claudeAccounts = [...new Set([...(conf.claudeAccounts ?? []), String(k)])]
+  }
   saveKey('claudeCred', 'Claude Code 的 API Key / 令牌', b.claudeKey)
   saveKey('codexCred', 'Codex 的 OpenAI API Key', b.codexKey)
   if (b.claudeBaseUrl !== undefined) conf.claudeBaseUrl = String(b.claudeBaseUrl).trim()
@@ -373,6 +422,7 @@ function cleanEmp(b: any, old?: Employee): Employee {
     gender: String(pick('gender', '') ?? '').slice(0, 10), memRepo: String(pick('memRepo', '') ?? '').trim() || undefined, memCred: String(pick('memCred', '') ?? '') || undefined,
     works: old?.works,
     canManage: !!pick('canManage', false),
+    claudeAccount: (() => { const v = String(pick('claudeAccount', '') ?? ''); return v && runner.claudeAccounts().includes(v) ? v : undefined })(),
     reads: (Array.isArray(b.reads) ? b.reads : old?.reads ?? []).map(String).filter((id: string) => get<Workspace>('workspaces', id)).slice(0, 8),
     budget: Math.max(0, Number(pick('budget', 0)) || 0) || undefined,
     dns: (Array.isArray(b.dns) ? b.dns : old?.dns ?? []).map(String).filter((id: string) => get('domains', id)),
@@ -563,12 +613,33 @@ route('POST', '/api/sessions/:id/messages', (c) => {
   if (!text && !files.length) throw bad('说点什么')
   const working = runner.isWorking(emp.id)
   const mode = c.body?.mode === 'queue' ? 'queue' : 'auto'
+  // 员工只是在收尾（提交推送）：不进排队，照常显示，收尾完它马上接着看
+  if (working && mode !== 'queue' && !runner.canInterject(emp.id) && runner.sendNext(emp.id, text || queue.defaultText(files), queue.toAttachments(emp, files))) {
+    queue.post(s.id, text, files)
+    return { sent: true, next: true }
+  }
   if (working && (mode === 'queue' || !runner.canInterject(emp.id))) {
     try { return { queued: queue.enqueue(emp.id, text, files) } } catch (e) { throw bad((e as Error).message) }
   }
   queue.post(s.id, text, files)
   runner.send(emp.id, text || queue.defaultText(files), queue.toAttachments(emp, files))
   return { sent: true, interjected: working }
+})
+
+// 页面上「交给员工」：没有会话就建，这句话照常发（在忙就排队）；返回会话，网页跳过去
+route('POST', '/api/employees/:id/ask', (c) => {
+  const emp = get<Employee>('employees', c.params.id)
+  if (!emp) throw new HttpError(404, '没有这个员工')
+  const text = String(c.body?.text ?? '').trim().slice(0, 8000)
+  if (!text) throw bad('说点什么')
+  const s = sessionFor(emp.id)
+  if (runner.isWorking(emp.id) && !runner.canInterject(emp.id)) {
+    try { queue.enqueue(emp.id, text, []) } catch (e) { throw bad((e as Error).message) }
+    return { sid: s.id, queued: true }
+  }
+  queue.post(s.id, text, [])
+  runner.send(emp.id, text)
+  return { sid: s.id, sent: true }
 })
 
 // 传附件：先放进员工目录的 uploads/，回给网页一个附件（还没发）；跟着下一句话一起发
@@ -623,7 +694,16 @@ route('GET', '/api/files/:id', (c) => {
 })
 
 route('DELETE', '/api/messages/:id', (c) => { delMsg(c.params.id); return { ok: true } })
-route('POST', '/api/sessions/:id/stop', (c) => { const s = sess(c.params.id); return { ok: runner.stop(s.employee) } })
+route('POST', '/api/sessions/:id/stop', (c) => {
+  const s = sess(c.params.id)
+  if (runner.stop(s.employee)) return { ok: true }
+  // 其实没在干活（进程早没了，比如 Opero 重启过）：把留下的「在想… / 在跑命令」气泡清掉
+  if (!runner.isWorking(s.employee)) {
+    for (const m of listMessages(s.id).filter((x) => x.kind === 'status' && x.spinning)) delMsg(m.id)
+    patchSession(s.id, { clear: ['working'] })
+  }
+  return { ok: true }
+})
 route('POST', '/api/sessions/:id/new-topic', (c) => {
   const s = sess(c.params.id)
   const reason = String(c.body?.reason ?? '')
@@ -718,7 +798,7 @@ route('PUT', '/api/servers/:id', (c) => {
   if (b.policy !== undefined) audit({ via: '—', action: 'server.policy', target: old.name, level: '写', result: '成功', how: '本人' })
   if (b.dirs !== undefined) {
     const dirs = cleanDirs(b.dirs)
-    applyDirs(old, dirs).catch(() => {})
+    applyDirs(old, dirs, (sv) => put1('servers', sv)).catch(() => {})
     audit({ via: '—', action: 'server.dirs', target: `${old.name}：${dirs.map((d) => `${d.path}（${d.mode}）`).join('、') || '清空'}`, level: '危险', result: '成功', how: '本人' })
     old.dirs = dirs.map((d) => ({ ...d, ok: undefined, error: '在设权限…' }))
   }
@@ -729,50 +809,6 @@ route('PUT', '/api/servers/:id', (c) => {
   const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.policy !== undefined ? { policy: cleanPolicy(b.policy, old.policy) } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
   return pub('servers', put1('servers', next))
 })
-/** 服务器登记的目录：绝对路径、不是系统目录、最多 30 个 */
-function cleanDirs(list: unknown): ServerDir[] {
-  if (!Array.isArray(list)) return []
-  const SYS = /^\/(etc|usr|bin|sbin|lib|lib64|boot|proc|sys|dev|run|var\/lib|root)(\/|$)/
-  return list.slice(0, 30).map((x: any) => {
-    const p = String(x?.path ?? '').trim().replace(/\/+$/, '')
-    if (!/^\/[\w./@+-]+$/.test(p) || p.includes('..') || p.split('/').length < 3 && !/^\/(srv|opt|data|home|www|var)\/?/.test(p)) throw bad(`目录不对：${p}（要绝对路径，至少两层，比如 /srv/app）`)
-    if (SYS.test(p) && x?.mode !== 'read') throw bad(`${p} 是系统目录，只能登记成「只读」`)
-    return { path: p, mode: ['read', 'write', 'deploy'].includes(x?.mode) ? x.mode : 'read', note: String(x?.note ?? '').slice(0, 80) || undefined }
-  })
-}
-/** 登记的日志：文件（可带 *）/ 目录 / 系统服务，最多 30 个 */
-function cleanLogs(list: unknown): LogSource[] {
-  if (!Array.isArray(list)) return []
-  return list.slice(0, 30).map((x: any) => {
-    const kind: LogSource['kind'] = ['file', 'dir', 'service'].includes(x?.kind) ? x.kind : 'file'
-    const p = String(x?.path ?? '').trim().replace(/(.)\/+$/, '$1')
-    if (kind === 'service' ? !/^[\w@.:-]+$/.test(p) : (!/^\/[\w./*@+-]+$/.test(p) || p.includes('..'))) throw bad(kind === 'service' ? `服务名不对：${p}` : `日志路径不对：${p}（要绝对路径，可以带 *）`)
-    return { kind, path: p, note: String(x?.note ?? '').slice(0, 80) || undefined }
-  })
-}
-/** 按登记的目录给 AI 用户开权限（ACL）：只读 = r-X，读写 = rwX（连默认 ACL，新文件也跟着），能部署的由 Agent 以 root 部署、不用开。去掉的收回 */
-async function applyDirs(sv: Server, dirs: ServerDir[]) {
-  const before = sv.dirs ?? []
-  const results: ServerDir[] = []
-  const local = sv.id === LOCAL_ID
-  const ai = local ? (cfg.aiUser || 'opero-ai') : 'opero-ai'
-  for (const d of dirs) {
-    if (d.mode === 'deploy') { results.push({ ...d, ok: true }); continue }
-    const perm = d.mode === 'write' ? 'rwX' : 'rX'
-    const cmd = `set -e; command -v setfacl >/dev/null || { echo "这台没有 setfacl（装 acl 包：apt install acl / yum install acl）"; exit 3; }; test -d ${shq(d.path)} || { echo "目录不存在"; exit 4; }
-p=${shq(d.path)}; while [ "$p" != "/" ]; do p=$(dirname "$p"); setfacl -m u:${ai}:x "$p" 2>/dev/null || true; done
-setfacl -R -m u:${ai}:${perm} ${shq(d.path)} && setfacl -R -d -m u:${ai}:${perm} ${shq(d.path)} && echo OK`
-    if (local) { results.push({ ...d, ok: false, error: `Opero 这台要你自己用 root 跑：setfacl -R -m u:${ai}:${perm} ${d.path} && setfacl -R -d -m u:${ai}:${perm} ${d.path}` }); continue }
-    const r = await execOn(sv, cmd, 120_000)
-    results.push({ ...d, ok: r.out.includes('OK'), error: r.out.includes('OK') ? undefined : r.out.trim().split('\n').pop()?.slice(0, 200) })
-  }
-  for (const old of before.filter((x) => x.mode !== 'deploy' && !dirs.some((d) => d.path === x.path && d.mode !== 'deploy'))) {
-    if (!local) await execOn(sv, `command -v setfacl >/dev/null && setfacl -R -x u:${ai} ${shq(old.path)} 2>/dev/null; setfacl -R -d -x u:${ai} ${shq(old.path)} 2>/dev/null; true`, 120_000).catch(() => {})
-  }
-  const cur = get<Server>('servers', sv.id)
-  if (cur) put1('servers', { ...cur, dirs: results })
-}
-const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
 
 route('DELETE', '/api/servers/:id', (c) => {
   if (c.params.id === LOCAL_ID) throw bad('本机不能删')
@@ -866,8 +902,24 @@ async function saveCred(c: Ctx, id?: string) {
   if (group === '数据库' && isSqlKind(kind)) syncDataSource(cred, b.writable, t.ok)
   // 新加的：按员工「以后新加的这类自动给它」勾好
   if (!old && cred.aiAllowed) for (const e of all<Employee>('employees').filter((x) => x.credGroups?.includes(group))) put1('employees', { ...e, creds: [...(e.creds ?? []), cred.id] })
+  if (!old) answerCredRequests(cred)
   audit({ via: '—', action: old ? 'credential.update' : 'credential.create', target: `${name}（${group} · ${kind}）`, level: '危险', result: '成功', how: '本人' })
   return pub('credentials', cred)
+}
+/** 员工 request_credential 要过的：同一类（给了类型就同类型）的新凭证存好了 → 给它开、卡片标完成、告诉它接着做 */
+function answerCredRequests(cred: Credential) {
+  const rows = db.prepare(`SELECT id, sid, data FROM messages WHERE data LIKE '%"credReq"%' ORDER BY ts DESC LIMIT 50`).all() as { id: string; sid: string; data: string }[]
+  for (const r of rows) {
+    const m = JSON.parse(r.data) as Message
+    const q = m.card?.data.credReq as { emp: string; group: string; kind?: string } | undefined
+    if (!m.card || m.card.state !== 'open' || !q || q.group !== cred.group || (q.kind && q.kind.toLowerCase() !== cred.kind.toLowerCase())) continue
+    const e = get<Employee>('employees', q.emp)
+    if (!e) continue
+    if (cred.aiAllowed && !e.creds?.includes(cred.id)) put1('employees', { ...e, creds: [...(e.creds ?? []), cred.id] })
+    patchMsg(r.id, { card: { ...m.card, state: 'done', result: `已添加「${cred.name}」并给 ${e.name} 开了` } })
+    patchSession(r.sid, { clear: ['waiting'] })
+    runner.send(e.id, `主人加好了凭证「${cred.name}」（${cred.group} · ${cred.kind}${cred.test ? `，测试${cred.test.ok ? '通过' : `没通过：${cred.test.msg}`}` : ''}），已经给你开了，接着做。`)
+  }
 }
 const CRED_GROUPS = ['服务器', '数据库', '代码仓库', '云账号', 'AI', '签名证书', '消息渠道', '其它']
 /** 不是密码的字段：只留短字符串 */
@@ -893,7 +945,7 @@ function syncDataSource(cred: Credential, writable: unknown, connected: boolean)
     writable: typeof writable === 'boolean' ? writable : old?.writable ?? false, tables: old?.tables ?? [],
   }
   put1('dataSources', ds)
-  if (connected) loadSchema(ds).then((tables) => { const cur = get<DataSource>('dataSources', ds.id); if (cur) put1('dataSources', { ...cur, tables }) }).catch(() => {})
+  if (connected) schemaOf(ds).then((sc) => { const cur = get<DataSource>('dataSources', ds.id); if (cur) put1('dataSources', { ...cur, ...sc }) }).catch(() => {})
 }
 // 测试连接：新增时用填的值，编辑时没填新值就用存着的
 route('POST', '/api/credentials/test', async (c) => {
@@ -970,15 +1022,15 @@ route('POST', '/api/credentials/:id/reveal', (c) => {
 route('POST', '/api/data-sources', async (c) => {
   const b = c.body ?? {}
   const name = String(b.name ?? '').trim()
-  if (!name || !b.host || !b.db) throw bad('名字、地址、库名都要填')
+  if (!name || !b.host) throw bad('名字、地址要填')
   const kind = b.kind === 'PostgreSQL' ? 'PostgreSQL' : 'MySQL'
   const env = envOf(b.env, '生产')
   let credential = b.credential ? String(b.credential) : undefined
   if (!credential && b.password) credential = inlineCred(`${name} 的数据库账号`, '数据库', '数据库', env, String(b.user ?? ''), String(b.password), b.writable ? '读写' : '只读')
-  const ds: DataSource = { id: uid('ds'), name, kind, env, ...(typeof b.protect === 'boolean' ? { protect: b.protect } : {}), host: String(b.host), port: Number(b.port) || undefined, db: String(b.db), user: String(b.user ?? ''), credential, writable: !!b.writable, tables: [] }
+  const ds: DataSource = { id: uid('ds'), name, kind, env, ...(typeof b.protect === 'boolean' ? { protect: b.protect } : {}), host: String(b.host), port: Number(b.port) || undefined, db: String(b.db ?? ''), user: String(b.user ?? ''), credential, writable: !!b.writable, tables: [] }
   put1('dataSources', ds)
   audit({ via: '—', action: 'data.add', target: `${name} · ${kind} ${ds.host}/${ds.db}`, level: '写', result: '成功', how: '本人' })
-  try { ds.tables = await loadSchema(ds); put1('dataSources', ds) } catch (e) { return { ...ds, error: `连不上：${(e as Error).message}` } }
+  try { Object.assign(ds, await schemaOf(ds)); put1('dataSources', ds) } catch (e) { return { ...ds, error: `连不上：${(e as Error).message}` } }
   return ds
 })
 route('PUT', '/api/data-sources/:id', (c) => {
@@ -991,7 +1043,7 @@ route('DELETE', '/api/data-sources/:id', (c) => { del1('dataSources', c.params.i
 route('POST', '/api/data-sources/:id/schema', async (c) => {
   const ds = get<DataSource>('dataSources', c.params.id)
   if (!ds) throw new HttpError(404, '没有')
-  try { return put1('dataSources', { ...ds, tables: await loadSchema(ds) }) } catch (e) { throw bad(`连不上：${(e as Error).message}`) }
+  try { return put1('dataSources', { ...ds, ...(await schemaOf(ds)) }) } catch (e) { throw bad(`连不上：${(e as Error).message}`) }
 })
 route('POST', '/api/data-sources/:id/query', async (c) => {
   const ds = get<DataSource>('dataSources', c.params.id)
@@ -1016,18 +1068,7 @@ route('DELETE', '/api/saved-queries/:id', (c) => { del1('savedQueries', c.params
 
 // ---------- 触发器 ----------
 function cleanTrigger(b: any, old?: Trigger): Trigger {
-  const name = String(b.name ?? old?.name ?? '').trim()
-  if (!name) throw bad('先起个名字')
-  const kind = b.kind === 'Webhook' ? 'Webhook' : '定时'
-  const rule = String(b.rule ?? old?.rule ?? '').trim()
-  if (kind === '定时' && !parseRule(rule)) throw bad('认不出这个时间：写成「每 30 分钟」「每 2 小时」「每天 09:00」「工作日 09:30」「每周一 10:00」')
-  const employee = String(b.employee ?? old?.employee ?? '')
-  if (!get('employees', employee)) throw bad('选一个员工')
-  return {
-    id: old?.id ?? uid('t'), name, kind, rule: kind === 'Webhook' ? '有人调 Webhook 地址时' : rule, employee, enabled: b.enabled ?? old?.enabled ?? true,
-    last: old?.last ?? '还没触发', prompt: String(b.prompt ?? old?.prompt ?? ''), lastTs: old?.lastTs ?? Date.now(),
-    hookToken: kind === 'Webhook' ? (old?.hookToken ?? crypto.randomBytes(18).toString('base64url')) : undefined,
-  }
+  try { return makeTrigger(b, old) } catch (e) { throw bad((e as Error).message) }
 }
 route('POST', '/api/triggers', (c) => pub('triggers', put1('triggers', cleanTrigger(c.body ?? {}))))
 route('PUT', '/api/triggers/:id', (c) => {
@@ -1221,6 +1262,28 @@ function cleanDeploys(list: any[], old: Deploy[] = []): Deploy[] {
     }
   })
 }
+// 发布前看一眼：这个环境线上是哪个版本（最近一次成功的发布），这次会带上哪些提交（线上 → 远端最新）
+route('GET', '/api/workspaces/:id/deploys/:did/changes', async (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  const d = w?.deploys?.find((x) => x.id === c.params.did)
+  if (!w || !d) throw new HttpError(404, '没有这个发布环境')
+  const ok = all<Release>('releases').filter((r) => r.ws === w.id && r.target === d.id && r.status === 'success').sort((a, b) => b.started - a.started)
+  const online = ok[0]
+  const on = { host: w.server, cwd: w.dir }
+  if (w.credential) await git(['fetch', '--quiet', 'origin', w.branch], { ...on, cred: w.credential, timeoutMs: 30_000 }).catch(() => null)
+  const ref = `origin/${w.branch}`
+  const range = online?.sha && (await git(['merge-base', '--is-ancestor', online.sha, ref], on).catch(() => ({ code: 1, out: '' }))).code === 0 ? [`${online.sha}..${ref}`] : [ref, '-n', '10']
+  const log = await git(['log', '--format=%h%x1f%s%x1f%an%x1f%ct', '-n', '50', ...range], on).catch(() => ({ code: 1, out: '' }))
+  await handBackDir(w.server, w.dir) // fetch 是 Opero 这边跑的：目录权限还给 AI 用户
+  const commits = log.code === 0 ? log.out.split('\n').filter(Boolean).map((l) => { const [sha, subject, author, ct] = l.split('\x1f'); return { sha, subject, author, at: Number(ct) * 1000, unfinished: /^\[未完成\]/.test(subject ?? '') } }) : []
+  return {
+    online: online ? { id: online.id, version: online.version, sha: online.sha, at: online.started, by: online.by } : null,
+    since: !!(online?.sha && range.length === 1),
+    commits,
+    // 能回滚到的：之前发成功、版本和线上不一样的（最多 10 个）
+    rollbacks: ok.filter((r) => r.version !== online?.version).slice(0, 10).map((r) => ({ id: r.id, version: r.version, at: r.started, by: r.by, note: r.note ?? '', kept: !!r.kept })),
+  }
+})
 route('POST', '/api/workspaces/:id/deploys/:did/run', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   const d = w?.deploys?.find((x) => x.id === c.params.did)
@@ -1466,13 +1529,25 @@ route('DELETE', '/api/app/list/:id', (c) => {
 })
 
 // ---------- Agent：别的服务器接进来 ----------
-const RAW_INSTALL = 'https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh'
+// 装 Agent 用的东西都从这套 Opero 自己拿：要接入的机器本来就要连得上它；GitHub 在有些地方（国内云）连不上。版本也和后台一致
+const REPO_ROOT = path.resolve(import.meta.dirname, '../../..')
+route('GET', '/api/install.sh', (c) => {
+  c.res.writeHead(200, { 'Content-Type': 'text/x-shellscript; charset=utf-8', 'Cache-Control': 'no-store' })
+  fs.createReadStream(path.join(REPO_ROOT, 'code/server/scripts/install.sh')).pipe(c.res)
+}, { auth: 'none' })
+// Agent 的程序（code/server 里的源码 + LICENSE，开源代码、不含数据和密钥）
+route('GET', '/api/agent/code.tgz', (c) => {
+  c.res.writeHead(200, { 'Content-Type': 'application/gzip', 'Cache-Control': 'no-store' })
+  const p = spawn('tar', ['-C', REPO_ROOT, '--exclude=node_modules', '--exclude=.opero-data', '-czf', '-', 'code/server', 'LICENSE'], { stdio: ['ignore', 'pipe', 'ignore'] })
+  p.stdout.pipe(c.res)
+  p.on('error', () => c.res.end())
+}, { auth: 'none' })
 route('POST', '/api/agents/join', (c) => {
   const b = c.body ?? {}
   const env = envOf(b.env, '测试')
   const token = agents.newJoinToken(env, String(b.name ?? '').trim() || undefined)
   const url = baseUrl(c.req, cfg.publicUrl)
-  const cmd = `curl -fsSL ${RAW_INSTALL} | sudo bash -s -- --agent ${url} ${token}`
+  const cmd = `curl -fsSL ${url.replace(/\/+$/, '')}/api/install.sh | sudo bash -s -- --agent ${url} ${token}`
   audit({ via: '—', action: 'agent.token', target: `${b.name || '新服务器'}（${env}）`, level: '写', result: '成功', how: '生成 30 分钟有效的接入命令' })
   return { token, url, cmd, cmdCn: cmd + ' --cn', expiresIn: 1800, since: Date.now() }
 })
@@ -1560,6 +1635,21 @@ export function expireStaleCards() {
     if (m.card) db.prepare('UPDATE messages SET data = ? WHERE id = ?').run(JSON.stringify({ ...m, card: { ...m.card, state: 'done', result: '已失效（Opero 重启过），让员工再发一次' } }), r.id)
   }
   for (const s of all<Session>('sessions')) if (s.working || s.waiting) { const { working: _w, waiting: _x, ...rest } = s; put('sessions', rest) }
+}
+
+/** Opero 重启（升级、给自己发版、服务器重启）时正在干活的员工：进程跟着没了，那一轮停在一半。
+ *  启动时把还在转的「在想…」气泡去掉、写一句发生了什么，返回被打断的会话（启动好了让员工接着做） */
+export function interruptedRuns(): { sid: string; emp: string }[] {
+  const rows = db.prepare(`SELECT id, sid, data FROM messages WHERE data LIKE '%"kind":"status"%' AND data LIKE '%"spinning":true%'`).all() as { id: string; sid: string; data: string }[]
+  const out: { sid: string; emp: string }[] = []
+  for (const r of rows) {
+    db.prepare('DELETE FROM messages WHERE id = ?').run(r.id)
+    const s = get<Session>('sessions', r.sid)
+    if (!s || out.some((x) => x.sid === s.id)) continue
+    out.push({ sid: s.id, emp: s.employee })
+    addMsg(s.id, { from: 'system', kind: 'system', text: 'Opero 重启了（升级 / 发版 / 服务器重启），这一轮做到一半被打断，已经让员工接着做' })
+  }
+  return out
 }
 
 

@@ -231,6 +231,22 @@ async function yx(token: string, method: string, p: string, body?: unknown): Pro
   if (r.status >= 300) throw new Error(`云效：${String(d?.errorMessage ?? d?.message ?? d?.errorCode ?? text ?? r.status).replaceAll(token, '***').slice(0, 300)}`)
   return d
 }
+/** 云效组织里已有的流水线（接入时读出来：有现成的就照着它配） */
+export async function yunxiaoPipelines(credId: string, org: string): Promise<{ id: string; name: string }[]> {
+  const t = getSecret(credId)
+  if (!t) throw new Error('这个 Codeup 凭证没有值')
+  const d = await yx(t, 'GET', `/oapi/v1/flow/organizations/${org}/pipelines?perPage=100&page=1`)
+  const list = Array.isArray(d) ? d : d?.data ?? d?.pipelines ?? []
+  return list.slice(0, 100).map((p: any) => ({ id: String(p.id ?? p.pipelineId ?? ''), name: String(p.name ?? p.pipelineName ?? '') }))
+}
+/** 一条云效流水线的定义（YAML）：里面的步骤就是它怎么编、怎么发的 */
+export async function yunxiaoPipeline(credId: string, org: string, id: string): Promise<string> {
+  const t = getSecret(credId)
+  if (!t) throw new Error('这个 Codeup 凭证没有值')
+  const d = await yx(t, 'GET', `/oapi/v1/flow/organizations/${org}/pipelines/${encodeURIComponent(id)}`)
+  const yaml = d?.pipelineConfig?.flow ?? d?.content ?? d?.pipelineConfig?.content
+  return String(yaml ?? JSON.stringify(d, null, 1)).replaceAll(t, '***').slice(0, 20_000)
+}
 const yxToken = (b: BuildCfg) => { const t = b.yunxiao?.cred ? getSecret(b.yunxiao.cred) : undefined; if (!t) throw new Error('云效的令牌没配（凭证的值填云效个人访问令牌）'); return t }
 
 function yunxiaoYaml(w: Workspace, b: BuildCfg, repo: { path: string; https: string }, connection: string): string {

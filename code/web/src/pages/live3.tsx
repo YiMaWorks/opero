@@ -1,92 +1,12 @@
-// 真的一套：发布记录 / 发布详情（回滚）、域名（DNS）、签名证书的上传表单
+// 真的一套：域名（DNS）、日志、签名证书的上传表单（发布在 release.tsx）
 import { useEffect, useState } from 'react'
-import type { Domain, LiveRelease, LogSource, ReleaseStep, Server } from '../types'
+import type { Domain, LogSource, Server } from '../types'
 import { requireVerify, toast, useStore } from '../store'
 import { api, call } from '../live'
-import { Empty, Field, PageHeader, Row, Section, Segmented, Tag } from '../components/ui'
+import { Empty, Field, PageHeader, Row, Section, Segmented } from '../components/ui'
 import { headNav, type PageProps } from './nav'
 import { PathInput } from '../components/PathPicker'
 
-const STEP: Record<ReleaseStep['k'], string> = { build: '编译', checkout: '核对产物', transfer: '发到服务器', sign: '签名', deploy: '部署', health: '检查', rollback: '退回上一版' }
-const ST: Record<LiveRelease['status'], { label: string; tone: 'primary' | 'ok' | 'danger' }> = { running: { label: '发布中', tone: 'primary' }, success: { label: '成功', tone: 'ok' }, failed: { label: '失败', tone: 'danger' } }
-const when = (ts: number) => new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-const dur = (r: LiveRelease) => (r.ended ? `${Math.max(1, Math.round((r.ended - r.started) / 1000))} 秒` : '')
-
-// ======================= 发布记录 =======================
-export function LiveReleasesPage({ params, nav }: PageProps) {
-  const list = useStore((s) => s.liveReleases)
-  const wss = useStore((s) => s.workspaces)
-  const [ws, setWs] = useState<string>(params.ws ?? '')
-  const rows = [...list].filter((r) => !ws || r.ws === ws).sort((a, b) => b.started - a.started)
-  const targets = wss.flatMap((w) => (w.deploys ?? []).map((d) => ({ w, d })))
-  return (
-    <div className="page">
-      <PageHeader title="发布" sub="每个项目的发布目标：编译、签名、部署、检查，失败自动退回上一版" {...headNav(nav)} />
-      <div className="page-body">
-        {targets.length === 0 && <div className="pad"><div className="banner b-info">还没有发布环境：到「项目」里点一个项目 →「编译」「发布环境」里设。</div></div>}
-        {targets.length > 0 && (
-          <Section title="发布环境">
-            {targets.map(({ w, d }) => (
-              <Row key={d.id} title={`${w.name} → ${d.name}`} sub={`${w.buildCfg ? '编译 · ' : ''}${d.sign ? '签名 · ' : ''}部署${d.health ? ' · 检查' : ''} · 员工${d.ai === 'auto' ? '能直接发' : d.ai === 'off' ? '不许发' : '发前问你'}${d.last ? ` · 上次 ${d.last} ${d.lastOk ? '成功' : '失败'}` : ''}`}
-                chevron onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })} />
-            ))}
-          </Section>
-        )}
-        <div className="pad">
-          <select value={ws} onChange={(e) => setWs(e.target.value)}>
-            <option value="">全部项目</option>{wss.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-          </select>
-        </div>
-        <Section title={`发布记录 · ${rows.length}`} flush>
-          {rows.length === 0 && <Empty>还没有发过</Empty>}
-          {rows.map((r) => (
-            <Row key={r.id} chevron onClick={() => nav.push({ page: 'release', params: { id: r.id } })}
-              title={<><Tag tone={ST[r.status].tone}>{ST[r.status].label}</Tag> {wss.find((w) => w.id === r.ws)?.name ?? '?'} → {r.targetName}{r.rollbackOf ? '（回滚）' : ''}</>}
-              sub={<><span className="mono small" data-no-i18n="">{r.version || '…'}</span> · {r.by} · {when(r.started)}{dur(r) ? ` · ${dur(r)}` : ''}</>} />
-          ))}
-        </Section>
-      </div>
-    </div>
-  )
-}
-
-export function LiveReleasePage({ params, nav }: PageProps) {
-  const r = useStore((s) => s.liveReleases.find((x) => x.id === params.id))
-  const w = useStore((s) => s.workspaces.find((x) => x.id === r?.ws))
-  const [full, setFull] = useState<LiveRelease | null>(null)
-  useEffect(() => { call<LiveRelease>('GET', `/api/releases/${params.id}`).then((x) => x && setFull(x)) }, [params.id, r?.status])
-  const x = full && r && full.status === r.status ? { ...r, tail: full.tail } : r ?? full
-  if (!x) return <div className="page"><PageHeader title="发布" {...headNav(nav)} /><Empty>找不到</Empty></div>
-  const rollback = () => {
-    if (!confirm(`回滚到 ${x.version}？会在目标服务器上用这个版本留着的产物重新部署${x.kept ? '' : '（产物已经清掉了，会按这个提交重新编）'}`)) return
-    void call<LiveRelease>('POST', `/api/releases/${x.id}/rollback`, undefined, '已开始回滚').then((n) => n && nav.push({ page: 'release', params: { id: n.id } }))
-  }
-  return (
-    <div className="page">
-      <PageHeader title={`${w?.name ?? ''} → ${x.targetName}`} sub={x.rollbackOf ? '回滚' : '发布'} {...headNav(nav)} />
-      <div className="page-body">
-        <Section>
-          <Row title="状态" right={<Tag tone={ST[x.status].tone}>{ST[x.status].label}</Tag>} />
-          <Row title="版本" right={<span className="mono small" data-no-i18n="">{x.version || '…'}</span>} />
-          {x.sha && <Row title="提交" right={<span className="mono small" data-no-i18n="">{x.sha.slice(0, 12)}</span>} />}
-          <Row title="谁发的" right={x.by} />
-          <Row title="时间" right={`${when(x.started)}${dur(x) ? ` · ${dur(x)}` : ''}`} />
-          {x.note && <Row title="说明" sub={<span data-no-i18n="">{x.note}</span>} />}
-          {x.status === 'success' && <Row title="产物" right={x.kept ? '留着（能回滚）' : '已清掉'} />}
-        </Section>
-        <Section title="步骤">
-          {x.steps.filter((s) => s.s !== 'skipped').map((s) => (
-            <Row key={s.k} title={STEP[s.k]} sub={s.msg ? <span data-no-i18n="">{s.msg}</span> : undefined}
-              right={<Tag tone={s.s === 'done' ? 'ok' : s.s === 'failed' ? 'danger' : s.s === 'running' ? 'primary' : 'mute'}>{s.s === 'done' ? '✓' : s.s === 'failed' ? '失败' : s.s === 'running' ? '进行中' : '等着'}</Tag>} />
-          ))}
-        </Section>
-        {x.error && <Section title="原因"><pre className="console" data-no-i18n="">{x.error}</pre></Section>}
-        {x.tail && <Section title="输出（最后一段）"><pre className="console" data-no-i18n="">{x.tail}</pre></Section>}
-        {x.status === 'success' && <div className="pad row-actions"><button className="btn default" onClick={rollback}>回滚到这个版本</button></div>}
-      </div>
-    </div>
-  )
-}
 
 // ======================= 域名 =======================
 export function DomainsPage({ nav }: PageProps) {

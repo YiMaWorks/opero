@@ -1,6 +1,7 @@
 // 连服务器：用保险箱里的账号密码 / 私钥经 SSH 执行命令（Opero 自己连，AI 只拿到输出）。
 // 主机指纹第一次连上时记下来，之后对不上就拒绝（防中间人）。「本机」= Opero 自己这台，直接跑。
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
 import os from 'node:os'
 import ssh2 from 'ssh2'
 import { all, get, put } from './db.ts'
@@ -24,7 +25,7 @@ export function execOn(sv: Server, command: string, timeoutMs = 60_000): Promise
 export function execOnEnv(sv: Server, command: string, env: Record<string, string>, timeoutMs = 60_000, cwd?: string): Promise<ExecResult> {
   const secrets = Object.values(env).filter((v) => v.length >= 6)
   const clean = (r: ExecResult) => (secrets.length ? { ...r, out: scrub(r.out, secrets) } : r)
-  if (sv.id === LOCAL_ID) return execLocal(command, timeoutMs, env, cwd).then(clean)
+  if (sv.id === LOCAL_ID && !localRoot()) return execLocal(command, timeoutMs, env, cwd).then(clean)
   if (agents.isAgent(sv)) return agents.exec(sv.id, command, { timeoutMs, env, cwd }).then(clean) // 装了 Agent 的：经 Agent（root）跑，不用 SSH
   const exp = Object.entries(env).map(([k, v]) => `export ${k}='${v.replace(/'/g, `'\\''`)}'; `).join('')
   return execSsh(sv, `${exp}${cwd ? `cd '${cwd}' && ` : ''}${command}`, timeoutMs).then(clean)
@@ -132,13 +133,22 @@ export async function checkServer(sv: Server): Promise<Server> {
   return next
 }
 
+/** 这台机器的编号（和 Agent 读的同一个文件）：在这台上装 Agent 时，按它认出是「本机」，挂到本机上而不是多出一台 */
+function localMachineId() {
+  for (const f of ['/etc/machine-id', '/var/lib/dbus/machine-id']) { try { const v = fs.readFileSync(f, 'utf8').trim(); if (v) return v } catch { /* 下一个 */ } }
+  return ''
+}
 export function ensureLocal() {
-  if (get<Server>('servers', LOCAL_ID)) return
+  const machineId = localMachineId()
+  const cur = get<Server>('servers', LOCAL_ID)
+  if (cur) { if (machineId && !cur.machineId) put('servers', { ...cur, machineId }); return }
   put<Server>('servers', {
     id: LOCAL_ID, name: '本机', ip: '127.0.0.1', env: '开发', os: `${os.type()} ${os.release()}`, agent: 'Opero 所在', online: true,
-    cpu: 0, mem: 0, disk: 0, services: [{ name: 'opero', status: '运行中' }], logs: [],
+    cpu: 0, mem: 0, disk: 0, services: [{ name: 'opero', status: '运行中' }], logs: [], ...(machineId ? { machineId } : {}),
   })
 }
+/** 本机装了 Agent 并且在线：要 root 的活（部署、开目录权限、跑命令）经它跑；没装或掉线就用 Opero 自己的用户 */
+export const localRoot = () => agents.agentOnline(get<Server>('servers', LOCAL_ID))
 
 let busy = false
 export function startHealthLoop() {
@@ -147,7 +157,8 @@ export function startHealthLoop() {
     busy = true
     try {
       agents.sweep()
-      await Promise.all(all<Server>('servers').filter((s) => !agents.isAgent(s) && s.via !== 'pending' && s.via !== 'rejected' && !s.agentFp).map((s) => checkServer(s).catch(() => {})))
+      // 本机一直自己查（装了 Agent 也查：Agent 掉线时本机照样在线）
+      await Promise.all(all<Server>('servers').filter((s) => s.id === LOCAL_ID || (!agents.isAgent(s) && s.via !== 'pending' && s.via !== 'rejected' && !s.agentFp)).map((s) => checkServer(s).catch(() => {})))
     } finally { busy = false }
   }
   setTimeout(tick, 3000)
@@ -180,9 +191,21 @@ export function isReadOnly(cmd: string): boolean {
 }
 
 /** 明显危险：不管审核方式，都要你本人确认 */
-const DANGER_OTHER = /\bmkfs\b|\bdd\s+if=|\bshutdown\b|\breboot\b|\bpoweroff\b|\binit\s+0\b|:\(\)\s*\{|\bchmod\s+-R\s+777\s+\/|\bdrop\s+(database|table)\b|\btruncate\s+table\b|\bgit\s+push\s+.*--force\b|\biptables\s+-F\b/i
-/** 删的东西危险不危险：根、家目录、系统目录、只有一两层的路径（/home、/srv/app）、带变量 / 通配根的才算；/tmp 下面、更深的子目录、相对路径不算 */
-function dangerousRm(raw: string): boolean {
+/** 危险命令的规则，每条带一句人话：卡片上告诉主人「为什么要你确认」 */
+const DANGER_RULES: [RegExp, string][] = [
+  [/\bmkfs\b/i, '会格式化磁盘，上面的数据全没'],
+  [/\bdd\s+if=/i, '会直接往磁盘 / 设备上写数据，写错了数据就没了'],
+  [/\bshutdown\b|\bpoweroff\b|\binit\s+0\b/i, '会关掉这台服务器'],
+  [/\breboot\b/i, '会重启这台服务器，上面的服务会断一会'],
+  [/:\(\)\s*\{/, '会把服务器跑死（fork 炸弹）'],
+  [/\bchmod\s+-R\s+777\s+\//i, '会把整个系统的权限改成谁都能改'],
+  [/\bdrop\s+(database|table)\b/i, '会删掉数据库 / 表'],
+  [/\btruncate\s+table\b/i, '会清空一张表'],
+  [/\bgit\s+push\s+.*--force\b/i, '会强推，覆盖远端的提交（别人的代码可能被冲掉）'],
+  [/\biptables\s+-F\b/i, '会清空防火墙规则'],
+]
+/** 删的东西危险不危险：根、家目录、系统目录、只有一两层的路径（/home、/srv/app）、带变量 / 通配根的才算；/tmp 下面、更深的子目录、相对路径不算。返回说明（不危险返回空） */
+function dangerousRm(raw: string): string {
   // 先把命令里的简单赋值（D=/tmp/x、export D="/srv/a/b"）代进去：rm -rf $D 删的其实是 /tmp/x
   const vars = new Map<string, string>()
   for (const m of raw.matchAll(/(?:^|[;&|\s])(?:export\s+)?([A-Za-z_]\w*)=(["']?)([^\s;&|"'$`]+)\2(?=[\s;&|]|$)/g)) vars.set(m[1], m[3])
@@ -190,13 +213,31 @@ function dangerousRm(raw: string): boolean {
   for (const m of cmd.matchAll(/\brm\s+((?:-[a-zA-Z]+\s+)*)([^;&|]*)/g)) {
     if (!/r/i.test(m[1])) continue
     for (const t of m[2].trim().split(/\s+/).filter(Boolean)) {
-      if (/^(\/|~|~\/|\*|\/\*|\.|\.\.|\.\/\*?)$/.test(t) || /\$|`/.test(t)) return true
+      if (/^(\/|~|~\/|\*|\/\*)$/.test(t)) return `会删掉 ${t} 下面的全部东西`
+      if (/^(\.|\.\.|\.\/\*?)$/.test(t)) return `会删掉当前目录（${t}）下面的全部东西`
+      if (/\$|`/.test(t)) return `要删的目录是个变量（${t}），从命令里看不出到底删哪里`
       if (/^\/(tmp|var\/tmp)\/./.test(t)) continue
-      if (t.startsWith('/') && t.replace(/\/+$/, '').split('/').filter(Boolean).length <= 2) return true
-      if (/^\/(etc|usr|bin|sbin|lib|lib64|boot|proc|sys|dev|root)(\/|$)/.test(t)) return true
+      if (t.startsWith('/') && t.replace(/\/+$/, '').split('/').filter(Boolean).length <= 2) return `会整个删掉 ${t}（层级很浅的大目录）`
+      if (/^\/(etc|usr|bin|sbin|lib|lib64|boot|proc|sys|dev|root)(\/|$)/.test(t)) return `会删系统目录里的 ${t}`
     }
   }
-  return false
+  return ''
 }
-/** 危险命令（要主人确认）：删根 / 系统目录、格式化、关机、删库、强推…… */
-export const DANGER = { test: (cmd: string) => DANGER_OTHER.test(cmd) || dangerousRm(cmd) }
+/** 灾难性命令（照 KidLock）：员工自己的终端里遇到直接拒绝、把原因告诉它，不弹卡片问主人（主人也不在这里批）。
+ *  别的命令都直接跑：员工是没有 root 的 AI 用户，系统目录它本来就改不了；内存 / CPU 有看守兜底 */
+const CATASTROPHIC_RULES: [RegExp, string][] = [
+  [/\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(-[a-zA-Z]+\s+)*("|')?(\/|\/\*|~|~\/|\$HOME|\$\{HOME\}|\*)("|')?(\s|$|;|&|\|)/, '会删掉根目录 / 家目录下的全部东西'],
+  [/\bmkfs\b|\bfdisk\b|\bparted\b/i, '会格式化 / 重新分区磁盘'],
+  [/\bdd\s+[^|;&]*\bof=\/dev\/|>\s*\/dev\/(sd|nvme|vd|xvd)/i, '会直接往磁盘设备上写数据'],
+  [/:\(\)\s*\{/, '会把服务器跑死（fork 炸弹）'],
+  [/\b(shutdown|poweroff|halt)\b|\breboot\b|\binit\s+0\b/i, '会关掉 / 重启这台服务器'],
+  [/\bchmod\s+-R\s+777\s+\/(\s|$)/i, '会把整个系统改成谁都能改'],
+  [/\b(curl|wget)\b[^|;&]*\|\s*(sudo\s+)?(ba|z)?sh\b/i, '会从网上下载脚本直接执行'],
+]
+export const CATASTROPHIC = { why: (cmd: string): string => CATASTROPHIC_RULES.find(([re]) => re.test(cmd))?.[1] ?? '' }
+
+/** 危险命令（在别的服务器上以 root 跑的 server_exec 用，要主人确认）：删根 / 系统目录、格式化、关机、删库、强推……；why 给出人话原因（不危险返回空） */
+export const DANGER = {
+  why: (cmd: string): string => DANGER_RULES.find(([re]) => re.test(cmd))?.[1] ?? dangerousRm(cmd),
+  test: (cmd: string) => !!DANGER.why(cmd),
+}

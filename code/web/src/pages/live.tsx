@@ -10,6 +10,7 @@ import { Empty, Field, Meter, PageHeader, Row, Section, Segmented, Sheet, Stat, 
 import { IconCheck, IconPlus } from '../components/icons'
 import { Markdown } from '../components/Markdown'
 import { WorkSheet } from '../components/WorkSheet'
+import { AskBar, Manual } from '../components/AskBar'
 import { approvalLabel, effortLabel, modelsFor } from '../work'
 import { ExecutorSetup, type AiInfo } from '../components/ExecutorSetup'
 import { LangPicker } from '../components/LangPicker'
@@ -433,7 +434,8 @@ function AgentJoin({ nav, again }: { nav: PageProps['nav']; again?: { name: stri
     if (r) setJoin(r)
   }
   // 命令生成之后才接进来（或重新接入）的那台
-  const joined = join ? servers.find((x) => x.via === 'agent' && (x.lastSeen ?? 0) >= join.since && x.online) : undefined
+  // 按「这次接入」的时间认，不按心跳（别的机器的 Agent 一直在报心跳，不能当成刚接入的）
+  const joined = join ? servers.find((x) => x.via === 'agent' && (x.joinedAt ?? 0) >= join.since) : undefined
   const cmd = join ? (cn ? join.cmdCn : join.cmd) : ''
   return (
     <>
@@ -444,7 +446,7 @@ function AgentJoin({ nav, again }: { nav: PageProps['nav']; again?: { name: stri
             <li>登录那台服务器，用 root（或有 sudo 权限的账号）把命令粘贴进去回车</li>
             <li>等几秒，这里会显示「已接入」</li>
           </ol>
-          <Field label="环境标签" hint="随便起名，要几个都行；像生产的（生产 / prod…）默认改东西先确认，接入后能改"><EnvPicker value={env} onChange={setEnv} /></Field>
+          {!again && <Field label="环境标签" hint="随便起名，要几个都行；像生产的（生产 / prod…）默认改东西先确认，接入后能改"><EnvPicker value={env} onChange={setEnv} /></Field>}
           <button className="btn primary block" disabled={busy} onClick={make}>{busy ? '生成中…' : '生成安装命令'}</button>
         </>
       ) : joined ? (
@@ -527,6 +529,7 @@ export function LiveServerPage({ params, nav }: PageProps) {
   const [out, setOut] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [rejoin, setRejoin] = useState(false)
+  useEffect(() => { setRejoin(false) }, [s?.via, s?.joinedAt])
   const [naming, setNaming] = useState<string | null>(null)
   const opVer = useStore((x) => x.instance?.version)
   const prodProtect = useStore((x) => x.settings.prodProtect)
@@ -573,9 +576,17 @@ export function LiveServerPage({ params, nav }: PageProps) {
             )}
           <div className="pad"><Field label="环境标签"><EnvPicker value={s.env} onChange={setEnv} /></Field></div>
           <label className="lrow"><span className="row-main"><span className="row-title">改东西先确认</span><span className="row-sub">员工在这台跑会改东西的命令前，先发卡片等你点。没单独设过：标签像生产（生产 / prod…）并且「我 → 设置」的生产保护开着就先确认</span></span><Toggle on={s.protect ?? (isProtected(s) && !!prodProtect)} onChange={setProtect} /></label>
-          <Row title="接入方式" right={s.id === 'local' ? 'Opero 所在的这台（自带 Agent）' : agent ? `Opero Agent ${s.agentVersion ?? ''} · 最后心跳 ${ago(s.lastSeen)}` : `SSH ${s.user ?? 'root'}@${s.ip}:${s.port ?? 22}`} />
+          <Row title="接入方式" right={s.id === 'local' ? (agent ? `Opero 所在的这台 · Agent ${s.agentVersion ?? ''}（root 通道）` : <>没有 root · <button className="btn ghost sm" onClick={() => setRejoin(true)}>装 Agent</button></>) : agent ? `Opero Agent ${s.agentVersion ?? ''} · 最后心跳 ${ago(s.lastSeen)}` : `SSH ${s.user ?? 'root'}@${s.ip}:${s.port ?? 22}`} />
           {s.agentFp && <Row title="Agent 指纹" sub="在那台上运行 opero fingerprint 能看到；Opero 按它认这台机器，换了上报地址也认得" right={<span className="mono small" data-no-i18n="">{s.agentFp}</span>} />}
         </Section>
+        {s.id === 'local' && !agent && (
+          <Section title="给这台装 Agent（root 通道）">
+            <div className="pad form">
+              <p className="field-hint">Opero 在这台上是用自己的普通用户跑的：部署到这台、给员工开目录权限、跑要 root 的命令都做不了。装一个 Agent 就有了 root 通道（只加 Agent，不动 Opero 本身），和别的服务器一样用；Agent 停了也不影响 Opero。</p>
+              {rejoin ? <AgentJoin nav={nav} again={{ name: s.name, env: s.env }} /> : <button className="btn primary" onClick={() => setRejoin(true)}>在这台装 Agent</button>}
+            </div>
+          </Section>
+        )}
         {sys && (
           <Section title="机器信息" right={<span className="sub">{agent ? 'Agent 每 30 秒自动更新' : '自动读取'}</span>}>
             <Row title="主机名" right={<span className="mono small" data-no-i18n="">{sys.hostname}</span>} />
@@ -588,6 +599,15 @@ export function LiveServerPage({ params, nav }: PageProps) {
             <Row title="已开机" right={up(sys.uptime)} />
           </Section>
         )}
+        <div className="pad">
+          <AskBar nav={nav} pick={/运维|值班|ops|sre/i} title="这台要配什么，跟员工说" placeholder="比如：把 shop 的日志登记上；让员工能读 /srv/shop"
+            context={`（在服务器「${srvName(s)}」的页面说的：登记目录用 server_dir_set、登记日志用 log_register，先自己上去看清楚路径）`}
+            suggestions={[
+              { label: '找出日志并登记', text: '看看这台上跑了哪些服务、日志在哪，把业务相关的日志都登记上（log_register），登记了什么告诉我' },
+              { label: '登记项目目录', text: '看看这台上有哪些项目目录，把员工要看的登记成只读、要部署的登记成能部署（server_dir_set）' },
+              { label: '看一下健康', text: '看一下这台的磁盘、内存、负载和关键服务，有问题告诉我' },
+            ]} />
+        </div>
         {s.via === 'agent' && <DirsSection s={s} />}
         {work && <PolicySection s={s} />}
         {work && (
@@ -613,10 +633,17 @@ export function LiveServerPage({ params, nav }: PageProps) {
             {out && <pre className="console">{out}</pre>}
           </div>
         </Section>
-        {agent && rejoin && <div className="pad form"><AgentJoin nav={nav} again={{ name: s.name, env: s.env }} /></div>}
+        {agent && rejoin && (
+          <Section title="重新接入" right={<button className="btn ghost sm" onClick={() => setRejoin(false)}>收起</button>}>
+            <div className="pad form">
+              <p className="field-hint">重装过系统、换了机器，或者 Agent 连不上了才用：在那台上重新跑一次命令，还是这一台，不会多出一台。</p>
+              <AgentJoin nav={nav} again={{ name: s.name, env: s.env }} />
+            </div>
+          </Section>
+        )}
         <div className="pad row-actions wrap">
           <button className="btn default" onClick={() => nav.openChat(getState().employees.find((e) => e.id === 'ops')?.id ?? getState().employees[0]?.id ?? '')}>让员工看看</button>
-          {agent && s.online && s.agentVersion && opVer && s.agentVersion !== opVer && (
+          {agent && s.id !== 'local' && s.online && s.agentVersion && opVer && s.agentVersion !== opVer && (
             <button className="btn primary" onClick={() => (call('POST', `/api/agents/${s.id}/upgrade`, undefined, '已开始升级：一两分钟后 Agent 会重新连上来'))}>升级 Agent（{s.agentVersion} → {opVer}）</button>
           )}
           {agent && !rejoin && <button className="btn ghost" onClick={() => setRejoin(true)}>重新接入（重装 / 换机器后用）</button>}
@@ -715,8 +742,16 @@ export function LiveTriggersPage({ nav }: PageProps) {
   return (
     <div className="page">
       <PageHeader title="触发器" sub="到点了 / 有人调 Webhook，员工自己开始干活" {...headNav(nav)}
-        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'triggerEdit' })}><IconPlus /> 新增</button>} />
+        right={<button className="btn ghost sm" onClick={() => nav.push({ page: 'triggerEdit' })}>手动建</button>} />
       <div className="page-body">
+        <AskBar nav={nav} pick={/管家|助理|秘书|butler|assistant/i} title="要定时做什么，跟员工说一句" placeholder="比如：工作日每天 18:00 总结今天各员工做了什么发给我"
+          context="（在「触发器」页面说的：用 schedule_set 建 / 改定时任务，建好告诉我一句什么时候、交给谁）"
+          suggestions={[
+            { label: '每天 18:00 发小结', text: '每天 18:00 总结今天各员工做了什么、还有什么在等我决定，发给我' },
+            { label: '每 30 分钟巡检日志', text: '每 30 分钟巡检一遍所有登记了日志的服务器，有新错误记进问题清单，严重的告诉我' },
+            { label: '工作日 9:30 看服务器', text: '工作日 9:30 看一遍所有服务器的磁盘、内存、负载和关键服务，有异常告诉我' },
+            { label: '收到报警就查', text: '建一个 Webhook：报警系统调它的时候，把报警内容交给运维去查原因，查到了告诉我' },
+          ]} />
         <Section flush>
           {list.length === 0 && <Empty>还没有。比如：每 30 分钟让「日志值班」看一眼生产日志</Empty>}
           {list.map((t) => (
@@ -780,6 +815,33 @@ const TRIGGER_TPL: { key: string; label: string; text: string }[] = [
 ]
 export function LiveTriggerEditPage({ params, nav }: PageProps) {
   const existing = useStore((s) => s.triggers.find((x) => x.id === params.id)) as (Trigger & { prompt?: string; hookPath?: string }) | undefined
+  if (!existing) return <TriggerForm params={params} nav={nav} />
+  // 已有的：看清楚是什么、开关、跑一次；要改就跟员工说，表单收起来兜底
+  const hook = existing.hookPath ? `${location.origin}${existing.hookPath}` : ''
+  return (
+    <div className="page">
+      <PageHeader title={existing.name} sub={`${existing.rule} · 交给 ${empName(existing.employee)} · ${existing.last}`} {...headNav(nav)}
+        right={<Toggle on={existing.enabled} onChange={() => toggleTrigger(existing.id)} label="启用" />} />
+      <div className="page-body form">
+        <div className="trigger-view">
+          <Row icon={<Avatar id={existing.employee} size={36} />} title={existing.kind === 'Webhook' ? '有人调 Webhook 地址时' : existing.rule} sub={`交给 ${empName(existing.employee)}`} />
+          {hook && <div className="cmd-box mono">{hook}<button className="btn ghost sm" onClick={() => copy(hook)}>复制</button></div>}
+          {existing.prompt && <div className="trigger-prompt">{existing.prompt}</div>}
+          <div className="row-actions wrap">
+            <button className="btn default" onClick={() => call('POST', `/api/triggers/${existing.id}/run`, undefined, `已派给「${empName(existing.employee)}」`)}>现在跑一次</button>
+            <button className="btn ghost" onClick={() => { if (confirm('删掉这个触发器？')) call('DELETE', `/api/triggers/${existing.id}`, undefined, '已删除').then(() => nav.back()) }}>删除</button>
+          </div>
+        </div>
+        <AskBar nav={nav} emp={existing.employee} title="要改什么，跟员工说" placeholder="比如：改成工作日 9:00；或者让它顺便看一下磁盘"
+          context={`（改定时任务「${existing.name}」，id ${existing.id}：用 schedule_set 改，改好告诉我一句）`} />
+        <Manual><TriggerForm params={params} nav={nav} embedded /></Manual>
+      </div>
+    </div>
+  )
+}
+
+function TriggerForm({ params, nav, embedded }: PageProps & { embedded?: boolean }) {
+  const existing = useStore((s) => s.triggers.find((x) => x.id === params.id)) as (Trigger & { prompt?: string; hookPath?: string }) | undefined
   const employees = useStore((s) => s.employees)
   const servers = useStore((s) => s.servers)
   const tplFor = (empId: string) => TRIGGER_TPL.find((x) => x.key === empId) ?? TRIGGER_TPL.find((x) => (employees.find((e) => e.id === empId)?.menus ?? []).includes('服务器') && x.key === 'ops')
@@ -794,10 +856,8 @@ export function LiveTriggerEditPage({ params, nav }: PageProps) {
     if (r) nav.back()
   }
   const hook = existing?.hookPath ? `${location.origin}${existing.hookPath}` : ''
-  return (
-    <div className="page">
-      <PageHeader title={existing ? existing.name : '新触发器'} {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>保存</button>} />
-      <div className="page-body form">
+  const body = (
+      <>
         <Field label="什么时候"><Segmented value={t.kind as '定时' | 'Webhook'} onChange={(v) => setT({ ...t, kind: v })} options={[{ value: '定时', label: '定时' }, { value: 'Webhook', label: 'Webhook' }]} /></Field>
         {t.kind === '定时'
           ? <Field label="规则"><RulePicker rule={t.rule} onChange={(rule) => setT({ ...t, rule })} /></Field>
@@ -815,13 +875,19 @@ export function LiveTriggerEditPage({ params, nav }: PageProps) {
         {servers.length > 1 && <div className="chips">{servers.map((x) => <button key={x.id} type="button" className="chip" title="把服务器名加进上面的话里" onClick={() => setT({ ...t, prompt: `${t.prompt ?? ''}${t.prompt ? ' ' : ''}「${srvName(x)}」` })}>+ {srvName(x)}</button>)}</div>}
         <Field label="名字（可选）"><input value={t.name} onChange={(e) => setT({ ...t, name: e.target.value })} placeholder={autoName} /></Field>
         <div className="lrow"><span className="row-main"><span className="row-title">启用</span></span><Toggle on={t.enabled} onChange={(v) => setT({ ...t, enabled: v })} /></div>
-        {existing && (
+        {existing && !embedded && (
           <div className="row-actions wrap">
             <button className="btn default" onClick={() => call('POST', `/api/triggers/${t.id}/run`, undefined, `已派给「${empName(t.employee)}」`)}>现在跑一次</button>
             <button className="btn ghost" onClick={() => { if (confirm('删掉这个触发器？')) call('DELETE', `/api/triggers/${t.id}`, undefined, '已删除').then(() => nav.back()) }}>删除</button>
           </div>
         )}
-      </div>
+      </>
+  )
+  if (embedded) return <>{body}<div className="row-actions"><button className="btn primary sm" onClick={save}>保存</button></div></>
+  return (
+    <div className="page">
+      <PageHeader title="新触发器" {...headNav(nav)} right={<button className="btn primary sm" onClick={save}>保存</button>} />
+      <div className="page-body form">{body}</div>
     </div>
   )
 }
@@ -947,73 +1013,109 @@ export function LiveWorkspaceAddPage({ params, nav }: PageProps) {
     setBusy(false)
     if (r) nav.back()
   }
+  const credOf = creds.find((c) => c.id === credential)
+  const platform = (k?: string) => (k ? k.replace(/（.*）/, '') : '')
+  const emps = useStore((s) => s.employees)
+  const ok = /^https:\/\/.+/.test(url)
   return (
     <div className="page">
-      <PageHeader title="接入仓库" sub="点账号、点仓库，剩下的自动选好" {...headNav(nav)} />
-      <div className="page-body">
-        <Section title="用哪个账号">
-          <div className="pad chips">
-            {creds.map((c) => <button key={c.id} className={'chip' + (credential === c.id ? ' on' : '')} onClick={() => setCredential(c.id)}>{c.name}</button>)}
-            <button className={'chip' + (!credential ? ' on' : '')} onClick={() => setCredential('')}>公开仓库（不用账号）</button>
-            <button className="chip" onClick={() => nav.push({ page: 'credentialEdit', params: { group: '代码仓库' } })}>+ 新增账号</button>
+      <PageHeader title="接入项目" sub="选账号、选仓库，分支、名字、服务器都自动选好；接入后员工就能在上面干活" {...headNav(nav)} />
+      <div className="page-body wsadd">
+        {/* ① 账号 */}
+        <div className="wsadd-step">
+          <div className="wsadd-head"><span className={'wsadd-n' + (credential || manual ? ' ok' : '')}>1</span><b>用哪个代码平台账号</b><span className="sub">私有仓库要账号；公开仓库可以不用</span></div>
+          <div className="wsadd-accts">
+            {creds.map((c) => (
+              <button key={c.id} className={'wsadd-acct' + (credential === c.id ? ' on' : '')} onClick={() => setCredential(c.id)}>
+                <span className="wsadd-plat">{platform(c.kind).slice(0, 2)}</span>
+                <span className="wsadd-acct-main"><b>{c.name}</b><small>{platform(c.kind)}{c.user ? ` · ${c.user}` : ''}</small></span>
+                {credential === c.id && <IconCheck size={14} />}
+              </button>
+            ))}
+            <button className={'wsadd-acct' + (!credential ? ' on' : '')} onClick={() => setCredential('')}>
+              <span className="wsadd-plat">公</span><span className="wsadd-acct-main"><b>公开仓库</b><small>不用账号，手填地址</small></span>{!credential && <IconCheck size={14} />}
+            </button>
+            <button className="wsadd-acct add" onClick={() => nav.push({ page: 'credentialEdit', params: { group: '代码仓库' } })}>
+              <span className="wsadd-plat">＋</span><span className="wsadd-acct-main"><b>新增账号</b><small>GitHub / GitLab / Gitee / Codeup / Gitea，贴个令牌</small></span>
+            </button>
           </div>
-          {creds.length === 0 && <p className="pad hint">私有仓库先「新增账号」：GitHub、GitLab、Gitee、Codeup、Gitea 都有一步步的说明和直达链接，贴个令牌就行</p>}
-        </Section>
+        </div>
 
-        {credential && !manual && (
-          <Section title={repos === null ? '选仓库' : `选仓库 · ${repos.length}`} right={<button className="btn ghost sm" onClick={() => { setManual(true); setUrl('') }}>不在列表里？手填地址</button>}>
-            {repos === null && <div className="pad sub"><i className="spinner" /> 在读这个账号能访问的仓库…</div>}
-            {repos && repos.length > 6 && <div className="pad"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`搜 ${repos.length} 个仓库`} /></div>}
-            {repos && repos.length === 0 && <Empty>这个账号没读到仓库：检查令牌有没有勾读仓库的权限，或者手填地址</Empty>}
-            <div className="repo-list">
-              {shown.slice(0, 80).map((x) => {
-                const on = x.url === url
-                const short = x.short ?? lastSeg(x.url)
-                return (
-                  <button key={x.url} className={'repo-row' + (on ? ' on' : '')} onClick={() => setUrl(x.url)}>
-                    <span className="repo-ico">{on ? '✓' : short.slice(0, 1).toUpperCase()}</span>
-                    <span className="repo-main"><b data-no-i18n="">{short}</b><span className="sub" data-no-i18n="">{x.group || ' '}</span></span>
-                    <span className="repo-meta">{x.private && <Tag>私有</Tag>}<span className="sub">{agoText(x.updated)}</span></span>
-                  </button>
-                )
-              })}
+        {/* ② 仓库 */}
+        <div className="wsadd-step">
+          <div className="wsadd-head">
+            <span className={'wsadd-n' + (ok ? ' ok' : '')}>2</span><b>选仓库</b>
+            {credential && !manual && repos && <span className="sub">{`${credOf?.name ?? ''} 能访问的 ${repos.length} 个`}</span>}
+            {credential && <button className="btn ghost sm wsadd-switch" onClick={() => { setManual(!manual); setUrl('') }}>{manual ? '回到列表' : '不在列表里？手填地址'}</button>}
+          </div>
+          {credential && !manual ? (
+            <>
+              {repos === null && <div className="sub wsadd-wait"><i className="spinner" /> 在读这个账号能访问的仓库…</div>}
+              {repos && repos.length > 6 && <input className="wsadd-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={`搜 ${repos.length} 个仓库`} />}
+              {repos && repos.length === 0 && <Empty>这个账号没读到仓库：检查令牌有没有勾读仓库的权限，或者手填地址</Empty>}
+              <div className="wsadd-repos">
+                {shown.slice(0, 80).map((x) => {
+                  const on = x.url === url
+                  const short = x.short ?? lastSeg(x.url)
+                  return (
+                    <button key={x.url} className={'wsadd-repo' + (on ? ' on' : '')} onClick={() => setUrl(x.url)}>
+                      <span className="wsadd-repo-ico">{on ? <IconCheck size={14} /> : short.slice(0, 1).toUpperCase()}</span>
+                      <span className="wsadd-repo-main"><b data-no-i18n="">{short}</b><small data-no-i18n="">{x.group || ' '}</small></span>
+                      <span className="wsadd-repo-meta">{x.private && <span className="wsadd-tag">私有</span>}<small>{agoText(x.updated)}</small></span>
+                    </button>
+                  )
+                })}
+              </div>
+              {shown.length > 80 && <p className="hint">还有 {shown.length - 80} 个，搜一下名字</p>}
+            </>
+          ) : (
+            <input className="mono wsadd-url" value={url} onChange={(e) => setUrl(e.target.value.trim())} placeholder="https://github.com/you/app.git" autoFocus />
+          )}
+        </div>
+
+        {/* ③ 确认 */}
+        {ok && (
+          <div className="wsadd-step final">
+            <div className="wsadd-head"><span className="wsadd-n">3</span><b>确认一下</b><span className="sub">都自动选好了，要改再点</span></div>
+            <div className="wsadd-summary">
+              <span className="wsadd-big-ico">{(name || lastSeg(url)).slice(0, 1).toUpperCase()}</span>
+              <div className="wsadd-summary-main">
+                {editName
+                  ? <input autoFocus className="wsadd-name-input" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setEditName(false)} onKeyDown={(e) => e.key === 'Enter' && setEditName(false)} />
+                  : <button className="wsadd-name" onClick={() => setEditName(true)} title="改名字"><b data-no-i18n="">{name || lastSeg(url)}</b><span className="sub">改名</span></button>}
+                <small className="mono" data-no-i18n="">{picked?.name ?? url.replace(/^https:\/\//, '')}</small>
+              </div>
             </div>
-            {shown.length > 80 && <p className="pad hint">还有 {shown.length - 80} 个，搜一下名字</p>}
-          </Section>
-        )}
-
-        {(!credential || manual) && (
-          <Section title="仓库地址" right={credential ? <button className="btn ghost sm" onClick={() => { setManual(false); setUrl('') }}>回到列表</button> : undefined}>
-            <div className="pad"><input className="mono" value={url} onChange={(e) => setUrl(e.target.value.trim())} placeholder="https://github.com/you/app.git" autoFocus /></div>
-          </Section>
-        )}
-
-        {/^https:\/\/.+/.test(url) && (
-          <Section title="接入设置" right={<span className="sub">都自动选好了，要改再点</span>}>
-            <Row title="仓库" right={<span className="mono small" data-no-i18n="">{picked?.name ?? url.replace(/^https:\/\//, '')}</span>} />
-            <div className="pad">
-              <div className="field-label">分支</div>
+            <div className="wsadd-field">
+              <span className="wsadd-label">分支</span>
               {!br && !brErr && <span className="sub"><i className="spinner" /> 在读分支…</span>}
               {brErr && <span className="sub">读不到分支（{brErr}），用仓库的默认分支</span>}
-              {br && (
-                <div className="chips">
-                  {br.branches.slice(0, 30).map((x) => <button key={x} className={'chip' + (branch === x ? ' on' : '')} onClick={() => setBranch(x)} data-no-i18n="">{x}{x === br.def ? ' · 默认' : ''}</button>)}
-                </div>
-              )}
+              {br && <div className="chips">{br.branches.slice(0, 30).map((x) => <button key={x} className={'chip' + (branch === x ? ' on' : '')} onClick={() => setBranch(x)} data-no-i18n="">{x}{x === br.def ? ' · 默认' : ''}</button>)}</div>}
             </div>
-            {editName
-              ? <div className="pad"><Field label="名字"><input autoFocus value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setEditName(false)} /></Field></div>
-              : <Row title="名字" right={<span data-no-i18n="">{name || lastSeg(url)}</span>} chevron onClick={() => setEditName(true)} />}
             {workHosts.length > 1 && (
-              <div className="pad">
-                <div className="field-label">拉到哪台（要和用它的员工在同一台）</div>
-                <div className="chips">{workHosts.map((x) => <button key={x.id} className={'chip' + (server === x.id ? ' on' : '')} onClick={() => setServer(x.id)}>{hostLabel(x)}</button>)}</div>
+              <div className="wsadd-field">
+                <span className="wsadd-label">拉到哪台 <span className="sub">（员工在这台上干活）</span></span>
+                <div className="wsadd-hosts">
+                  {workHosts.map((x) => {
+                    const n = emps.filter((e) => (e.host || 'local') === x.id).length
+                    return (
+                      <button key={x.id} className={'wsadd-host' + (server === x.id ? ' on' : '')} onClick={() => setServer(x.id)}>
+                        <span className={'wsadd-dot' + (x.online ? ' ok' : '')} />
+                        <span className="wsadd-host-main"><b>{hostLabel(x)}</b><small>{[x.env, x.sys ? `${x.sys.cores} 核 · ${x.sys.memGb}G` : '', n ? `${n} 个员工` : ''].filter(Boolean).join(' · ')}</small></span>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             )}
-            <div className="pad"><button className="btn primary block" disabled={busy} onClick={save}>{busy ? '在接入…' : `接入「${name || lastSeg(url)}」`}</button></div>
-          </Section>
+            <div className="wsadd-auto">
+              <b>接入后自动做</b>
+              <span>拉代码到那台</span><span>认出项目类型、建好编译和流水线</span><span>建一个项目员工，能马上派活</span>
+            </div>
+            <button className="btn primary block wsadd-go" disabled={busy} onClick={save}>{busy ? '在接入…' : `接入「${name || lastSeg(url)}」`}</button>
+          </div>
         )}
-        <p className="pad hint">令牌只在 Opero 拉取 / 推送时用（不写进仓库配置），员工拿不到。</p>
+        <p className="hint wsadd-foot">令牌只在 Opero 拉取 / 推送时用（不写进仓库配置），员工拿不到。</p>
       </div>
     </div>
   )

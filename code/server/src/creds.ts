@@ -3,7 +3,7 @@
 import crypto from 'node:crypto'
 import net from 'node:net'
 import { Client as SshClient } from 'ssh2'
-import { grantsOf, loadSchema, runQuery } from './dbconn.ts'
+import { grantsOf, listDbs, loadSchema, runQuery } from './dbconn.ts'
 import type { Credential, DataSource, DbKind } from './types.ts'
 
 /** 测试连接的结果：能不能用 + 读到了什么（仓库、表、模型…），让主人一眼看到这个账号能看到哪些东西 */
@@ -75,10 +75,12 @@ async function testDb(kind: string, m: Record<string, string>, user: string, pas
   // 连上了：读出能看到哪些表、这个账号能不能改数据
   const tables = await loadSchema(ds, password).catch(() => [] as DataSource['tables'])
   const g = await grantsOf(ds, password)
-  const details: TestDetail[] = [detail(`能看到的表（${tables.length}${tables.length >= 300 ? '+' : ''} 张）`, tables.map((t) => `${t.name}（约 ${t.rows} 行，${t.cols.length} 列）`))]
+  // 没填库名 = 整个实例：列出这个账号能看到的库
+  const dbs = ds.db ? [] : await listDbs(ds, password).catch(() => [] as string[])
+  const details: TestDetail[] = [...(dbs.length ? [detail(`能看到的库（${dbs.length} 个）`, dbs)] : []), detail(`能看到的表（${tables.length}${tables.length >= 300 ? '+' : ''} 张）`, tables.map((t) => `${t.name}（约 ${t.rows} 行，${t.cols.length} 列）`))]
   if (g.lines.length) details.push(detail('这个账号的权限', g.lines, 10))
   const rw = g.write === true ? '能改数据' : g.write === false ? '只读' : ''
-  return { ok: true, write: g.write, details, msg: `连上了（${r.ms} ms）· 能看到 ${tables.length} 张表${rw ? ` · 这个账号${rw}` : ''}` }
+  return { ok: true, write: g.write, details, msg: `连上了（${r.ms} ms）· ${dbs.length ? `整个实例，${dbs.length} 个库、` : ''}能看到 ${tables.length} 张表${rw ? ` · 这个账号${rw}` : ''}` }
 }
 function tcp(host: string, port: number, ms = 8000): Promise<void> {
   return new Promise((resolve, reject) => {

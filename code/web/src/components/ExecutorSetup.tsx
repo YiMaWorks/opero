@@ -11,6 +11,44 @@ export interface AiInfo {
   claudeKey: boolean; claudeBaseUrl: string; codexKey: boolean; codexBaseUrl: string
   /** 网络出口：'' = 直连；local = 经 Opero 这台；服务器编号 = 经那台 Agent */
   claudeEgress?: string; codexEgress?: string
+  claudeAccounts?: ClaudeAccount[]
+}
+export interface ClaudeAccount { id: string; name: string; user: string; updated: string; isDefault: boolean; limitedUntil: number; employees: string[]; sub: boolean }
+
+const hhmm = (ts: number) => { const d = new Date(ts); return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
+/** 登录过的 Claude 账号（可以好几个）：默认哪个、谁在用、到没到用量上限；设默认、改名、从 Opero 去掉（令牌本身不作废） */
+export function ClaudeAccounts({ list, reload }: { list: ClaudeAccount[]; reload: () => Promise<unknown> }) {
+  if (!list.length) return null
+  const act = async (id: string, body: Record<string, unknown>, msg: string) => { if (await call('PUT', `/api/ai/claude-accounts/${id}`, body, msg)) await reload() }
+  const rename = (a: ClaudeAccount) => { const n = prompt('给这个账号起个名字（比如用的是谁的订阅）', a.name); if (n && n.trim() && n.trim() !== a.name) void act(a.id, { name: n.trim() }, '已改名') }
+  const remove = async (a: ClaudeAccount) => {
+    if (!confirm(`从 Opero 去掉「${a.name}」？\n\n只是 Opero 不再用它：账号和令牌本身不受影响，别的项目照常能用。${a.employees.length ? `\n指定用它的员工（${a.employees.join('、')}）会改用默认账号。` : ''}`)) return
+    if (await call('DELETE', `/api/ai/claude-accounts/${a.id}`, undefined, '已从 Opero 去掉')) await reload()
+  }
+  return (
+    <div className="acct-list">
+      {list.map((a) => (
+        <div key={a.id} className={'acct' + (a.isDefault ? ' on' : '')}>
+          <div className="acct-main">
+            <b>{a.name}</b>
+            <span className="acct-tags">
+              {a.isDefault && <span className="acct-tag def">默认</span>}
+              <span className="acct-tag">{a.sub ? '订阅' : 'API Key'}</span>
+              {a.limitedUntil > 0 && <span className="acct-tag warn">{`用量到上限 · ${hhmm(a.limitedUntil)} 前先用别的`}</span>}
+              {a.employees.length > 0 && <span className="acct-tag">{`${a.employees.join('、')} 指定用它`}</span>}
+            </span>
+          </div>
+          <span className="acct-acts">
+            {!a.isDefault && <button className="btn ghost sm" onClick={() => act(a.id, { isDefault: true }, '已设成默认')}>设成默认</button>}
+            {a.limitedUntil > 0 && <button className="btn ghost sm" onClick={() => act(a.id, { clearLimit: true }, '已恢复')}>已恢复</button>}
+            <button className="btn ghost sm" onClick={() => rename(a)}>改名</button>
+            <button className="btn ghost sm" onClick={() => remove(a)}>去掉</button>
+          </span>
+        </div>
+      ))}
+      <p className="field-hint">员工默认用「默认」账号，也能在员工的 work 设置里单独指定；一个账号用量到上限，后面的活自动先换别的账号。</p>
+    </div>
+  )
 }
 interface Job { id: string; type: 'install' | 'login'; executor: 'claude' | 'codex'; host?: string; screen?: string; state: 'running' | 'waitCode' | 'verifying' | 'ok' | 'fail'; log: string; url?: string; message?: string }
 
@@ -157,15 +195,16 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
       <EgressStep n={2} exec={exec} host={host} info={info} reload={reload} />
 
       <Step n={3} title="登录" ok={loggedIn}>
-        {loggedIn && <p className="sub">已经登录（令牌加密存在这台服务器上）。要换账号，按下面重新来一遍。</p>}
+        {loggedIn && (codex || !info.claudeAccounts?.length) && <p className="sub">已经登录（令牌加密存在这台服务器上）。要换账号，按下面重新来一遍。</p>}
+        {!codex && <ClaudeAccounts list={info.claudeAccounts ?? []} reload={reload} />}
         {!codex && <Segmented value={how} onChange={setHow} options={[{ value: 'sub', label: '用 Claude 账号登录（Pro / Max 订阅）' }, { value: 'key', label: '用 API Key（按量付费）' }]} />}
 
         {!codex && how === 'sub' && (
           !mine || mine.type !== 'login' || mine.state === 'ok' || mine.state === 'fail' ? (
             <>
               {mine?.type === 'login' && mine.state === 'fail' && <div className="banner b-warn">{mine.message}</div>}
-              <button className="btn primary block" disabled={!installed || !!live} onClick={login}>{loggedIn ? '换账号 / 重新登录' : '登录 Claude 账号'}</button>
-              <p className="field-hint">会自动打开 Claude 的登录页：登录 → 点 Authorize → 复制页面上的码 → 回来贴进框里，就好了。</p>
+              <button className="btn primary block" disabled={!installed || !!live} onClick={login}>{loggedIn ? '再登录一个账号' : '登录 Claude 账号'}</button>
+              <p className="field-hint">会自动打开 Claude 的登录页：登录 → 点 Authorize → 复制页面上的码 → 回来贴进框里，就好了。{loggedIn ? '再登录一个账号是新加一个，原来的账号和令牌都留着、照常能用（别的项目在用的不受影响）；新登录的会设成默认。' : ''}</p>
               <Field label="已经有令牌（sk-ant-oat 开头）？贴这里" hint="贴进来自动保存，不用再登录。没有令牌就点上面的按钮。">
                 <input type="password" value={code} onChange={(e) => setCode(e.target.value)} onPaste={onPaste} placeholder="sk-ant-oat…" autoComplete="new-password" disabled={!installed || !!live} onKeyDown={(e) => e.key === 'Enter' && submit(code)} />
               </Field>

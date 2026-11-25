@@ -5,15 +5,18 @@ import path from 'node:path'
 import * as hosts from './hosts.ts'
 import * as agents from './agents.ts'
 import { cfg } from './config.ts'
-import { all, db, get, kvGet, kvSet, put, uid } from './db.ts'
+import { all, db, del, get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit } from './bus.ts'
 import { addMsg, audit, empSays, patchSession, sessionFor, system } from './chat.ts'
-import { DANGER, execOn, isReadOnly } from './ssh.ts'
+import { CATASTROPHIC, DANGER, execOn, isReadOnly } from './ssh.ts'
 import { isReadSql, resultText, runQuery } from './dbconn.ts'
 import { git, syncWorkspace } from './git.ts'
 import * as runner from './runner.ts'
 import { switchAndTell } from './branch.ts'
-import type { Card, Credential, DataSource, Employee, KbDoc, Release, Server, Workspace } from './types.ts'
+import type { Card, Credential, DataSource, Deploy, Employee, KbDoc, LogSource, Release, Server, ServerDir, Trigger, Workspace } from './types.ts'
+import { makeTrigger } from './triggers.ts'
+import { applyDirs, cleanDirs, cleanLogs } from './serverdirs.ts'
+import * as pipes from './pipelines.ts'
 import { isProtected } from './env.ts'
 import { buildNeed, checkCommand, policyOf } from './policy.ts'
 import { hostRes } from './resources.ts'
@@ -40,8 +43,8 @@ export const TOOLS = [
   { name: 'approve', description: 'Permission check used by Claude Code before running a tool (internal).', inputSchema: S({ tool_name: { type: 'string' }, input: { type: 'object' } }) },
   { name: 'list_servers', description: 'List the servers the owner connected to Opero (name, environment, OS, online, CPU/memory/disk, registered logs). No credentials.', inputSchema: S({}) },
   { name: 'server_exec', description: 'Run a shell command on one of the owner\'s servers through Opero (Opero holds the SSH credentials; you only get the output). Read-only commands run right away; anything that changes the server may need the owner to approve a card first. Always say why.', inputSchema: S({ server: str('server name or id from list_servers'), command: str('shell command'), reason: str('one line: why you need this') }, ['server', 'command', 'reason']) },
-  { name: 'list_databases', description: 'List the databases the owner connected (name, MySQL/PostgreSQL, environment, writable, tables).', inputSchema: S({}) },
-  { name: 'db_query', description: 'Run SQL on one of the owner\'s databases through Opero. SELECT/SHOW/EXPLAIN run in a read-only transaction (15 s timeout, 200 rows max, sensitive columns masked). Writes only on databases marked writable and always need the owner to approve.', inputSchema: S({ database: str('database name or id from list_databases'), sql: str('one SQL statement'), reason: str('one line: why') }, ['database', 'sql', 'reason']) },
+  { name: 'list_databases', description: 'List the databases the owner connected (name, kind, environment, writable, tables). A connection without db is a whole server/instance: "dbs" lists the databases you can pick with db_query\'s db.', inputSchema: S({}) },
+  { name: 'db_query', description: 'Run SQL on one of the owner\'s databases through Opero. SELECT/SHOW/EXPLAIN run in a read-only transaction (15 s timeout, 200 rows max, sensitive columns masked). Writes only on databases marked writable and always need the owner to approve.', inputSchema: S({ database: str('connection name or id from list_databases (or a database name inside one)'), db: str('whole-instance connections: which database to run in (one of its dbs); MySQL can also use db.table in the SQL'), sql: str('one SQL statement'), reason: str('one line: why') }, ['database', 'sql', 'reason']) },
   { name: 'switch_branch', description: 'Switch your project (workspace) to another Git branch. Every employee of this project shares the same checkout, so they all switch with you; uncommitted changes are stashed first. Use when the owner asks to work on another branch.', inputSchema: S({ branch: str('branch name (existing local or remote branch, or a new one)') }, ['branch']) },
   { name: 'git_sync', description: 'Fetch the latest code of your workspace from its Git remote with the owner\'s token (you cannot fetch/pull/push yourself), optionally rebase onto it and push your commits. Commit first if you want to push.', inputSchema: S({ workspace: str('workspace name or id (default: yours)'), rebase: { type: 'boolean', description: 'rebase current branch onto its upstream (default true, only when clean)' }, push: { type: 'boolean', description: 'push HEAD to origin (default false)' } }) },
   { name: 'ask_owner', description: 'Ask the owner to pick one of a few options (shown as a card in the chat). Waits for the answer (up to 30 minutes) and returns the chosen option.', inputSchema: S({ question: str('the question'), options: { type: 'array', items: { type: 'string' }, minItems: 2, maxItems: 6 }, recommend: { type: 'integer', description: 'index of the option you recommend' } }, ['question', 'options']) },
@@ -73,10 +76,19 @@ export const TOOLS = [
   { name: 'release_list', description: 'List the release targets of the workspaces (name, servers, whether build/sign/health check is set, your release permission auto/ask/off) and their latest releases.', inputSchema: S({ workspace: str('workspace name or id (optional)') }) },
   { name: 'release_publish', description: 'Release a workspace to one of its targets: Opero takes the latest commit on the remote branch, builds / signs if configured, deploys, health-checks, and rolls back automatically on failure. Push your code first. Permission per target: auto = goes right away, ask = the owner approves a card, off = refused. Returns right away; progress shows as a card. If an auto release fails you get the reason back to fix it.', inputSchema: S({ workspace: str('workspace name or id (default: yours)'), target: str('release target name'), note: str('what is in this release'), reason: str('one line: why now') }, ['target', 'reason']) },
   { name: 'build_info', description: 'Show how a project is built: template (node/go/android/spring/custom), where it builds (auto = local server if it has enough resources, else the pipeline; local; pipeline), pipeline tool (Codeup Yunxiao Flow / GitHub Actions) and whether the pipeline exists, the build script contract (put release files in out/; Opero adds SHA256SUMS/VERSION/COMMIT; a deploy.sh inside the package installs it with OPERO_DIR = deploy dir), the last test build and the generated build script. Read this before changing anything.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
-  { name: 'build_set', description: 'Change the build settings of a project. Only pass what you want to change. where: auto (default, recommended) / local / pipeline. kind: node / go / android / spring / custom (custom needs cmd: a command run at the repo root that puts the release files into out/, e.g. "bash deploy/build.sh"). Then call build_generate to (re)create the pipeline and build_try to test.', inputSchema: S({ workspace: str('project name or id (default: your project)'), kind: { type: 'string', enum: ['node', 'go', 'android', 'spring', 'custom'] }, where: { type: 'string', enum: ['auto', 'local', 'pipeline'] }, cmd: str('custom: build command'), subdir: str('code subdir (optional)'), versionFile: str('file with the version (optional)'), service: str('node/go: systemd service to restart after deploy (optional)') }) },
+  { name: 'build_set', description: 'Change the build settings of a project. Only pass what you want to change. where: auto (default, recommended) / local / pipeline. kind: node / go / android / spring / custom (custom needs cmd: a command run at the repo root that puts the release files into out/, e.g. "bash deploy/build.sh"). Then call build_generate to (re)create the pipeline and build_try to test.', inputSchema: S({ workspace: str('project name or id (default: your project)'), kind: { type: 'string', enum: ['node', 'go', 'android', 'spring', 'custom'] }, where: { type: 'string', enum: ['auto', 'local', 'pipeline'] }, cmd: str('custom: build command'), subdir: str('code subdir (optional)'), versionFile: str('file with the version (optional)'), service: str('node/go: systemd service to restart after deploy (optional)'), provider: { type: 'string', enum: ['yunxiao', 'github', 'gitlab', 'jenkins', 'local'], description: 'pipeline tool (local = no pipeline). yunxiao needs a Codeup credential with pipeline permission, jenkins a Jenkins credential' }, credential: str('yunxiao / jenkins: credential name to use (setup_info lists them)'), job: str('jenkins: job name (default opero-<project>)') }) },
   { name: 'build_generate', description: 'Create or update the pipeline for a project on its pipeline tool (Codeup Yunxiao Flow: created with the owner\'s Codeup token; GitHub Actions: commits .github/workflows/opero-build.yml). Safe to run again after changing settings. Push your build script changes first.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
   { name: 'build_try', description: 'Test-build the latest pushed commit (build only, nothing is deployed). Decides local vs pipeline like a real release. Returns right away; poll build_status. Fix the build script / settings from the log until it passes.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
   { name: 'build_status', description: 'Show the current / last test build of a project: status, where it ran, output files, and the log.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
+  { name: 'setup_info', description: 'Everything you need to set up building and releasing a project yourself: repo platform and token, which credentials the owner has (names only, and whether you may use them), existing pipelines on Yunxiao / Jenkins (read them with pipeline_read and reuse their build steps), Opero build settings, release targets, servers with their environment and registered deploy dirs, and what is still missing. Call this first when asked to set up build / release / deploy.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
+  { name: 'pipeline_read', description: 'Read an existing pipeline the owner already has (Yunxiao pipeline YAML or Jenkins job config.xml) so you can reuse its build / deploy steps in Opero (build_set cmd, release_target_set command). Ids come from setup_info.', inputSchema: S({ tool: { type: 'string', enum: ['yunxiao', 'jenkins'] }, id: str('Yunxiao pipeline id or Jenkins job name'), workspace: str('project (default: yours)') }, ['tool', 'id']) },
+  { name: 'release_target_set', description: 'Create or update a release target (environment) of your project: which servers, deploy dir (registered as deployable on those servers automatically), the deploy script inside the package (default deploy.sh) or a deploy command, health-check URL, versions to keep. Targets on production (protected) servers always ask the owner before each release; you cannot loosen a permission the owner set. Then build_try and release_publish.', inputSchema: S({ workspace: str('project (default: yours)'), name: str('target name, e.g. 测试 / 生产'), servers: { type: 'array', items: { type: 'string' }, description: 'server names or ids (list_servers)' }, dir: str('absolute deploy dir on the servers'), script: str('deploy script inside the package (default deploy.sh)'), command: str('or: command run in the deploy dir when the package has no script / nothing is built'), health: str('http(s) URL that should answer after deploy'), keep: { type: 'integer', description: 'packages kept per server for rollback (default 5)' }, permission: { type: 'string', enum: ['auto', 'ask'], description: 'auto = you may release directly (non-production only); ask = owner approves each release' } }, ['name']) },
+  { name: 'request_credential', description: 'Ask the owner for a key / token / account you need and cannot get yourself (e.g. a Codeup token with pipeline permission, a Jenkins API token, a GitHub token with workflow scope, a database account). Posts a card with a button that opens the right "new credential" page with step-by-step instructions; when the owner saves it, it is granted to you and you get a message to continue. Say exactly which permissions are needed and why. Before asking, check setup_info / list_credentials: if the owner already has it but did not grant it to you, say so instead.', inputSchema: S({ group: { type: 'string', enum: ['代码仓库', '数据库', '服务器', '云账号', '签名证书', '其它'] }, kind: str('type inside the group, e.g. Codeup / GitHub / GitLab / MySQL / Jenkins / 阿里云'), why: str('one or two lines: what you will do with it'), perms: str('exact permissions to tick') }, ['group', 'why']) },
+  { name: 'schedule_list', description: 'List the scheduled / webhook tasks (triggers): id, name, when, which employee, what it is told, enabled, last run, webhook path.', inputSchema: S({}) },
+  { name: 'schedule_set', description: 'Create or change a scheduled task (trigger) that hands an employee a message on a schedule or when a webhook is called. The owner just says it in chat ("每天 18:00 给我发小结") — you set it up. when: 每 N 分钟 (≥5) / 每 N 小时 / 每天 HH:MM / 工作日 HH:MM / 每周一 HH:MM / webhook. Default employee: you. Write prompt as the full instruction the employee gets each time.', inputSchema: S({ id: str('existing trigger id to change (schedule_list); omit to create'), when: str('schedule rule (see description) or "webhook"'), prompt: str('what the employee is told each time'), employee: str('employee name or id (default: you)'), name: str('short name (optional, auto)'), enabled: { type: 'boolean' } }) },
+  { name: 'schedule_delete', description: 'Delete a scheduled task (trigger) by id.', inputSchema: S({ id: str('trigger id') }, ['id']) },
+  { name: 'server_dir_set', description: 'Register (or remove) a directory on a server: read = employees may read it, write = employees may read and write it (Opero grants the AI user ACL access), deploy = releases may deploy into it. Use when you need access to a dir or a release needs a deploy dir. Write access on production servers asks the owner first.', inputSchema: S({ server: str('server name or id'), path: str('absolute path, at least two levels'), mode: { type: 'string', enum: ['read', 'write', 'deploy'] }, note: str('what it is (optional)'), remove: { type: 'boolean' } }, ['server', 'path']) },
+  { name: 'log_register', description: 'Register (or remove) a log on a server so log_scan and the owner\'s log viewer find it: file (absolute path, may contain *), dir (all *.log inside) or service (systemd unit). Find the real log locations yourself first (server_exec: ls, systemctl, the app config).', inputSchema: S({ server: str('server name or id'), kind: { type: 'string', enum: ['file', 'dir', 'service'] }, path: str('path or service name'), note: str('what it is (optional)'), remove: { type: 'boolean' } }, ['server', 'kind', 'path']) },
   { name: 'release_status', description: 'Show recent releases (or one by id): steps, error, and the last part of the build / deploy output.', inputSchema: S({ id: str('release id (optional)'), workspace: str('workspace name or id (optional)') }) },
 ]
 
@@ -94,7 +106,7 @@ export async function callTool(run: Run, name: string, args: any): Promise<ToolR
     case 'approve': return approve(run, emp, args)
     case 'list_servers': return ok(JSON.stringify(all<Server>('servers').map((s) => ({ id: s.id, name: s.name, env: s.env, os: s.os, online: s.online, cpu: s.cpu, mem: s.mem, disk: s.disk, logs: s.logSrc?.length ? s.logSrc.map((l) => `${l.kind}:${l.path}${l.note ? ` (${l.note})` : ''}`) : undefined })), null, 1))
     case 'server_exec': return serverExec(run, emp, args)
-    case 'list_databases': return ok(JSON.stringify(all<DataSource>('dataSources').map((d) => ({ id: d.id, name: d.name, kind: d.kind, env: d.env, db: d.db, writable: d.writable, tables: d.tables.map((t) => `${t.name}(${t.cols.join(',')})`) })), null, 1))
+    case 'list_databases': return ok(JSON.stringify(all<DataSource>('dataSources').map((d) => ({ id: d.id, name: d.name, kind: d.kind, env: d.env, db: d.db || '（整个实例）', ...(d.db ? {} : { dbs: d.dbs ?? [] }), writable: d.writable, tables: d.tables.map((t) => `${t.name}(${t.cols.join(',')})`) })), null, 1))
     case 'db_query': return dbQuery(run, emp, args)
     case 'git_sync': return gitSync(emp, args)
     case 'switch_branch': {
@@ -152,6 +164,21 @@ export async function callTool(run: Run, name: string, args: any): Promise<ToolR
     case 'release_list': case 'list_deploys': return releaseList(args)
     case 'release_publish': case 'deploy': return releasePublish(run, emp, args)
     case 'release_status': return releaseStatus(args)
+    case 'setup_info': return setupInfo(emp, args)
+    case 'schedule_list': return scheduleList()
+    case 'schedule_set': return scheduleSet(emp, args)
+    case 'schedule_delete': {
+      const t = get<Trigger>('triggers', String(args.id ?? ''))
+      if (!t) return fail('没有这个定时任务（schedule_list 看 id）')
+      del('triggers', t.id); emit({ t: 'del', coll: 'triggers', id: t.id })
+      audit({ via: emp.name, action: 'trigger.delete', target: t.name, level: '写', result: '成功', how: '员工' })
+      return ok(`已删掉「${t.name}」`)
+    }
+    case 'server_dir_set': return serverDirSet(run, emp, args)
+    case 'log_register': return logRegister(emp, args)
+    case 'pipeline_read': return pipelineRead(emp, args)
+    case 'release_target_set': return releaseTargetSet(emp, args)
+    case 'request_credential': return requestCredential(emp, args)
     case 'build_info': case 'build_set': case 'build_generate': case 'build_try': case 'build_status': return buildTool(name, emp, args)
   }
   return fail(`没有这个工具：${name}`)
@@ -182,16 +209,23 @@ async function approve(run: Run, emp: Employee, a: { tool_name?: string; input?:
     audit({ via: emp.name, action: 'policy.deny', target: cmd.slice(0, 120), level: '写', result: '拒绝', how: banned })
     return deny(`${banned}（这台机器的规矩）`)
   }
-  const danger = DANGER.test(cmd)
-  if (!danger) {
-    if (emp.approval === 'auto' || RO_TOOLS.has(tool)) return allow
-    if (emp.approval === 'edits' && (EDIT_TOOLS.has(tool) || (tool === 'Bash' && isReadOnly(cmd)))) return allow
+  // 照 KidLock：灾难性的直接拒绝（告诉员工原因、别换写法再试），不弹卡片；别的「自动」审核方式下一律直接跑
+  const fatal = CATASTROPHIC.why(cmd)
+  if (fatal) {
+    audit({ via: emp.name, action: 'command.deny', target: cmd.slice(0, 120), level: '危险', result: '拒绝', how: fatal })
+    return deny(`这条命令${fatal}，Opero 不让员工跑。不要换个写法再试；真要这么做，停下来在聊天里跟主人说清楚要做什么、为什么，由主人自己去做。`)
   }
-  const summary = cmd || String(input.file_path ?? input.path ?? input.url ?? JSON.stringify(input)).slice(0, 600)
+  if (emp.approval === 'auto' || RO_TOOLS.has(tool)) return allow
+  if (emp.approval === 'edits' && (EDIT_TOOLS.has(tool) || (tool === 'Bash' && isReadOnly(cmd)))) return allow
+  // 只有主人给这个员工选了「每一步都问 / 跑命令要问」才走到这里
+  const summary = cmd || String(input.file_path ?? input.path ?? input.url ?? JSON.stringify(input)).slice(0, 2000)
   const verb = tool === 'Bash' ? '跑命令' : EDIT_TOOLS.has(tool) ? '改文件' : `用 ${tool}`
+  // 员工自己写的「这一步在干嘛」（Claude Code 的 Bash 带 description）：卡片先说人话，命令收起来
+  const what = String(input.description ?? '').trim()
   const yes = await confirmCard(run, emp, {
-    title: danger ? `危险命令：${verb}` : `要${verb}`, detail: summary,
-    why: danger ? '这条命令可能删数据或让服务器停掉，确认是你要的再点' : `审核方式是「${emp.approval === 'ask' ? '每一步都问' : '改文件自动，跑命令要问'}」`, danger,
+    title: what || `要${verb}`, detail: summary,
+    why: `你给这个员工选的审核方式是「${emp.approval === 'ask' ? '每一步都问' : '改文件自动，跑命令要问'}」（员工档案里能改成「自动」）`,
+    note: what ? `${emp.name} 要${verb}` : '',
   })
   return yes ? allow : deny('主人没同意，换个办法或者问问主人')
 }
@@ -267,7 +301,8 @@ async function serverExec(run: Run, emp: Employee, a: { server?: string; command
   const blocked = credBlock(emp, sv.credential, `服务器「${sv.name}」的账号`)
   if (blocked) return fail(blocked)
   const ro = isReadOnly(command)
-  const danger = DANGER.test(command)
+  const dangerWhy = DANGER.why(command)
+  const danger = !!dangerWhy
   // 这台自己设过就按它；没设过 = 像生产的标签 + 「我 → 设置」的生产保护开着
   const prod = sv.protect ?? (isProtected(sv) && !!kvGet<{ prodProtect?: boolean }>('settings', {}).prodProtect)
   if (emp.approval === 'plan' && !ro) return fail('现在是「只看不改」，只能跑只读命令')
@@ -276,7 +311,10 @@ async function serverExec(run: Run, emp: Employee, a: { server?: string; command
   const filled = fillSecrets(command, emp)
   if ('error' in filled) return fail(filled.error)
   if (danger || (!ro && (emp.approval !== 'auto' || prod))) {
-    const yes = await confirmCard(run, emp, { title: `在 ${sv.name}（${sv.env}）上执行`, detail: command, why: String(a.reason ?? ''), danger: danger || isProtected(sv) })
+    // 先说人话：员工说的原因当标题，为什么要确认写清楚，命令收在下面
+    const reason = String(a.reason ?? '').trim()
+    const whyAsk = dangerWhy ? `为什么要你确认：${dangerWhy}` : prod ? `为什么要你确认：${sv.name} 是${sv.env}环境，会改东西` : '为什么要你确认：这条命令会改东西'
+    const yes = await confirmCard(run, emp, { title: reason || `在 ${sv.name} 上跑一条命令`, detail: command, why: `${whyAsk}。拿不准就点「不行」，员工会换个办法`, note: `在 ${sv.name}（${sv.env}）上执行`, danger: danger || isProtected(sv) })
     if (!yes) return fail('主人没同意')
   }
   const r = await execOn(sv, filled.text, 120_000)
@@ -461,6 +499,25 @@ async function buildTool(name: string, emp: Employee, a: any): Promise<ToolResul
     if (a.subdir !== undefined) next.subdir = s(a.subdir, 100)
     if (a.versionFile !== undefined) next.versionFile = s(a.versionFile)
     if (a.service !== undefined) next.service = s(a.service, 80)?.replace(/[^A-Za-z0-9@._-]/g, '')
+    if (a.provider) {
+      const cred = a.credential ? all<Credential>('credentials').find((c) => c.id === a.credential || c.name === a.credential) : undefined
+      if (a.credential && !cred) return fail(`没有叫「${a.credential}」的凭证（setup_info 看）`)
+      const pick = (kind: string) => cred ?? all<Credential>('credentials').find((c) => c.kind === kind && c.aiAllowed && emp.creds?.includes(c.id))
+      if (a.provider === 'yunxiao') {
+        if (!build.codeupRepo(w.repo)) return fail('云效流水线要用 Codeup 仓库')
+        const c = pick('Codeup')
+        if (!c) return fail('没有能用的 Codeup 凭证：request_credential group=代码仓库 kind=Codeup（要「流水线」读写）')
+        const blocked = credBlock(emp, c.id, '云效流水线'); if (blocked) return fail(blocked)
+        next.yunxiao = { ...(next.provider === 'yunxiao' ? next.yunxiao : {}), cred: c.id }
+      } else if (a.provider === 'jenkins') {
+        const c = pick('Jenkins')
+        if (!c) return fail('没有能用的 Jenkins 凭证：request_credential group=其它 kind=Jenkins')
+        const blocked = credBlock(emp, c.id, 'Jenkins'); if (blocked) return fail(blocked)
+        next.jenkins = { ...(next.provider === 'jenkins' ? next.jenkins : {}), cred: c.id, ...(a.job ? { job: s(a.job, 80)!.replace(/[^\w.-]/g, '-') } : {}) }
+      } else if ((a.provider === 'github' || a.provider === 'gitlab') && !w.credential) return fail('项目没配仓库令牌：request_credential group=代码仓库')
+      next.provider = a.provider
+      if (a.provider === 'local') next.where = 'local'
+    }
     if (next.kind === 'custom' && !next.cmd) return fail('custom 模板要给 cmd（在仓库根目录跑、把要发的东西放进 out/ 的命令）')
     if (next.where === 'pipeline' && next.provider === 'local') return fail('这个项目没有流水线工具（云效要 Codeup 仓库 + Codeup 凭证，GitHub 要项目配了令牌），不能设成「总是流水线」')
     put('workspaces', { ...w, buildCfg: next }); emit({ t: 'put', coll: 'workspaces', item: { ...w, buildCfg: next } })
@@ -485,6 +542,177 @@ async function buildTool(name: string, emp: Employee, a: any): Promise<ToolResul
   if (!j) return ok('还没试编过：build_try')
   return { text: `${j.status === 'running' ? '在编…' : j.status === 'ok' ? '编过了' : '没编过'}${j.version ? ` · 版本 ${j.version}` : ''}${j.files?.length ? ` · 产物 ${j.files.join('、')}` : ''}\n\n${j.log.slice(-80).join('\n')}${j.error ? `\n\n错误：${j.error}` : ''}`, isError: j.status === 'fail' }
 }
+// ---------- 定时任务（触发器）：主人在聊天里说一句，员工建好 ----------
+function scheduleList(): ToolResult {
+  return ok(JSON.stringify(all<Trigger>('triggers').map((t) => ({ id: t.id, name: t.name, when: t.kind === 'Webhook' ? 'webhook' : t.rule, employee: get<Employee>('employees', t.employee)?.name ?? t.employee, enabled: t.enabled, last: t.last, prompt: t.prompt, ...(t.hookToken ? { webhookPath: `/hook/${t.hookToken}（前面加 Opero 的地址）` } : {}) })), null, 1))
+}
+function scheduleSet(emp: Employee, a: { id?: string; when?: string; prompt?: string; employee?: string; name?: string; enabled?: boolean }): ToolResult {
+  const old = a.id ? get<Trigger>('triggers', String(a.id)) : undefined
+  if (a.id && !old) return fail('没有这个定时任务（schedule_list 看 id）')
+  const target = a.employee ? all<Employee>('employees').find((e) => e.id === a.employee || e.name === a.employee) : undefined
+  if (a.employee && !target) return fail(`没有叫「${a.employee}」的员工（list_employees 看）`)
+  const when = a.when === undefined ? undefined : String(a.when).trim()
+  const hook = when !== undefined && /^webhook$/i.test(when)
+  if (!old && !String(a.prompt ?? '').trim()) return fail('prompt 要写：每次交给员工的那段话')
+  try {
+    const t = makeTrigger({ ...(when !== undefined ? { kind: hook ? 'Webhook' : '定时', rule: hook ? '' : when } : {}), employee: target?.id ?? old?.employee ?? emp.id, ...(a.prompt !== undefined ? { prompt: a.prompt } : {}), ...(a.name ? { name: a.name } : {}), ...(a.enabled !== undefined ? { enabled: a.enabled } : {}) }, old)
+    put('triggers', t); emit({ t: 'put', coll: 'triggers', item: t.hookToken ? { ...t, hookPath: `/hook/${t.hookToken}` } : t })
+    audit({ via: emp.name, action: old ? 'trigger.update' : 'trigger.create', target: `${t.name}（${t.rule}）`, level: '写', result: '成功', how: '员工' })
+    return ok(`${old ? '已改' : '已建'}「${t.name}」：${t.kind === 'Webhook' ? `有人 POST 到 /hook/${t.hookToken} 时` : t.rule}交给 ${get<Employee>('employees', t.employee)?.name}${t.enabled ? '' : '（停用中）'}`)
+  } catch (e) { return fail((e as Error).message) }
+}
+
+// ---------- 服务器目录、日志登记（员工自己找、自己登记） ----------
+async function serverDirSet(run: Run, emp: Employee, a: { server?: string; path?: string; mode?: string; note?: string; remove?: boolean }): Promise<ToolResult> {
+  const sv = findServer(String(a.server ?? ''))
+  if (!sv) return fail('没有这台服务器（list_servers 看）')
+  const p = String(a.path ?? '').trim().replace(/\/+$/, '')
+  const cur = (sv.dirs ?? []).map(({ ok: _o, error: _e, ...d }) => d)
+  let next: ServerDir[]
+  try {
+    next = a.remove ? cur.filter((d) => d.path !== p) : cleanDirs([...cur.filter((d) => d.path !== p), { path: p, mode: a.mode ?? 'read', note: a.note ?? `${emp.name} 登记` }])
+  } catch (e) { return fail((e as Error).message) }
+  if (!a.remove && a.mode === 'write' && isProtected(sv)) {
+    const yes = await confirmCard(run, emp, { title: `让员工能改 ${sv.name} 上的 ${p}`, detail: `登记成「能读写」：AI 用户会拿到这个目录的读写权限（ACL）`, why: String(a.note ?? ''), danger: false })
+    if (!yes) return fail('主人没同意')
+  }
+  await applyDirs(sv, next, (x) => { put('servers', x); emit({ t: 'put', coll: 'servers', item: x }) })
+  const got = (get<Server>('servers', sv.id)?.dirs ?? []).find((d) => d.path === p)
+  audit({ via: emp.name, action: a.remove ? 'server.dir.remove' : 'server.dir.set', target: `${sv.name} · ${p}${a.remove ? '' : ` · ${a.mode ?? 'read'}`}`, level: '写', result: got?.ok === false ? '失败' : '成功', how: '员工' })
+  if (a.remove) return ok(`已去掉 ${sv.name} 上的 ${p}`)
+  return got?.ok === false ? fail(`登记了，但开权限没成：${got.error}`) : ok(`已登记 ${sv.name} 上的 ${p}（${a.mode ?? 'read'}）`)
+}
+function logRegister(emp: Employee, a: { server?: string; kind?: string; path?: string; note?: string; remove?: boolean }): ToolResult {
+  const sv = findServer(String(a.server ?? ''))
+  if (!sv) return fail('没有这台服务器（list_servers 看）')
+  const p = String(a.path ?? '').trim()
+  const rest = (sv.logSrc ?? []).filter((x) => !(x.path === p && x.kind === a.kind))
+  let logSrc: LogSource[]
+  try { logSrc = a.remove ? rest : cleanLogs([...rest, { kind: a.kind, path: p, note: a.note }]) } catch (e) { return fail((e as Error).message) }
+  const next = { ...get<Server>('servers', sv.id)!, logSrc }
+  put('servers', next); emit({ t: 'put', coll: 'servers', item: next })
+  audit({ via: emp.name, action: a.remove ? 'server.log.remove' : 'server.log.set', target: `${sv.name} · ${a.kind} ${p}`, level: '写', result: '成功', how: '员工' })
+  return ok(a.remove ? `已去掉 ${sv.name} 的日志 ${p}` : `已登记 ${sv.name} 的日志 ${p}（${a.kind}）；log_scan 不指定就会扫它`)
+}
+
+// ---------- 接入：员工自己看现场、自己配，缺 key 才找主人 ----------
+async function setupInfo(emp: Employee, a: { workspace?: string }): Promise<ToolResult> {
+  const w = findWs(String(a.workspace ?? '') || emp.workspace)
+  if (!w) return fail('没有这个项目（不填就是你自己的项目）')
+  const creds = all<Credential>('credentials')
+  const mine = (c: Credential) => c.aiAllowed && !!emp.creds?.includes(c.id)
+  const cv = (c: Credential) => ({ name: c.name, group: c.group, kind: c.kind, env: c.env, youCanUse: mine(c), works: c.test?.ok ?? null })
+  const repoCred = w.credential ? creds.find((c) => c.id === w.credential) : undefined
+  const platform = build.codeupRepo(w.repo) ? 'Codeup（云效）' : /github\.com/i.test(w.repo) ? 'GitHub' : /gitlab/i.test(w.repo) ? 'GitLab' : /gitee\.com/i.test(w.repo) ? 'Gitee' : '其它 / 自建'
+  const b = w.buildCfg
+  const existing: Record<string, unknown> = {}
+  const missing: string[] = []
+  // 已有的流水线：云效（Codeup 凭证）、Jenkins（「其它 → Jenkins」凭证）
+  const codeup = build.codeupRepo(w.repo)
+  const yxCreds = creds.filter((c) => c.kind === 'Codeup')
+  if (codeup) {
+    if (!yxCreds.length) missing.push('Codeup 个人访问令牌（要「流水线」读写）：没有它不能建 / 读云效流水线 → request_credential group=代码仓库 kind=Codeup')
+    for (const c of yxCreds.filter(mine).slice(0, 2)) {
+      try { existing[`云效（${c.name}）`] = await build.yunxiaoPipelines(c.id, b?.yunxiao?.org || codeup.org) } catch (e) { existing[`云效（${c.name}）`] = `读不到：${(e as Error).message.slice(0, 200)}（令牌可能没勾「流水线」权限）` }
+    }
+  }
+  for (const c of creds.filter((x) => x.kind === 'Jenkins' && mine(x)).slice(0, 2)) {
+    try { existing[`Jenkins（${c.name}）`] = await pipes.jenkinsJobs(c.id) } catch (e) { existing[`Jenkins（${c.name}）`] = `读不到：${(e as Error).message.slice(0, 200)}` }
+  }
+  if (!w.credential) missing.push(`项目没配仓库令牌：Opero 不能替你拉 / 推代码、${platform === 'GitHub' ? '不能提交 GitHub Actions 工作流' : '不能建流水线'} → request_credential group=代码仓库 kind=${platform.startsWith('Codeup') ? 'Codeup' : platform.split(' ')[0]}`)
+  const notGranted = creds.filter((c) => c.aiAllowed && !mine(c) && ['代码仓库', '其它', '签名证书', '服务器'].includes(c.group))
+  if (notGranted.length) missing.push(`主人有、但没给你开的凭证：${notGranted.map((c) => `${c.name}（${c.group}·${c.kind}）`).join('、')}；要用就请主人在你的档案「能用的凭证」里勾上`)
+  const svs = all<Server>('servers')
+  if (!(w.deploys ?? []).length) missing.push('还没有发布目标：确定发到哪台、哪个目录后用 release_target_set 建（测试 / 开发环境可以直接建，生产也可以建，发的时候会问主人）')
+  return ok(JSON.stringify({
+    project: w.name, repo: w.repo, platform, branch: w.branch, codeDir: w.dir, codeServer: get<Server>('servers', w.server ?? '')?.name ?? 'Opero 本机',
+    repoToken: repoCred ? { name: repoCred.name, kind: repoCred.kind, works: repoCred.test?.ok ?? null } : null,
+    build: b ? { summary: build.providerName(b), kind: b.kind, provider: b.provider, pipelineReady: build.pipelineReady(b), pipelineError: b.pipelineError, cmd: b.cmd } : null,
+    releaseTargets: (w.deploys ?? []).map((d) => ({ name: d.name, servers: releases.serversOf(d).map((id) => get<Server>('servers', id)?.name ?? id), dir: d.dir, command: d.command, health: d.health, permission: d.ai ?? 'ask' })),
+    servers: svs.map((s) => ({ name: s.name, env: s.env, production: isProtected(s), online: s.online, via: s.via ?? 'ssh', deployDirs: (s.dirs ?? []).filter((x) => x.mode === 'deploy').map((x) => x.path) })),
+    credentials: creds.filter((c) => ['代码仓库', '其它', '签名证书', '数据库', '服务器', '云账号'].includes(c.group)).map(cv),
+    existingPipelines: existing,
+    missing,
+    howTo: [
+      '看仓库里已有的：.github/workflows、.gitlab-ci.yml、Jenkinsfile、Dockerfile、deploy/、Makefile、*.service、README 里的部署说明——有就照着它配，不要另起一套',
+      '平台上已有流水线（existingPipelines）：pipeline_read 读出步骤，把编译命令写进 build_set（custom 的 cmd），部署步骤写进 release_target_set 的 command 或包里的 deploy.sh',
+      '都没有：build_set 选模板 → build_generate 建流水线 → build_try 编通 → release_target_set 建目标 → release_publish（生产会问主人）',
+      '缺 key 才 request_credential（说清楚要勾哪些权限）；别让主人去网页上自己配编译 / 发布，那是你的活',
+    ],
+  }, null, 1))
+}
+
+async function pipelineRead(emp: Employee, a: { tool?: string; id?: string; workspace?: string }): Promise<ToolResult> {
+  const id = String(a.id ?? '').trim()
+  if (!id) return fail('给流水线 id / 任务名（setup_info 里有）')
+  const creds = all<Credential>('credentials').filter((c) => c.aiAllowed && emp.creds?.includes(c.id))
+  try {
+    if (a.tool === 'jenkins') {
+      const c = creds.find((x) => x.kind === 'Jenkins')
+      if (!c) return fail('没有给你开的 Jenkins 凭证')
+      return ok(scrub(await pipes.jenkinsJobConfig(c.id, id), [getSecret(c.id) ?? '']))
+    }
+    const w = findWs(String(a.workspace ?? '') || emp.workspace)
+    const org = w?.buildCfg?.yunxiao?.org || build.codeupRepo(w?.repo ?? '')?.org
+    const c = creds.find((x) => x.kind === 'Codeup')
+    if (!c || !org) return fail('没有给你开的 Codeup 凭证，或者项目不是 Codeup 仓库')
+    return ok(await build.yunxiaoPipeline(c.id, org, id))
+  } catch (e) { return fail(`读不到：${(e as Error).message}`) }
+}
+
+function releaseTargetSet(emp: Employee, a: { workspace?: string; name?: string; servers?: string[]; dir?: string; script?: string; command?: string; health?: string; keep?: number; permission?: string }): ToolResult {
+  const w = findWs(String(a.workspace ?? '') || emp.workspace)
+  if (!w) return fail('没有这个项目')
+  if (w.id !== emp.workspace) return fail('只能配自己项目的发布目标')
+  if (emp.approval === 'plan') return fail('现在是「只看不改」')
+  const name = String(a.name ?? '').trim().slice(0, 40)
+  if (!name) return fail('发布目标要有名字')
+  const old = (w.deploys ?? []).find((d) => d.name === name || d.id === name)
+  const svs = a.servers ? a.servers.map((k) => findServer(String(k))) : releases.serversOf(old ?? ({ servers: [] } as any)).map((id) => get<Server>('servers', id))
+  if (!svs.length || svs.some((x) => !x)) return fail(`服务器不对：${(a.servers ?? []).filter((k) => !findServer(String(k))).join('、') || '至少给一台'}（list_servers 看名字）`)
+  const dir = a.dir !== undefined ? String(a.dir).trim().replace(/\/+$/, '') : old?.dir
+  if (dir && (!/^\/[\w./@+-]+$/.test(dir) || dir.includes('..') || dir.split('/').filter(Boolean).length < 2)) return fail('部署目录要是绝对路径，至少两层（比如 /srv/app）')
+  const health = a.health !== undefined ? String(a.health).trim() : old?.health
+  if (health && !/^https?:\/\/\S+$/.test(health)) return fail('检查地址要以 http:// 或 https:// 开头')
+  const prod = svs.some((s) => isProtected(s!))
+  // 权限：生产一律「发前问主人」；主人设过的不能往松了改
+  const rank = { off: 0, ask: 1, auto: 2 } as const
+  let ai: 'auto' | 'ask' | 'off' = a.permission === 'auto' && !prod ? 'auto' : a.permission === 'ask' || prod ? 'ask' : old?.ai ?? 'auto'
+  if (old?.ai && rank[ai] > rank[old.ai]) ai = old.ai
+  const next: Deploy = {
+    ...(old ?? { id: uid('dp'), keep: 5, autoRollback: true }), name, servers: svs.map((s) => s!.id), dir: dir || undefined,
+    script: a.script !== undefined ? String(a.script).trim().replace(/[^\w./-]/g, '') || undefined : old?.script,
+    command: a.command !== undefined ? String(a.command).trim().slice(0, 4000) || undefined : old?.command,
+    health: health || undefined, keep: a.keep ? Math.max(1, Math.min(Number(a.keep) || 5, 30)) : old?.keep ?? 5, ai,
+  }
+  // 部署目录登记成「能部署」（发布要求的）：没登记的补上
+  const added: string[] = []
+  if (next.dir) for (const s of svs) if (!releases.dirAllowed(s!, next.dir)) {
+    const cur = get<Server>('servers', s!.id)!
+    const sv2 = { ...cur, dirs: [...(cur.dirs ?? []), { path: next.dir, mode: 'deploy' as const, note: `${w.name} · ${name}（${emp.name} 登记）` }] }
+    put('servers', sv2); emit({ t: 'put', coll: 'servers', item: sv2 }); added.push(s!.name)
+  }
+  const cur = get<Workspace>('workspaces', w.id)!
+  const deploys = old ? (cur.deploys ?? []).map((d) => (d.id === old.id ? next : d)) : [...(cur.deploys ?? []), next]
+  const w2 = { ...cur, deploys }
+  put('workspaces', w2); emit({ t: 'put', coll: 'workspaces', item: w2 })
+  audit({ via: emp.name, action: old ? 'release.target.update' : 'release.target.create', target: `${w.name} → ${name}（${svs.map((s) => s!.name).join('、')}${next.dir ? ` ${next.dir}` : ''}）`, level: '写', result: '成功', how: '员工' })
+  return ok(`${old ? '已改' : '已建'}发布目标「${name}」：发到 ${svs.map((s) => s!.name).join('、')}${next.dir ? `，目录 ${next.dir}` : ''}${added.length ? `（已在 ${added.join('、')} 上把它登记成能部署）` : ''}；${ai === 'auto' ? '你可以直接发' : '每次发之前会问主人'}${prod && a.permission === 'auto' ? '（有生产服务器，只能「发前问主人」）' : ''}。先 build_try 编通，再 release_publish。`)
+}
+
+function requestCredential(emp: Employee, a: { group?: string; kind?: string; why?: string; perms?: string }): ToolResult {
+  const group = String(a.group ?? '其它')
+  const kind = String(a.kind ?? '').trim()
+  const card: Card = {
+    id: uid('c'), type: 'generic', v: 1, state: 'open', level: 'warn',
+    data: { title: `要一个${kind ? ` ${kind} ` : ''}${group === '其它' ? '凭证' : group + '凭证'}`, tag: '要你给', credReq: { emp: emp.id, group, kind },
+      rows: [['用来做什么', String(a.why ?? '')], ...(a.perms ? [['要勾的权限', String(a.perms)]] : []), ['怎么给', '点「去添加」，按页面上的步骤拿到后贴进去保存；存好自动给我用，我接着做']] },
+    actions: [{ id: 'add', label: '去添加', style: 'primary', panel: 'credentialEdit', args: { group, ...(kind ? { kind } : {}) } }],
+  }
+  empSays(emp.id, { kind: 'card', card }, card.data.title, true)
+  return ok('已发卡片给主人：存好后你会收到一条消息（凭证名字），收到再接着做；现在先做不需要它的部分，做不了就先停下')
+}
+
 function releaseList(a: { workspace?: string }): ToolResult {
   const wss = a.workspace ? [findWs(a.workspace)].filter(Boolean) as Workspace[] : all<Workspace>('workspaces').filter((w) => w.deploys?.length)
   const sv = (id?: string) => (id ? get<Server>('servers', id)?.name ?? id : undefined)
@@ -523,10 +751,14 @@ function releaseStatus(a: { id?: string; workspace?: string }): ToolResult {
 }
 
 // ---------- 数据库 ----------
-async function dbQuery(run: Run, emp: Employee, a: { database?: string; sql?: string; reason?: string }): Promise<ToolResult> {
+async function dbQuery(run: Run, emp: Employee, a: { database?: string; db?: string; sql?: string; reason?: string }): Promise<ToolResult> {
   const k = String(a.database ?? '')
-  const ds = all<DataSource>('dataSources').find((d) => d.id === k || d.name === k || d.db === k)
+  const list = all<DataSource>('dataSources')
+  // 给的是整个实例里的某个库名，也认：找到那个实例，在这个库里查
+  const ds = list.find((d) => d.id === k || d.name === k || (d.db && d.db === k)) ?? list.find((d) => !d.db && d.dbs?.includes(k))
   if (!ds) return fail('没有这个库（用 list_databases 看名字）')
+  const db = String(a.db ?? '').trim() || (!ds.db && ds.dbs?.includes(k) ? k : '')
+  if (db && ds.db && db !== ds.db) return fail(`「${ds.name}」只接了库 ${ds.db}`)
   const sql = String(a.sql ?? '').trim()
   const blocked = credBlock(emp, ds.credential, `库「${ds.name}」的账号`)
   if (blocked) return fail(blocked)
@@ -540,7 +772,7 @@ async function dbQuery(run: Run, emp: Employee, a: { database?: string; sql?: st
     if (!yes) return fail('主人没同意')
   }
   try {
-    const r = await runQuery(ds, sql, { write: !read })
+    const r = await runQuery(ds, sql, { write: !read, db: db || undefined })
     audit({ via: emp.name, action: read ? 'db.query' : 'db.exec', target: `${ds.name} · ${sql.slice(0, 100)}`, level: read ? '读' : '写', result: '成功', how: read ? '只读事务' : '本人同意后执行' })
     return ok(resultText(r))
   } catch (e) {

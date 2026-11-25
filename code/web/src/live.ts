@@ -43,9 +43,26 @@ export async function call<T = any>(method: string, path: string, body?: unknown
 }
 
 // ---------- 开机：拉全部数据 ----------
+/** 这一页打开时的 Opero 版本：断线重连后版本变了（升级过）就刷新页面用上新版；正在打字就先提示，不打断 */
+let loadedVersion = ''
+function checkUpgrade(info: { version?: string; web?: string } | undefined) {
+  const v = info?.version ? `${info.version}/${info.web ?? ''}` : ''
+  if (!v) return
+  if (!loadedVersion) { loadedVersion = v; return }
+  if (v === loadedVersion) return
+  const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
+  const typing = !!el && /^(INPUT|TEXTAREA)$/.test(el.tagName) && !!el.value
+  if (typing) toast(`Opero 已升级到 ${info?.version}，打完这句刷新一下页面用上新版`)
+  else location.reload()
+}
+// 标签页切回来、以及每 5 分钟：问一下版本（只换了网页、或者连接一直没断，也能刷新到新版）
+const pollVersion = () => { if (loadedVersion) api<{ version: string; web: string }>('GET', '/api/version').then(checkUpgrade).catch(() => {}) }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollVersion() })
+window.setInterval(pollVersion, 5 * 60_000)
 export async function boot() {
   try {
     const b = await api<any>('GET', '/api/bootstrap')
+    checkUpgrade(b.instance)
     if (!b.auth.loggedIn) {
       set((s) => ({ auth: { ...b.auth, booting: false }, instance: b.instance, me: s.me }))
       return

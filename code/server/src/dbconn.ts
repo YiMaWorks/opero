@@ -33,8 +33,9 @@ function account(ds: DataSource) {
 }
 const table = (cols: string[], all: unknown[][], t0: number): QueryResult => ({ cols, rows: all.slice(0, MAX_ROWS).map((r) => r.map((v, i) => mask(cols[i], cell(v)))), total: all.length, ms: Date.now() - t0 })
 
-/** password：还没存进保险箱时（新增凭证点「测试连接」）直接给 */
-export async function runQuery(ds: DataSource, sql: string, opts: { write?: boolean; password?: string } = {}): Promise<QueryResult> {
+/** password：还没存进保险箱时（新增凭证点「测试连接」）直接给；db：整个实例接进来的，这次查哪个库（不给就用 ds.db） */
+export async function runQuery(ds: DataSource, sql: string, opts: { write?: boolean; password?: string; db?: string } = {}): Promise<QueryResult> {
+  if (opts.db) ds = { ...ds, db: opts.db }
   const read = isReadSql(sql)
   if (!read && !opts.write) throw new Error('这不是只读语句')
   const t0 = Date.now()
@@ -69,7 +70,7 @@ export async function runQuery(ds: DataSource, sql: string, opts: { write?: bool
     } finally { await c.close().catch(() => {}) }
   }
   if (ds.kind === 'MySQL' || ds.kind === 'MariaDB') {
-    const c = await mysql.createConnection({ host: ds.host, port: ds.port || 3306, user, password, database: ds.db, connectTimeout: 10_000, dateStrings: true })
+    const c = await mysql.createConnection({ host: ds.host, port: ds.port || 3306, user, password, database: ds.db || undefined, connectTimeout: 10_000, dateStrings: true })
     try {
       if (read) { await c.query('SET SESSION TRANSACTION READ ONLY'); await c.query('START TRANSACTION READ ONLY') }
       const [res, fields] = await c.query({ sql, timeout: TIMEOUT, rowsAsArray: true })
@@ -82,7 +83,7 @@ export async function runQuery(ds: DataSource, sql: string, opts: { write?: bool
       return { cols: [], rows: [], total: 0, affected: (res as any).affectedRows ?? 0, ms: Date.now() - t0 }
     } finally { await c.end().catch(() => {}) }
   }
-  const c = new pg.Client({ host: ds.host, port: ds.port || 5432, user, password, database: ds.db, connectionTimeoutMillis: 10_000, statement_timeout: TIMEOUT })
+  const c = new pg.Client({ host: ds.host, port: ds.port || 5432, user, password, database: ds.db || 'postgres', connectionTimeoutMillis: 10_000, statement_timeout: TIMEOUT })
   await c.connect()
   try {
     if (read) await c.query('BEGIN READ ONLY')
@@ -104,15 +105,33 @@ export async function loadSchema(ds: DataSource, password?: string): Promise<Dat
     ? `SELECT * FROM (SELECT t.table_name, NVL(t.num_rows, 0), (SELECT LISTAGG(c.column_name, ',') WITHIN GROUP (ORDER BY c.column_id) FROM user_tab_columns c WHERE c.table_name = t.table_name)
        FROM user_tables t ORDER BY t.table_name) WHERE ROWNUM <= 300`
     : ds.kind === 'MySQL' || ds.kind === 'MariaDB'
-    ? `SELECT t.TABLE_NAME, IFNULL(t.TABLE_ROWS, 0), GROUP_CONCAT(c.COLUMN_NAME ORDER BY c.ORDINAL_POSITION SEPARATOR ',')
+    ? `SELECT ${ds.db ? 't.TABLE_NAME' : "CONCAT(t.TABLE_SCHEMA, '.', t.TABLE_NAME)"}, IFNULL(t.TABLE_ROWS, 0), GROUP_CONCAT(c.COLUMN_NAME ORDER BY c.ORDINAL_POSITION SEPARATOR ',')
        FROM information_schema.TABLES t JOIN information_schema.COLUMNS c ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME
-       WHERE t.TABLE_SCHEMA = DATABASE() GROUP BY t.TABLE_NAME, t.TABLE_ROWS ORDER BY t.TABLE_NAME LIMIT 300`
+       WHERE ${ds.db ? 't.TABLE_SCHEMA = DATABASE()' : `t.TABLE_SCHEMA NOT IN (${MYSQL_SYS})`} GROUP BY t.TABLE_SCHEMA, t.TABLE_NAME, t.TABLE_ROWS ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME LIMIT 300`
     : `SELECT c.relname, GREATEST(c.reltuples, 0)::bigint, string_agg(a.attname, ',' ORDER BY a.attnum)
        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
        WHERE c.relkind IN ('r', 'p', 'v') AND n.nspname NOT IN ('pg_catalog', 'information_schema') GROUP BY c.relname, c.reltuples ORDER BY c.relname LIMIT 300`
   const r = await runQuery(ds, sql, { password })
   return r.rows.map(([name, rows, cols]) => ({ name, rows: fmtRows(Number(rows)), cols: (cols ?? '').split(',') }))
 }
+const MYSQL_SYS = "'mysql', 'information_schema', 'performance_schema', 'sys'"
+
+/** 整个实例接进来的（没填库名）：这个账号能看到哪些库（Oracle 是一个服务名一个库，不列） */
+export async function listDbs(ds: DataSource, password?: string): Promise<string[]> {
+  const sql = ds.kind === 'MySQL' || ds.kind === 'MariaDB' ? `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN (${MYSQL_SYS}) ORDER BY 1`
+    : ds.kind === 'PostgreSQL' ? 'SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY 1'
+    : ds.kind === 'SQL Server' ? 'SELECT name FROM sys.databases WHERE database_id > 4 AND HAS_DBACCESS(name) = 1 ORDER BY name' : ''
+  if (!sql) return []
+  const r = await runQuery({ ...ds, db: '' }, sql, { password })
+  return r.rows.map((x) => x[0]).slice(0, 200)
+}
+
+/** 表 + （整个实例时）库：存到 DataSource 上 */
+export async function schemaOf(ds: DataSource): Promise<Pick<DataSource, 'tables' | 'dbs'>> {
+  const tables = await loadSchema(ds)
+  return { tables, dbs: ds.db ? undefined : await listDbs(ds).catch(() => undefined) }
+}
+
 const fmtRows = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n))
 
 /** 结果写成给 AI 看的文字表格 */
