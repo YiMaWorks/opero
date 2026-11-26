@@ -79,7 +79,8 @@ export const workingList = () => [...live.keys()]
 
 // ---------- AI 执行器的账号（在「AI 执行器」页配，值在保险箱） ----------
 /** claudeEgress / codexEgress：网络出口，空 = 从干活那台直连，'local' = 经 Opero 这台，其它 = 经那台 Agent（tunnel.ts） */
-export interface AiConf { claudeCred?: string; claudeAccounts?: string[]; claudeBaseUrl?: string; codexCred?: string; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string }
+/** AI 执行器的账号：Claude / Codex 都可以存好几个（订阅令牌、API Key，各自能带自己的接口地址 = 凭证 meta.baseUrl）；xxxCred 是默认那个；xxxBaseUrl 是没单独设地址的账号共用的 */
+export interface AiConf { claudeCred?: string; claudeAccounts?: string[]; claudeBaseUrl?: string; codexCred?: string; codexAccounts?: string[]; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string }
 export const aiConf = () => kvGet<AiConf>('ai', {})
 
 /** 执行器的网络出口：让它的 HTTPS 请求走干活那台本机的代理，经 Opero 隧道从选的出口出去（出口就是干活那台时直连） */
@@ -108,6 +109,7 @@ export function claudeKey(id?: string): string {
 /** 是订阅令牌（走 CLAUDE_CODE_OAUTH_TOKEN）还是 API Key：存的时候记在凭证上（meta.authMode）；没记的按值猜——
  *  Anthropic 的 API Key 都是 sk-ant-api 开头，别的都当订阅令牌（令牌格式以后变了也不用改这里） */
 export function isOat(k: string, id?: string): boolean {
+  if (baseOf('claude', id)) return false // 走代理 / 中转的一律按 API Key
   const mode = id ? get<Credential>('credentials', id)?.meta?.authMode : undefined
   if (mode === 'oauth') return true
   if (mode === 'api') return false
@@ -119,6 +121,17 @@ export function claudeAccounts(): string[] {
   const c = aiConf()
   const list = [...new Set([...(c.claudeAccounts ?? []), ...(c.claudeCred ? [c.claudeCred] : [])])]
   return list.filter((id) => !!getSecret(id))
+}
+/** Codex 的账号（凭证 id）：也可以有好几个；codexCred 是默认那个 */
+export function codexAccounts(): string[] {
+  const c = aiConf()
+  return [...new Set([...(c.codexAccounts ?? []), ...(c.codexCred ? [c.codexCred] : [])])].filter((id) => !!getSecret(id))
+}
+/** 这个账号的接口地址：账号自己设的 → 共用的 → 官方（空） */
+export function baseOf(kind: 'claude' | 'codex', id?: string): string {
+  const own = id ? String(get<Credential>('credentials', id)?.meta?.baseUrl ?? '').trim() : ''
+  const c = aiConf()
+  return own || (kind === 'claude' ? c.claudeBaseUrl : c.codexBaseUrl) || ''
 }
 /** 用量到上限的账号：到这个时间之前先换别的用 */
 const limitedUntil = () => kvGet<Record<string, number>>('claudeLimited', {})
@@ -141,13 +154,17 @@ function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL, emp?: Emplo
   if (kind === 'claude') {
     cred = pickClaude(emp)
     const k = cred ? claudeKey(cred) : ''
-    if (k) { secrets.push(k); env[!c.claudeBaseUrl && isOat(k, cred) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
-    if (c.claudeBaseUrl) env.ANTHROPIC_BASE_URL = c.claudeBaseUrl
+    const base = baseOf('claude', cred)
+    if (k) { secrets.push(k); env[isOat(k, cred) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
+    if (base) env.ANTHROPIC_BASE_URL = base
     Object.assign(env, { MCP_TIMEOUT: '60000', MCP_TOOL_TIMEOUT: '1900000', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000' })
   } else {
-    const k = c.codexCred ? getSecret(c.codexCred) : undefined
+    const all = codexAccounts()
+    cred = c.codexCred && all.includes(c.codexCred) ? c.codexCred : all[0]
+    const k = cred ? getSecret(cred)?.trim() : undefined
+    const base = baseOf('codex', cred)
     if (k) { secrets.push(k); Object.assign(env, { OPENAI_API_KEY: k, CODEX_API_KEY: k }) }
-    if (c.codexBaseUrl) env.OPENAI_BASE_URL = c.codexBaseUrl
+    if (base) env.OPENAI_BASE_URL = base
   }
   Object.assign(env, egressEnv(kind, host))
   return { env, secrets, cred }
@@ -715,9 +732,9 @@ function finish(l: Live, code: number | null) {
 /** 订阅登录（计入订阅额度）还是 API Key（按量计费）：执行器报的花费对订阅只是估算 */
 function billing(kind: 'claude' | 'codex', cred?: string): 'sub' | 'api' {
   const c = aiConf()
-  if (kind === 'codex') return c.codexCred ? 'api' : 'sub'
-  if (c.claudeBaseUrl) return 'api'
+  if (kind === 'codex') return codexAccounts().length ? 'api' : 'sub'
   const id = cred ?? c.claudeCred
+  if (baseOf('claude', id)) return 'api'
   const k = claudeKey(id)
   return !k || isOat(k, id) ? 'sub' : 'api'
 }

@@ -1,4 +1,5 @@
-// 接 AI 执行器（傻瓜式）：① 一键安装 ② 登录（Claude 订阅：点按钮 → 浏览器里批准 → 贴回授权码；或者填 API Key）③ 测试。
+// 接 AI 执行器（傻瓜式）：① 一键安装 ② 登录 = 加账号（Claude 订阅：点按钮 → 浏览器里批准 → 贴回授权码；或者直接贴已有的订阅令牌 / API Key，可带自己的接口地址；Codex 贴 API Key）③ 测试。
+// 每种方式都是新加一个账号，Claude / Codex 都能存好几个，设默认、改名、改接口地址、去掉。
 // 全程不用碰服务器命令行；安装、登录都由 Opero 在服务器上替你做（code/server/src/executors.ts）。
 import { useEffect, useRef, useState } from 'react'
 import { call } from '../live'
@@ -11,19 +12,23 @@ export interface AiInfo {
   claudeKey: boolean; claudeBaseUrl: string; codexKey: boolean; codexBaseUrl: string
   /** 网络出口：'' = 直连；local = 经 Opero 这台；服务器编号 = 经那台 Agent */
   claudeEgress?: string; codexEgress?: string
-  claudeAccounts?: ClaudeAccount[]
+  claudeAccounts?: AiAccount[]
+  codexAccounts?: AiAccount[]
 }
-export interface ClaudeAccount { id: string; name: string; user: string; updated: string; isDefault: boolean; limitedUntil: number; employees: string[]; sub: boolean }
+export interface AiAccount { id: string; kind: 'claude' | 'codex'; name: string; user: string; updated: string; isDefault: boolean; baseUrl: string; limitedUntil: number; employees: string[]; sub: boolean }
+/** 员工 work 设置里选 Claude 账号用 */
+export type ClaudeAccount = AiAccount
 
 const hhmm = (ts: number) => { const d = new Date(ts); return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
-/** 登录过的 Claude 账号（可以好几个）：默认哪个、谁在用、到没到用量上限；设默认、改名、从 Opero 去掉（令牌本身不作废） */
-export function ClaudeAccounts({ list, reload }: { list: ClaudeAccount[]; reload: () => Promise<unknown> }) {
+/** 存着的账号（Claude / Codex 各一组，可以好几个）：默认哪个、订阅还是 API Key、走哪个接口地址、谁在用、到没到上限；设默认、改名、改接口地址、从 Opero 去掉（令牌本身不作废） */
+export function AiAccounts({ list, reload, kind }: { list: AiAccount[]; reload: () => Promise<unknown>; kind: 'claude' | 'codex' }) {
   if (!list.length) return null
-  const act = async (id: string, body: Record<string, unknown>, msg: string) => { if (await call('PUT', `/api/ai/claude-accounts/${id}`, body, msg)) await reload() }
-  const rename = (a: ClaudeAccount) => { const n = prompt('给这个账号起个名字（比如用的是谁的订阅）', a.name); if (n && n.trim() && n.trim() !== a.name) void act(a.id, { name: n.trim() }, '已改名') }
-  const remove = async (a: ClaudeAccount) => {
+  const act = async (id: string, body: Record<string, unknown>, msg: string) => { if (await call('PUT', `/api/ai/accounts/${id}`, body, msg)) await reload() }
+  const rename = (a: AiAccount) => { const n = prompt('给这个账号起个名字（比如用的是谁的订阅）', a.name); if (n && n.trim() && n.trim() !== a.name) void act(a.id, { name: n.trim() }, '已改名') }
+  const setBase = (a: AiAccount) => { const n = prompt('这个账号走哪个接口地址（代理 / 中转）？空着 = 官方', a.baseUrl); if (n !== null && n.trim() !== a.baseUrl) void act(a.id, { baseUrl: n.trim() }, n.trim() ? '已设接口地址' : '已改回官方') }
+  const remove = async (a: AiAccount) => {
     if (!confirm(`从 Opero 去掉「${a.name}」？\n\n只是 Opero 不再用它：账号和令牌本身不受影响，别的项目照常能用。${a.employees.length ? `\n指定用它的员工（${a.employees.join('、')}）会改用默认账号。` : ''}`)) return
-    if (await call('DELETE', `/api/ai/claude-accounts/${a.id}`, undefined, '已从 Opero 去掉')) await reload()
+    if (await call('DELETE', `/api/ai/accounts/${a.id}`, undefined, '已从 Opero 去掉')) await reload()
   }
   return (
     <div className="acct-list">
@@ -34,6 +39,7 @@ export function ClaudeAccounts({ list, reload }: { list: ClaudeAccount[]; reload
             <span className="acct-tags">
               {a.isDefault && <span className="acct-tag def">默认</span>}
               <span className="acct-tag">{a.sub ? '订阅' : 'API Key'}</span>
+              {a.baseUrl && <span className="acct-tag" title={a.baseUrl}>{`经 ${a.baseUrl.replace(/^https?:\/\//, '').replace(/\/.*$/, '')}`}</span>}
               {a.limitedUntil > 0 && <span className="acct-tag warn">{`用量到上限 · ${hhmm(a.limitedUntil)} 前先用别的`}</span>}
               {a.employees.length > 0 && <span className="acct-tag">{`${a.employees.join('、')} 指定用它`}</span>}
             </span>
@@ -42,11 +48,12 @@ export function ClaudeAccounts({ list, reload }: { list: ClaudeAccount[]; reload
             {!a.isDefault && <button className="btn ghost sm" onClick={() => act(a.id, { isDefault: true }, '已设成默认')}>设成默认</button>}
             {a.limitedUntil > 0 && <button className="btn ghost sm" onClick={() => act(a.id, { clearLimit: true }, '已恢复')}>已恢复</button>}
             <button className="btn ghost sm" onClick={() => rename(a)}>改名</button>
+            {!a.sub && <button className="btn ghost sm" onClick={() => setBase(a)}>接口地址</button>}
             <button className="btn ghost sm" onClick={() => remove(a)}>去掉</button>
           </span>
         </div>
       ))}
-      <p className="field-hint">员工默认用「默认」账号，也能在员工的 work 设置里单独指定；一个账号用量到上限，后面的活自动先换别的账号。</p>
+      <p className="field-hint">{kind === 'claude' ? '员工默认用「默认」账号，也能在员工的 work 设置里单独指定；一个账号用量到上限，后面的活自动先换别的账号。' : '员工用「默认」账号。'}</p>
     </div>
   )
 }
@@ -97,6 +104,7 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
   const [key, setKey] = useState('')
   const [code, setCode] = useState('')
   const [base, setBase] = useState('')
+  const [name, setName] = useState('')
   const [adv, setAdv] = useState(false)
   const [busy, setBusy] = useState('')
   const [test, setTest] = useState<{ ok: boolean; ms: number; out: string } | null>(null)
@@ -130,17 +138,11 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
   useEffect(() => {
     if (mine?.type === 'login' && (mine.state === 'ok' || mine.state === 'fail')) { pop.current?.close(); pop.current = null }
   }, [mine?.state])
-  // 一个框：贴的是令牌（一整串、够长、没有 #）就直接验证保存；在等授权码时贴的就当授权码
-  const isTok = (v: string) => v.length >= 40 && !v.includes('#') && /^[A-Za-z0-9_\-.~+/=]+$/.test(v)
+  // 等授权码时：贴进来的就是授权码
   const submit = async (raw: string) => {
     const v = raw.trim()
     if (!v) { toast('先把码贴进来'); return }
-    const waiting = mine?.type === 'login' && mine.state === 'waitCode'
-    if (!waiting && v.includes('#')) { toast('这是浏览器给的一次性授权码，不是令牌：只能贴回发它的那次登录。点上面的按钮，用这里打开的登录页拿码'); return }
-    if (!waiting && !isTok(v)) { toast('这不像令牌（要 claude setup-token 打印的那一整串）。没有令牌就点上面的按钮登录'); return }
-    const r = waiting
-      ? await call<{ job: Job }>('POST', '/api/ai/login/code', { code: v })
-      : await call<{ job: Job }>('POST', '/api/ai/login/token', { token: v, host })
+    const r = await call<{ job: Job }>('POST', '/api/ai/login/code', { code: v })
     if (r?.job) { setCode(''); setJob(r.job) }
   }
   const onPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
@@ -148,23 +150,38 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
     if (!v) return
     e.preventDefault()
     setCode(v)
-    if (isTok(v) || (mine?.state === 'waitCode' && v.length >= 20)) void submit(v)
+    if (mine?.state === 'waitCode' && v.length >= 20) void submit(v)
   }
-  // 「凭证 → AI」里已经存的 Key：点一下就用，不用再贴
+  // 不登录了，改成贴已有的令牌 / API Key
+  const toPaste = async () => {
+    if (mine?.type === 'login' && (mine.state === 'waitCode' || mine.state === 'running')) { const r = await call<{ job: Job }>('POST', '/api/ai/job/cancel'); if (r) setJob(r.job) }
+    setHow('key')
+  }
+  // 「凭证 → AI」里已经存的 Key：点一下加成一个账号，不用再贴
   const allCreds = useStore((s) => s.credentials)
-  const savedKeys = allCreds.filter((c) => c.group === 'AI' && c.hasSecret !== false && (codex ? /openai/i.test(c.kind) : /anthropic/i.test(c.kind)))
+  const accts = (codex ? info.codexAccounts : info.claudeAccounts) ?? []
+  const savedKeys = allCreds.filter((c) => c.group === 'AI' && c.hasSecret !== false && !accts.some((a) => a.id === c.id) && (codex ? /openai/i.test(c.kind) : /anthropic/i.test(c.kind)))
   const useSaved = async (id: string) => {
     setBusy('save')
-    const r = await call('PUT', '/api/ai', { host, ...(codex ? { codexCredId: id } : { claudeCredId: id }) }, '已换成这个 Key')
+    const r = await call('POST', '/api/ai/accounts', { executor: codex ? 'codex' : 'claude', credId: id, makeDefault: true, host }, '已加一个账号')
     setBusy('')
     if (r) { await reload(); void runTest() }
   }
-  const saveKey = async () => {
-    if (!key.trim()) { toast('先把 Key 贴进来'); return }
+  // 贴进来的：Claude 订阅令牌先真跑一次验证再存（走登录那套进度）；API Key（sk-ant-api…、OpenAI 的、或者填了接口地址的）直接存
+  const addPasted = async () => {
+    const v = key.trim()
+    if (!v) { toast('先把令牌或 API Key 贴进来'); return }
+    if (v.includes('#')) { toast('这是浏览器给的一次性授权码，不是令牌：只能贴回发它的那次登录（用「用 Claude 账号登录」）'); return }
+    if (/\s/.test(v) || v.length < 20) { toast('贴进来的不像令牌 / API Key：要一整串、中间没有空格'); return }
+    if (!codex && !base.trim() && !/^sk-ant-api/i.test(v)) {
+      const r = await call<{ job: Job }>('POST', '/api/ai/login/token', { token: v, host })
+      if (r?.job) { setKey(''); setJob(r.job); setHow('sub') } // 在「登录」那边看验证进度
+      return
+    }
     setBusy('save')
-    const r = await call('PUT', '/api/ai', { host, ...(codex ? { codexKey: key.trim(), ...(adv ? { codexBaseUrl: base } : {}) } : { claudeKey: key.trim(), ...(adv ? { claudeBaseUrl: base } : {}) }) }, '已加密保存')
+    const r = await call('POST', '/api/ai/accounts', { executor: codex ? 'codex' : 'claude', value: v, name: name.trim() || undefined, baseUrl: base.trim() || undefined, makeDefault: true, host }, '已加一个账号')
     setBusy('')
-    if (r) { setKey(''); await reload(); void runTest() } // 存好了直接试一下
+    if (r) { setKey(''); setName(''); await reload(); void runTest() } // 加好了直接试一下
   }
   const runTest = async () => {
     setBusy('test')
@@ -196,9 +213,10 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
       <EgressStep n={2} exec={exec} host={host} info={info} reload={reload} />
 
       <Step n={3} title="登录" ok={loggedIn}>
-        {loggedIn && (codex || !info.claudeAccounts?.length) && <p className="sub">已经登录（令牌加密存在这台服务器上）。要换账号，按下面重新来一遍。</p>}
-        {!codex && <ClaudeAccounts list={info.claudeAccounts ?? []} reload={reload} />}
-        {!codex && <Segmented value={how} onChange={setHow} options={[{ value: 'sub', label: '用 Claude 账号登录（Pro / Max 订阅）' }, { value: 'key', label: '用 API Key（按量付费）' }]} />}
+        {loggedIn && !accts.length && <p className="sub">已经登录（令牌加密存在这台服务器上）。</p>}
+        <AiAccounts kind={codex ? 'codex' : 'claude'} list={accts} reload={reload} />
+        {accts.length > 0 && <p className="field-hint">再加一个账号：下面任选一种，都是新加，原来的照常能用；新加的设成默认。</p>}
+        {!codex && <Segmented value={how} onChange={setHow} options={[{ value: 'sub', label: '用 Claude 账号登录（Pro / Max 订阅）' }, { value: 'key', label: '贴已有的订阅令牌或 API Key' }]} />}
 
         {!codex && how === 'sub' && (
           !mine || mine.type !== 'login' || mine.state === 'ok' || mine.state === 'fail' ? (
@@ -206,9 +224,7 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
               {mine?.type === 'login' && mine.state === 'fail' && <div className="banner b-warn">{mine.message}</div>}
               <button className="btn primary block" disabled={!installed || !!live} onClick={login}>{loggedIn ? '再登录一个账号' : '登录 Claude 账号'}</button>
               <p className="field-hint">会自动打开 Claude 的登录页：登录 → 点 Authorize → 复制页面上的码 → 回来贴进框里，就好了。{loggedIn ? '再登录一个账号是新加一个，原来的账号和令牌都留着、照常能用（别的项目在用的不受影响）；新登录的会设成默认。要登录的是另一个 Claude 账号：等登录页出来后点「复制链接」，在浏览器的无痕窗口里打开再登录（不然会直接用浏览器里已经登录的那个账号）。' : ''}</p>
-              <Field label="已经有令牌？贴这里" hint="claude setup-token 打印出来的那一整串（一般 sk-ant-oat 开头）；贴进来验证能用就保存。登录页上显示的授权码（中间有 #）是一次性的，不能贴这里。">
-                <input type="password" value={code} onChange={(e) => setCode(e.target.value)} onPaste={onPaste} placeholder="令牌" autoComplete="new-password" disabled={!installed || !!live} onKeyDown={(e) => e.key === 'Enter' && submit(code)} />
-              </Field>
+              <button type="button" className="btn ghost sm" onClick={() => setHow('key')}>已经有订阅令牌或 API Key？直接贴</button>
               {!installed && <p className="field-hint">先完成第 1 步</p>}
             </>
           ) : mine.state === 'running' && !mine.url ? (
@@ -230,6 +246,7 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
                 <button className="btn ghost" onClick={() => call<{ job: Job }>('POST', '/api/ai/job/cancel').then((r) => r && setJob(r.job))}>取消</button>
                 <button className="btn primary" onClick={() => submit(code)}>提交</button>
               </div>
+              <button type="button" className="btn ghost sm" onClick={toPaste}>手里已经有订阅令牌或 API Key？不登录了，直接贴</button>
             </>
           ) : (
             <>
@@ -244,17 +261,21 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
           <>
             <ol className="exec-howto">
               {codex
-                ? <li>打开 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">platform.openai.com/api-keys</a>，登录 → 点 <b>Create new secret key</b> → 复制</li>
-                : <li>打开 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com/settings/keys</a>，登录 → 点 <b>Create Key</b> → 复制</li>}
-              <li>粘贴到下面，点「保存」</li>
+                ? <li>OpenAI API Key：打开 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">platform.openai.com/api-keys</a>，登录 → 点 <b>Create new secret key</b> → 复制</li>
+                : <>
+                    <li>订阅令牌（Pro / Max）：在装了 Claude Code 的电脑上跑 <code>claude setup-token</code>，复制打印出来的那一整串</li>
+                    <li>或者 API Key（按量付费）：打开 <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">console.anthropic.com/settings/keys</a>，登录 → 点 <b>Create Key</b> → 复制</li>
+                  </>}
+              <li>贴到下面，点「加上」：{codex ? '' : '订阅令牌会先真跑一次验证；'}都是新加一个账号</li>
             </ol>
-            {savedKeys.length > 0 && <Field label="用「凭证」里已经存的"><div className="chips">{savedKeys.map((c) => <button key={c.id} type="button" className="chip" disabled={busy === 'save'} onClick={() => useSaved(c.id)}>{c.name}</button>)}</div></Field>}
-            <Field label={loggedIn ? 'API Key（已存，贴新的会替换）' : 'API Key'}>
-              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={codex ? 'sk-…' : 'sk-ant-…'} autoComplete="new-password" />
+            {savedKeys.length > 0 && <Field label="或者用「凭证」里已经存的"><div className="chips">{savedKeys.map((c) => <button key={c.id} type="button" className="chip" disabled={busy === 'save'} onClick={() => useSaved(c.id)}>{c.name}</button>)}</div></Field>}
+            <Field label={codex ? 'API Key' : '订阅令牌或 API Key'}>
+              <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={codex ? 'sk-…' : 'sk-ant-…'} autoComplete="new-password" onKeyDown={(e) => e.key === 'Enter' && addPasted()} />
             </Field>
-            <button className="btn ghost sm" onClick={() => { setAdv(!adv); setBase(codex ? info.codexBaseUrl : info.claudeBaseUrl) }}>{adv ? '收起' : '用代理 / 中转？'}</button>
-            {adv && <Field label="接口地址" hint="不填用官方的"><input value={base} onChange={(e) => setBase(e.target.value)} placeholder={codex ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'} /></Field>}
-            <button className="btn primary" disabled={busy === 'save'} onClick={saveKey}>{busy === 'save' ? '保存中…' : '保存'}</button>
+            <Field label="名字（可选）" hint="比如是谁的订阅、给哪个项目用"><input value={name} onChange={(e) => setName(e.target.value)} placeholder={codex ? 'Codex 的 OpenAI API Key' : 'Claude 的 API Key'} /></Field>
+            <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起' : '这个账号走代理 / 中转？'}</button>
+            {adv && <Field label="这个账号的接口地址" hint="不填用官方的；填了就按 API Key 的方式调（每个账号可以不一样）"><input value={base} onChange={(e) => setBase(e.target.value)} placeholder={codex ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'} /></Field>}
+            <button className="btn primary" disabled={busy === 'save'} onClick={addPasted}>{busy === 'save' ? '保存中…' : '加上'}</button>
           </>
         )}
       </Step>

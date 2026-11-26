@@ -14,7 +14,7 @@ export function WorkSheet({ emp, sid, onClose }: { emp: Employee; sid?: string; 
   const effort = EFFORTS.find((x) => x.value === emp.effort)
   // 登录了好几个 Claude 账号时：这个员工用哪个
   const [accts, setAccts] = useState<ClaudeAccount[]>([])
-  useEffect(() => { if (LIVE && !/codex/i.test(emp.executor)) void call<ClaudeAccount[]>('GET', '/api/ai/claude-accounts').then((r) => r && setAccts(r)) }, [emp.id, emp.executor])
+  useEffect(() => { if (LIVE && !/codex/i.test(emp.executor)) void call<ClaudeAccount[]>('GET', '/api/ai/accounts?kind=claude').then((r) => r && setAccts(r)) }, [emp.id, emp.executor])
   const [acct, setAcct] = useState(emp.claudeAccount ?? '')
   const pickAcct = async (id: string) => { setAcct(id); await call('PUT', `/api/employees/${emp.id}`, { claudeAccount: id }, id ? '已指定，下一轮起用它' : '改回用默认账号') }
   return (

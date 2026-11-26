@@ -275,9 +275,9 @@ async function executors(host = hosts.LOCAL) {
     claude: cc.code === 0 ? cc.out.split('\n')[0] : null,
     codex: cx.code === 0 ? cx.out.split('\n').pop() : null,
     claudeKey: !!(c.claudeCred && hasSecret(c.claudeCred)),
-    claudeAccounts: claudeAccountList(),
+    claudeAccounts: accountList('claude'), codexAccounts: accountList('codex'),
     claudeBaseUrl: c.claudeBaseUrl ?? '', claudeEgress: c.claudeEgress ?? '', codexEgress: c.codexEgress ?? '',
-    codexKey: !!(c.codexCred && hasSecret(c.codexCred)), codexBaseUrl: c.codexBaseUrl ?? '',
+    codexKey: runner.codexAccounts().length > 0, codexBaseUrl: c.codexBaseUrl ?? '',
     install: {
       claude: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'curl -fsSL https://claude.ai/install.sh | bash'`,
       codex: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'npm install -g @openai/codex --prefix ~/.local'`,
@@ -285,35 +285,90 @@ async function executors(host = hosts.LOCAL) {
     },
   }
 }
-/** 登录过的几个 Claude 账号：默认哪个、谁在用、到没到用量上限（到什么时候） */
-function claudeAccountList() {
+/** AI 执行器的账号（Claude / Codex 各一组）：默认哪个、订阅还是 API Key、走哪个接口地址、谁在用、到没到用量上限 */
+function accountList(kind: 'claude' | 'codex') {
   const c = runner.aiConf()
   const lim = kvGet<Record<string, number>>('claudeLimited', {})
-  return runner.claudeAccounts().map((id) => {
+  const ids = kind === 'claude' ? runner.claudeAccounts() : runner.codexAccounts()
+  const def = kind === 'claude' ? c.claudeCred : (c.codexCred && ids.includes(c.codexCred) ? c.codexCred : ids[0])
+  return ids.map((id) => {
     const cr = get<Credential>('credentials', id)
-    return { id, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === c.claudeCred, limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0, employees: all<Employee>('employees').filter((e) => e.claudeAccount === id).map((e) => e.name), sub: runner.isOat(runner.claudeKey(id), id) }
+    const base = String(cr?.meta?.baseUrl ?? '')
+    return { id, kind, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === def, baseUrl: base,
+      limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0,
+      employees: kind === 'claude' ? all<Employee>('employees').filter((e) => e.claudeAccount === id).map((e) => e.name) : [],
+      sub: kind === 'claude' ? runner.isOat(runner.claudeKey(id), id) : false }
   })
 }
-route('GET', '/api/ai/claude-accounts', () => claudeAccountList())
+/** 这个账号是哪个执行器的 */
+const kindOfAccount = (id: string): 'claude' | 'codex' | undefined => (runner.claudeAccounts().includes(id) ? 'claude' : runner.codexAccounts().includes(id) ? 'codex' : undefined)
+/** 加一个账号（贴进来的 API Key / 订阅令牌，或凭证里已经存的）：都是新加，原来的不动；还没有默认的就设成默认 */
+function addAiAccount(kind: 'claude' | 'codex', o: { value?: string; credId?: string; name?: string; baseUrl?: string; makeDefault?: boolean }): string {
+  const conf = runner.aiConf()
+  const base = String(o.baseUrl ?? '').trim()
+  if (base && !/^https?:\/\/\S+$/.test(base)) throw bad('接口地址要以 http:// 或 https:// 开头')
+  let id: string
+  if (o.credId) {
+    const cr = get<Credential>('credentials', o.credId)
+    if (!cr || !hasSecret(o.credId)) throw bad('这个凭证不在了或没有值')
+    id = o.credId
+    if (base || o.name) put1('credentials', { ...cr, ...(o.name ? { name: o.name } : {}), meta: { ...(cr.meta ?? {}), ...(base ? { baseUrl: base } : {}) } })
+  } else {
+    const v = String(o.value ?? '').trim()
+    if (!v || /\s/.test(v) || v.length < 20) throw bad('贴进来的不像 Key / 令牌：要一整串、中间没有空格')
+    if (v.includes('#')) throw bad('这是浏览器给的一次性授权码，不是令牌：只能贴回发它的那次登录')
+    const list = kind === 'claude' ? runner.claudeAccounts() : runner.codexAccounts()
+    id = list.find((x) => getSecret(x)?.trim() === v) ?? uid('cr')
+    setSecret(id, v)
+    const api = kind === 'codex' || !!base || /^sk-ant-api/i.test(v)
+    const name = o.name?.trim().slice(0, 60) || (kind === 'codex' ? 'Codex 的 OpenAI API Key' : api ? 'Claude 的 API Key' : 'Claude Code 的登录令牌')
+    put1('credentials', { id, name, group: 'AI', kind: 'Token', env: '生产', scope: api ? '调模型（按量计费）' : 'Claude 订阅（一年有效）', usedBy: [], updated: now(), aiAllowed: true,
+      meta: { ...(kind === 'claude' ? { authMode: api ? 'api' : 'oauth' } : {}), ...(base ? { baseUrl: base } : {}) } } satisfies Credential)
+  }
+  if (kind === 'claude') kvSet('ai', { ...conf, claudeAccounts: [...new Set([...(conf.claudeAccounts ?? []), ...(conf.claudeCred ? [conf.claudeCred] : []), id])], claudeCred: o.makeDefault || !conf.claudeCred ? id : conf.claudeCred })
+  else kvSet('ai', { ...conf, codexAccounts: [...new Set([...(conf.codexAccounts ?? []), ...(conf.codexCred ? [conf.codexCred] : []), id])], codexCred: o.makeDefault || !conf.codexCred ? id : conf.codexCred })
+  audit({ via: '—', action: 'ai.account.add', target: `${kind === 'claude' ? 'Claude' : 'Codex'} · ${get<Credential>('credentials', id)?.name ?? id}`, level: '危险', result: '成功', how: '本人' })
+  return id
+}
 route('GET', '/api/ai', (c) => executors(hostParam(c.url.searchParams.get('host'))))
-// Claude 账号：设成默认 / 改名 / 从 Opero 去掉（只是 Opero 不再用它，账号和令牌本身不受影响、别的项目照常用）
-route('PUT', '/api/ai/claude-accounts/:id', (c) => {
+route('GET', '/api/ai/accounts', (c) => accountList(/codex/i.test(c.url.searchParams.get('kind') ?? '') ? 'codex' : 'claude'))
+/** 加一个账号：贴 API Key / 订阅令牌（可带名字、接口地址），或用凭证里已经存的（credId）。订阅令牌想先真跑一次验证，用 /api/ai/login/token */
+route('POST', '/api/ai/accounts', async (c) => {
+  const b = c.body ?? {}
+  const kind = /codex/i.test(String(b.executor ?? b.kind ?? '')) ? 'codex' : 'claude'
+  addAiAccount(kind, { value: b.value, credId: b.credId, name: b.name, baseUrl: b.baseUrl, makeDefault: !!b.makeDefault })
+  return executors(hostParam(b.host))
+})
+// 账号：设成默认 / 改名 / 改接口地址 / 从 Opero 去掉（只是 Opero 不再用它，账号和令牌本身不受影响、别的项目照常用）
+route('PUT', '/api/ai/accounts/:id', (c) => {
   const conf = runner.aiConf()
   const id = c.params.id
-  if (!runner.claudeAccounts().includes(id)) throw new HttpError(404, '没有这个账号')
-  if (c.body?.isDefault) kvSet('ai', { ...conf, claudeCred: id })
-  const name = String(c.body?.name ?? '').trim().slice(0, 60)
+  const kind = kindOfAccount(id)
+  if (!kind) throw new HttpError(404, '没有这个账号')
+  if (c.body?.isDefault) kvSet('ai', { ...conf, ...(kind === 'claude' ? { claudeCred: id } : { codexCred: id }) })
   const cr = get<Credential>('credentials', id)
-  if (name && cr) put1('credentials', { ...cr, name })
+  const name = String(c.body?.name ?? '').trim().slice(0, 60)
+  if (cr && (name || c.body?.baseUrl !== undefined)) {
+    const base = String(c.body?.baseUrl ?? cr.meta?.baseUrl ?? '').trim()
+    if (base && !/^https?:\/\/\S+$/.test(base)) throw bad('接口地址要以 http:// 或 https:// 开头')
+    put1('credentials', { ...cr, ...(name ? { name } : {}), meta: { ...(cr.meta ?? {}), baseUrl: base || undefined } })
+  }
   if (c.body?.clearLimit) { const lim = kvGet<Record<string, number>>('claudeLimited', {}); delete lim[id]; kvSet('claudeLimited', lim) }
   return { ok: true }
 })
-route('DELETE', '/api/ai/claude-accounts/:id', (c) => {
+route('DELETE', '/api/ai/accounts/:id', (c) => {
   const conf = runner.aiConf()
   const id = c.params.id
-  const rest = runner.claudeAccounts().filter((x) => x !== id)
-  kvSet('ai', { ...conf, claudeAccounts: rest, claudeCred: conf.claudeCred === id ? rest[0] : conf.claudeCred })
-  for (const e of all<Employee>('employees').filter((x) => x.claudeAccount === id)) put1('employees', { ...e, claudeAccount: undefined })
+  const kind = kindOfAccount(id)
+  if (!kind) throw new HttpError(404, '没有这个账号')
+  if (kind === 'claude') {
+    const rest = runner.claudeAccounts().filter((x) => x !== id)
+    kvSet('ai', { ...conf, claudeAccounts: rest, claudeCred: conf.claudeCred === id ? rest[0] : conf.claudeCred })
+    for (const e of all<Employee>('employees').filter((x) => x.claudeAccount === id)) put1('employees', { ...e, claudeAccount: undefined })
+  } else {
+    const rest = runner.codexAccounts().filter((x) => x !== id)
+    kvSet('ai', { ...conf, codexAccounts: rest, codexCred: conf.codexCred === id ? rest[0] : conf.codexCred })
+  }
   const cr = get<Credential>('credentials', id)
   del1('credentials', id); delSecret(id)
   audit({ via: '—', action: 'ai.account.remove', target: cr?.name ?? id, level: '写', result: '成功', how: '本人（只从 Opero 去掉，令牌本身没作废）' })
@@ -322,26 +377,12 @@ route('DELETE', '/api/ai/claude-accounts/:id', (c) => {
 route('PUT', '/api/ai', async (c) => {
   const b = c.body ?? {}
   const conf = runner.aiConf()
-  const saveKey = (field: 'claudeCred' | 'codexCred', name: string, value: unknown) => {
-    if (value === undefined) return
-    const v = String(value).trim()
-    // Claude：每个 Key / 令牌是一个账号，新加的不覆盖原来的（别的项目可能还在用原来那个）
-    const same = field === 'claudeCred' ? runner.claudeAccounts().find((id) => getSecret(id) === v) : undefined
-    const id = field === 'claudeCred' ? (same ?? uid('cr')) : (conf[field] ?? uid('cr'))
-    if (field === 'claudeCred' && v) conf.claudeAccounts = [...new Set([...(conf.claudeAccounts ?? []), ...(conf.claudeCred ? [conf.claudeCred] : []), id])]
-    if (!v) { delSecret(id); return }
-    setSecret(id, v)
-    const sub = field === 'claudeCred' && !conf.claudeBaseUrl && !/^sk-ant-api/i.test(v)
-    put1('credentials', { id, name: sub ? 'Claude Code 的登录令牌' : name, group: 'AI', kind: 'Token', env: '生产', scope: sub ? 'Claude 订阅（一年有效）' : '调模型（按量计费）', usedBy: [], updated: now(), aiAllowed: true, ...(field === 'claudeCred' ? { meta: { authMode: sub ? 'oauth' : 'api' } } : {}) } satisfies Credential)
-    conf[field] = id
-  }
-  // 用「凭证 → AI」里已经存的 Key（不用再贴一遍）
-  for (const [f, k] of [['claudeCred', b.claudeCredId], ['codexCred', b.codexCredId]] as const) if (k && get<Credential>('credentials', String(k)) && hasSecret(String(k))) {
-    conf[f] = String(k)
-    if (f === 'claudeCred') conf.claudeAccounts = [...new Set([...(conf.claudeAccounts ?? []), String(k)])]
-  }
-  saveKey('claudeCred', 'Claude Code 的 API Key / 令牌', b.claudeKey)
-  saveKey('codexCred', 'Codex 的 OpenAI API Key', b.codexKey)
+  // 贴 Key / 用「凭证 → AI」里已经存的：都是新加一个账号（原来的不动），新加的设成默认
+  if (b.claudeKey) addAiAccount('claude', { value: b.claudeKey, makeDefault: true })
+  if (b.codexKey) addAiAccount('codex', { value: b.codexKey, makeDefault: true })
+  if (b.claudeCredId) addAiAccount('claude', { credId: String(b.claudeCredId), makeDefault: true })
+  if (b.codexCredId) addAiAccount('codex', { credId: String(b.codexCredId), makeDefault: true })
+  Object.assign(conf, runner.aiConf())
   if (b.claudeBaseUrl !== undefined) conf.claudeBaseUrl = String(b.claudeBaseUrl).trim()
   if (b.codexBaseUrl !== undefined) conf.codexBaseUrl = String(b.codexBaseUrl).trim()
   // 网络出口：空 = 直连；local = 经 Opero 这台；服务器编号 = 经那台 Agent
