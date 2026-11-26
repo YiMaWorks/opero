@@ -7,7 +7,7 @@ import {
   AppsPage, AuditPage, CredentialEditPage, CredentialsPage, DataPage, PluginsPage, QueryPage, ReleasePage, ReleasesPage,
   ServerAddPage, ServerPage, ServersPage, TriggerEditPage, TriggersPage, ChannelsPage, InboxPage, KnowledgePage, FlowsPage,
 } from './apps'
-import { AboutPage, CustomizePage, HabitsPage, MePage, SecurityPage, SettingsPage, UsagePage } from './me'
+import { AboutPage, CustomizePage, HabitsPage, MePage, SecurityPage, SettingsPage, SystemSettingsPage, UsagePage } from './me'
 import { MeEditPage } from './meEdit'
 import { DiffPage, PlaceholderPage, QueryResultPage } from './panels'
 import { LIVE } from '../mode'
@@ -93,6 +93,7 @@ export function PageView({ route, nav }: { route: Route; nav: Nav }) {
     case 'me': return <MePage {...p} />
     case 'meEdit': return <MeEditPage {...p} />
     case 'settings': return <SettingsPage {...p} />
+    case 'system': return <SystemSettingsPage {...p} />
     case 'usage': return <UsagePage {...p} />
     case 'security': return <SecurityPage {...p} />
     case 'about': return <AboutPage {...p} />

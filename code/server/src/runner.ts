@@ -99,6 +99,21 @@ export function egressEnv(kind: 'claude' | 'codex', host: string): Record<string
   return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, NO_PROXY: noProxy, no_proxy: noProxy }
 }
 
+/** 读一个 Claude 账号的值：去掉首尾空白；里面有订阅令牌（sk-ant-oat…）就只取令牌（复制时多带了空格、换行也能用） */
+export const OAT_RE = /sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}/
+export function claudeKey(id?: string): string {
+  const v = (id ? getSecret(id) ?? '' : '').trim()
+  return v.match(OAT_RE)?.[0] ?? v
+}
+/** 是订阅令牌（走 CLAUDE_CODE_OAUTH_TOKEN）还是 API Key：存的时候记在凭证上（meta.authMode）；没记的按值猜——
+ *  Anthropic 的 API Key 都是 sk-ant-api 开头，别的都当订阅令牌（令牌格式以后变了也不用改这里） */
+export function isOat(k: string, id?: string): boolean {
+  const mode = id ? get<Credential>('credentials', id)?.meta?.authMode : undefined
+  if (mode === 'oauth') return true
+  if (mode === 'api') return false
+  return !!k && (OAT_RE.test(k) || !/^sk-ant-api/i.test(k))
+}
+
 /** 登录过的 Claude 账号（凭证 id）：可以有好几个（买了多个订阅），登录新的不会让旧的失效；claudeCred 是默认那个 */
 export function claudeAccounts(): string[] {
   const c = aiConf()
@@ -125,8 +140,8 @@ function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL, emp?: Emplo
   let cred: string | undefined
   if (kind === 'claude') {
     cred = pickClaude(emp)
-    const k = cred ? getSecret(cred) : undefined
-    if (k) { secrets.push(k); env[k.startsWith('sk-ant-oat') ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
+    const k = cred ? claudeKey(cred) : ''
+    if (k) { secrets.push(k); env[!c.claudeBaseUrl && isOat(k, cred) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
     if (c.claudeBaseUrl) env.ANTHROPIC_BASE_URL = c.claudeBaseUrl
     Object.assign(env, { MCP_TIMEOUT: '60000', MCP_TOOL_TIMEOUT: '1900000', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000' })
   } else {
@@ -703,8 +718,8 @@ function billing(kind: 'claude' | 'codex', cred?: string): 'sub' | 'api' {
   if (kind === 'codex') return c.codexCred ? 'api' : 'sub'
   if (c.claudeBaseUrl) return 'api'
   const id = cred ?? c.claudeCred
-  const k = id ? getSecret(id) : ''
-  return !k || k.startsWith('sk-ant-oat') ? 'sub' : 'api'
+  const k = claudeKey(id)
+  return !k || isOat(k, id) ? 'sub' : 'api'
 }
 
 /** 一轮做完的小结卡片：做完没有、提交推送、改了哪些文件、这一轮和这个会话的用量；能撤销 / 发布这次改动 */
@@ -742,7 +757,8 @@ function after(l: Live, code: number | null, emp: Employee | undefined) {
   if (!l.stopped && !l.ok && code !== 0) {
     const err = scrub(l.stderr.trim(), l.secrets).split('\n').slice(-6).join('\n')
     limitHit(l, err)
-    const hint = /auth|login|api key|401|credential|unauthorized|OAuth/i.test(err) ? '\n\n像是执行器没登录：到「我 → AI 执行器」配 API Key，或者在服务器上用 AI 用户登录一次。'
+    const hint = /Request not allowed|unsupported_country|not available in your (country|region)|forbidden/i.test(err) ? '\n\n这台服务器连 Anthropic 被拒绝（所在地区不支持）：到「我 → AI 执行器」第 2 步「网络出口」把 Claude 设成经海外的服务器出去，或者让这个员工跑在海外那台。'
+      : /auth|login|api key|401|credential|unauthorized|OAuth/i.test(err) ? '\n\n像是执行器没登录：到「我 → AI 执行器」配 API Key，或者在服务器上用 AI 用户登录一次。'
       : /not found|No such file|command not found/i.test(err) ? '\n\n像是服务器上没装这个执行器：到「我 → AI 执行器」看安装方法。' : ''
     system(l.sid, `执行器退出了（${code}）${err ? '：\n' + err : ''}${hint}`)
     push({ kind: 'info', error: true, title: emp?.name ?? '员工', body: '执行器出错了', route: `chat/${l.sid}` })

@@ -291,7 +291,7 @@ function claudeAccountList() {
   const lim = kvGet<Record<string, number>>('claudeLimited', {})
   return runner.claudeAccounts().map((id) => {
     const cr = get<Credential>('credentials', id)
-    return { id, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === c.claudeCred, limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0, employees: all<Employee>('employees').filter((e) => e.claudeAccount === id).map((e) => e.name), sub: (getSecret(id) ?? '').startsWith('sk-ant-oat') }
+    return { id, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === c.claudeCred, limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0, employees: all<Employee>('employees').filter((e) => e.claudeAccount === id).map((e) => e.name), sub: runner.isOat(runner.claudeKey(id), id) }
   })
 }
 route('GET', '/api/ai/claude-accounts', () => claudeAccountList())
@@ -331,8 +331,8 @@ route('PUT', '/api/ai', async (c) => {
     if (field === 'claudeCred' && v) conf.claudeAccounts = [...new Set([...(conf.claudeAccounts ?? []), ...(conf.claudeCred ? [conf.claudeCred] : []), id])]
     if (!v) { delSecret(id); return }
     setSecret(id, v)
-    const sub = v.startsWith('sk-ant-oat')
-    put1('credentials', { id, name: sub ? 'Claude Code 的登录令牌' : name, group: 'AI', kind: 'Token', env: '生产', scope: sub ? 'Claude 订阅（一年有效）' : '调模型（按量计费）', usedBy: [], updated: now(), aiAllowed: true } satisfies Credential)
+    const sub = field === 'claudeCred' && !conf.claudeBaseUrl && !/^sk-ant-api/i.test(v)
+    put1('credentials', { id, name: sub ? 'Claude Code 的登录令牌' : name, group: 'AI', kind: 'Token', env: '生产', scope: sub ? 'Claude 订阅（一年有效）' : '调模型（按量计费）', usedBy: [], updated: now(), aiAllowed: true, ...(field === 'claudeCred' ? { meta: { authMode: sub ? 'oauth' : 'api' } } : {}) } satisfies Credential)
     conf[field] = id
   }
   // 用「凭证 → AI」里已经存的 Key（不用再贴一遍）
@@ -391,8 +391,9 @@ route('POST', '/api/ai/test', async (c) => {
   const host = hostParam(c.body?.host)
   const c2 = runner.aiConf()
   const env: Record<string, string> = {}
-  const key = codex ? (c2.codexCred && getSecret(c2.codexCred)) : (c2.claudeCred && getSecret(c2.claudeCred))
-  if (key) Object.assign(env, codex ? { OPENAI_API_KEY: key, CODEX_API_KEY: key } : { [key.startsWith('sk-ant-oat') ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY']: key })
+  const acct = codex ? undefined : runner.pickClaude()
+  const key = codex ? (c2.codexCred && getSecret(c2.codexCred)?.trim()) : runner.claudeKey(acct)
+  if (key) Object.assign(env, codex ? { OPENAI_API_KEY: key, CODEX_API_KEY: key } : { [!c2.claudeBaseUrl && runner.isOat(key, acct) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY']: key })
   if (!codex && c2.claudeBaseUrl) env.ANTHROPIC_BASE_URL = c2.claudeBaseUrl
   if (codex && c2.codexBaseUrl) env.OPENAI_BASE_URL = c2.codexBaseUrl
   Object.assign(env, runner.egressEnv(codex ? 'codex' : 'claude', host))
@@ -888,7 +889,9 @@ async function saveCred(c: Ctx, id?: string) {
   const kind = String(b.kind ?? old?.kind ?? '').trim().slice(0, 40) || '令牌'
   const meta = cleanMeta(b.meta ?? old?.meta)
   let user = b.user !== undefined ? String(b.user).trim() : old?.user
-  const secret = b.secret ? String(b.secret) : ''
+  // 一行的值（令牌、Key、密码）去掉首尾空白：复制时常多带空格、换行；私钥、证书这类多行的原样存
+  const rawSecret = b.secret ? String(b.secret) : ''
+  const secret = rawSecret.trim().includes('\n') ? rawSecret : rawSecret.trim()
   if (!old && !secret) throw bad(group === '数据库' || group === '服务器' ? '密码要填' : '密钥 / 令牌要填')
   // 存之前真的连一次：结果记在凭证上（连不上也存，网页上标红，方便以后再试）
   const t = await testCred({ group, kind, meta, user }, secret || (old ? getSecret(old.id) ?? '' : ''))
@@ -905,6 +908,11 @@ async function saveCred(c: Ctx, id?: string) {
   // 新加的：按员工「以后新加的这类自动给它」勾好
   if (!old && cred.aiAllowed) for (const e of all<Employee>('employees').filter((x) => x.credGroups?.includes(group))) put1('employees', { ...e, creds: [...(e.creds ?? []), cred.id] })
   if (!old) answerCredRequests(cred)
+  // 存的是 Claude 订阅令牌：加进「AI 执行器」的账号列表（不改默认），员工就能用它
+  if (group === 'AI' && /anthropic|claude|token/i.test(kind) && runner.isOat(runner.claudeKey(cred.id), cred.id)) {
+    const conf = runner.aiConf()
+    if (!runner.claudeAccounts().includes(cred.id)) kvSet('ai', { ...conf, claudeAccounts: [...new Set([...(conf.claudeAccounts ?? []), cred.id])], claudeCred: conf.claudeCred ?? cred.id })
+  }
   audit({ via: '—', action: old ? 'credential.update' : 'credential.create', target: `${name}（${group} · ${kind}）`, level: '危险', result: '成功', how: '本人' })
   return pub('credentials', cred)
 }
@@ -969,9 +977,9 @@ route('GET', '/api/ai/models', async (c) => {
     try { const r = await fetch(url, { headers, signal: AbortSignal.timeout(8000) }); return r.ok ? ((await r.json()) as any) : null } catch { return null }
   }
   let claude: string[] = []
-  const ck = conf.claudeCred ? getSecret(conf.claudeCred) : undefined
+  const ck = runner.claudeKey(conf.claudeCred)
   if (ck) {
-    const oat = ck.startsWith('sk-ant-oat')
+    const oat = runner.isOat(ck, conf.claudeCred)
     const j = await get1('https://api.anthropic.com/v1/models?limit=100', oat ? { Authorization: `Bearer ${ck}`, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'oauth-2025-04-20' } : { 'x-api-key': ck, 'anthropic-version': '2023-06-01' })
     claude = (j?.data ?? []).map((x: any) => String(x.id)).filter((id: string) => /^claude-/.test(id))
   }

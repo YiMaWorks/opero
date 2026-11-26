@@ -5,6 +5,8 @@ import type { Route, Tab } from '../types'
 import { logout, togglePin, useStore } from '../store'
 import { Avatar } from './Avatar'
 import { IconPlus, IconSearch, TabIcon } from './icons'
+import { LIVE_CONFIG } from '../pages/live'
+import { DEMO_CONFIG } from '../pages/apps'
 import { LIVE } from '../mode'
 
 interface Props {
@@ -93,6 +95,8 @@ export function SideNav({ tab, active, onPick }: Props) {
         {item({ page: 'apps' }, '全部应用', <TabIcon tab="apps" />)}
         <div className="side-sep" />
         {list.filter(([, n]) => match(n)).map(([page, name, l, n]) => item({ page }, name, letter(l), n ? <em>{n}</em> : undefined))}
+        <div className="side-sep" />
+        {(LIVE ? LIVE_CONFIG : DEMO_CONFIG).filter((a) => match(a.name)).map((a) => item({ page: a.page }, a.name, letter(a.name === 'AI 执行器' ? 'AI' : a.name.slice(0, 1)), undefined, a.desc))}
       </>
     )
   } else {
@@ -100,11 +104,8 @@ export function SideNav({ tab, active, onPick }: Props) {
     const list: [Route['page'], string, string, string][] = [
       ['meEdit', '编辑资料', '资', '头像、签名、封面'],
       ['habits', '我的习惯', '习', '所有员工都遵守'],
-      LIVE ? ['executors', 'AI 执行器', 'AI', 'Claude Code / Codex、Key'] : ['customize', '定制和二开', '定', '你的 fork、合并官方新版'],
-      ['usage', '用量和成本', '用', '每个员工花了多少'],
-      ['settings', '设置', '设', '生产保护、通知、外观'],
-      ['security', '账号安全', '安', LIVE ? '改密码、接手机' : '通行密钥、手机'],
-      ['about', '关于 Opero', '关', ''],
+      ['settings', '外观和通知', '观', '风格、语言、推送什么'],
+      ['security', '账号安全', '安', LIVE ? '改密码、通行密钥、设备' : '通行密钥、手机'],
     ]
     body = (
       <>

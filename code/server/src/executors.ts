@@ -105,6 +105,8 @@ export function startInstall(executor: 'claude' | 'codex', host = hosts.LOCAL): 
 const OSC8 = /\x1b\]8;[^;\x07\x1b]*;(https:\/\/[^\x07\x1b\s]+)(?:\x07|\x1b\\)/
 const URL_RE = /https:\/\/(claude\.ai|claude\.com|console\.anthropic\.com)\/[^\s"'<>]+/
 const TOKEN_RE = /sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}/
+/** 贴进来的像不像一个令牌（不管什么开头）：一整串、够长、没有空格；带 # 的是浏览器给的一次性授权码 */
+const looksToken = (v: string) => v.length >= 40 && v.length <= 600 && /^[A-Za-z0-9_\-.~+/=]+$/.test(v)
 // 授权码贴回去以后屏幕上出现这些就算失败（措辞以后可能变：宽一点）
 const ERR_RE = /(OAuth error|Login failed|Authentication failed|Invalid (authorization )?code|invalid_grant|expired|Error:|failed)/i
 // 界面没收下这串码、还在等重新输入（比如贴的不是完整授权码）：回到「贴授权码」，不算失败
@@ -188,8 +190,9 @@ export function startLogin(host = hosts.LOCAL): Job {
 /** 已经有 setup-token 拿到的订阅令牌（sk-ant-oat…）：不走浏览器授权，验证能用就保存 */
 export function useToken(token: string, host = hosts.LOCAL): Job {
   if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
-  const t = token.trim()
-  if (!TOKEN_RE.test(t) || t.match(TOKEN_RE)![0] !== t) throw new Error('这不是订阅令牌：应该是 sk-ant-oat 开头的一整串')
+  const t = (token.trim().match(TOKEN_RE)?.[0] ?? token.trim()).replace(/^export\s+CLAUDE_CODE_OAUTH_TOKEN=/, '').replace(/^["']|["']$/g, '')
+  if (t.includes('#')) throw new Error('这是浏览器给的一次性授权码，不是令牌：它只能贴回发它的那一次登录（在别处登录拿到的码在这里用不了）。点「再登录一个账号」，用 Opero 打开的登录页拿授权码贴回来')
+  if (!looksToken(t)) throw new Error('这不像令牌：要贴 claude setup-token 打印出来的那一整串（没有空格）')
   job = { id: uid('j'), type: 'login', executor: 'claude', host, state: 'verifying', log: '用现成的订阅令牌，', started: Date.now() }
   void verifyToken(job, t, '', '这个令牌')
   return job
@@ -203,7 +206,10 @@ async function verifyToken(j: Job, token: string, alt: string, failPrefix: strin
   let v = await check(token)
   if ((v.code !== 0 || !/OK/.test(v.out)) && alt && alt !== token) { const v2 = await check(alt); if (v2.code === 0 && /OK/.test(v2.out)) { v = v2; token = alt } }
   if (job !== j || j.state !== 'verifying') return // 中途被取消了
-  if (v.code !== 0 || !/OK/.test(v.out)) return done('fail', `${failPrefix}用它跑 Claude Code 被拒绝：${v.out.split(token).join('••••').slice(-300) || `退出码 ${v.code}`}`)
+  const out = v.out.split(token).join('••••')
+  // 这台连 Anthropic 被拒（国内等不支持的地区）：不是令牌的问题，要换网络出口
+  if (/Request not allowed|unsupported_country|not available in your (country|region)|forbidden/i.test(out)) return done('fail', `这台服务器连 Anthropic 被拒绝（所在地区不支持，令牌本身多半没问题）：到上面第 2 步「网络出口」把 Claude 设成经海外的服务器出去，或者在页面顶上换到海外那台再登录。原话：${out.slice(-160)}`)
+  if (v.code !== 0 || !/OK/.test(v.out)) return done('fail', `${failPrefix}用它跑 Claude Code 被拒绝：${out.slice(-300) || `退出码 ${v.code}`}`)
   await saveClaudeToken(token)
   log('验证通过，已加密保存\n')
   done('ok', `已登录（共 ${runner.claudeAccounts().length} 个账号，原来的照常能用），员工可以干活了`)
@@ -223,7 +229,7 @@ export function sendCode(code: string) {
   if (!c || c.length > 400 || /[\r\n\x1b]/.test(c)) throw new Error('授权码不对')
   job.message = undefined
   // 贴的是以前 setup-token 拿到的长期令牌（sk-ant-oat…）：不用再走浏览器授权，关掉登录界面直接验证它
-  const tok = c.match(TOKEN_RE)?.[0]
+  const tok = c.match(TOKEN_RE)?.[0] ?? (!c.includes('#') && c.length >= 80 && looksToken(c) ? c : undefined)
   if (tok && tok === c) {
     const j = job
     kill()
@@ -256,7 +262,7 @@ async function saveClaudeToken(token: string) {
     setSecret(id, token)
     const email = await accountEmail(token)
     const n = runner.claudeAccounts().length + 1
-    const cred: Credential = { id, name: email ? `Claude · ${email}` : `Claude 账号 ${n}`, group: 'AI', kind: 'Token', env: '生产', scope: 'Claude 订阅（一年有效）', usedBy: [], updated: new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16), aiAllowed: true, ...(email ? { user: email } : {}) }
+    const cred: Credential = { id, name: email ? `Claude · ${email}` : `Claude 账号 ${n}`, group: 'AI', kind: 'Token', env: '生产', scope: 'Claude 订阅（一年有效）', usedBy: [], updated: new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16), aiAllowed: true, meta: { authMode: 'oauth' }, ...(email ? { user: email } : {}) }
     put('credentials', cred)
     emit({ t: 'put', coll: 'credentials', item: { ...cred, hasSecret: true } })
   }

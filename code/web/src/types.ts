@@ -471,7 +471,7 @@ export type PageName =
   | 'workspaces' | 'workspace' | 'workspaceAdd' | 'issues' | 'issue'
   | 'apps' | 'servers' | 'server' | 'serverAdd' | 'releases' | 'release' | 'credentials' | 'credentialEdit'
   | 'data' | 'query' | 'triggers' | 'triggerEdit' | 'plugins' | 'audit'
-  | 'me' | 'meEdit' | 'settings' | 'usage' | 'security' | 'about' | 'habits' | 'customize'
+  | 'me' | 'meEdit' | 'settings' | 'system' | 'usage' | 'security' | 'about' | 'habits' | 'customize'
   | 'chatSettings' | 'channels' | 'inbox' | 'knowledge' | 'flows'
   | 'diff' | 'queryResult' | 'profile' | 'placeholder'
   | 'executors' | 'dataSourceAdd' | 'comingSoon' | 'history' | 'domains' | 'domain'

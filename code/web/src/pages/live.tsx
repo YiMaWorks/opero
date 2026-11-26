@@ -312,6 +312,13 @@ export const LIVE_APPS: { page: any; name: string; desc: string; letter: string 
   { page: 'knowledge', name: '知识库', desc: '所有员工共用的资料', letter: '知' },
   { page: 'audit', name: '操作记录', desc: '员工做的每件事', letter: '记' },
 ]
+/** 这套 Opero 的配置（不放在「我」里）：应用页下面一组、电脑侧栏「应用」下面一段 */
+export const LIVE_CONFIG: { page: any; name: string; desc: string }[] = [
+  { page: 'executors', name: 'AI 执行器', desc: 'Claude Code / Codex：装、登录，多个订阅账号、默认用哪个' },
+  { page: 'usage', name: '用量和成本', desc: '每个员工花了多少、每月预算' },
+  { page: 'system', name: '系统设置', desc: '生产保护、每轮小结、提醒发到哪、开机向导' },
+  { page: 'about', name: '关于 Opero', desc: '版本、开源许可' },
+]
 const SOON_APPS = ['流程', '插件']
 
 export function LiveAppsPage({ nav }: PageProps) {
@@ -332,6 +339,7 @@ export function LiveAppsPage({ nav }: PageProps) {
           ))}
         </div>
         <p className="hint">还在做：{SOON_APPS.join('、')}。</p>
+        <Section title="这套 Opero 的配置">{LIVE_CONFIG.map((a) => <Row key={a.page} title={a.name} sub={a.desc} chevron onClick={() => nav.push({ page: a.page })} />)}</Section>
       </div>
     </div>
   )

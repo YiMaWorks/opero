@@ -130,13 +130,14 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
   useEffect(() => {
     if (mine?.type === 'login' && (mine.state === 'ok' || mine.state === 'fail')) { pop.current?.close(); pop.current = null }
   }, [mine?.state])
-  // 一个框：贴的是 sk-ant-oat 令牌就直接验证保存；在等授权码时贴的就当授权码
-  const isTok = (v: string) => /^sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}$/.test(v)
+  // 一个框：贴的是令牌（一整串、够长、没有 #）就直接验证保存；在等授权码时贴的就当授权码
+  const isTok = (v: string) => v.length >= 40 && !v.includes('#') && /^[A-Za-z0-9_\-.~+/=]+$/.test(v)
   const submit = async (raw: string) => {
     const v = raw.trim()
     if (!v) { toast('先把码贴进来'); return }
     const waiting = mine?.type === 'login' && mine.state === 'waitCode'
-    if (!waiting && !isTok(v)) { toast('这不是令牌（令牌是 sk-ant-oat 开头的）。没有令牌就点「登录 Claude 账号」'); return }
+    if (!waiting && v.includes('#')) { toast('这是浏览器给的一次性授权码，不是令牌：只能贴回发它的那次登录。点上面的按钮，用这里打开的登录页拿码'); return }
+    if (!waiting && !isTok(v)) { toast('这不像令牌（要 claude setup-token 打印的那一整串）。没有令牌就点上面的按钮登录'); return }
     const r = waiting
       ? await call<{ job: Job }>('POST', '/api/ai/login/code', { code: v })
       : await call<{ job: Job }>('POST', '/api/ai/login/token', { token: v, host })
@@ -204,9 +205,9 @@ export function ExecutorSetup({ info, reload, onReady, host = 'local' }: { info:
             <>
               {mine?.type === 'login' && mine.state === 'fail' && <div className="banner b-warn">{mine.message}</div>}
               <button className="btn primary block" disabled={!installed || !!live} onClick={login}>{loggedIn ? '再登录一个账号' : '登录 Claude 账号'}</button>
-              <p className="field-hint">会自动打开 Claude 的登录页：登录 → 点 Authorize → 复制页面上的码 → 回来贴进框里，就好了。{loggedIn ? '再登录一个账号是新加一个，原来的账号和令牌都留着、照常能用（别的项目在用的不受影响）；新登录的会设成默认。' : ''}</p>
-              <Field label="已经有令牌（sk-ant-oat 开头）？贴这里" hint="贴进来自动保存，不用再登录。没有令牌就点上面的按钮。">
-                <input type="password" value={code} onChange={(e) => setCode(e.target.value)} onPaste={onPaste} placeholder="sk-ant-oat…" autoComplete="new-password" disabled={!installed || !!live} onKeyDown={(e) => e.key === 'Enter' && submit(code)} />
+              <p className="field-hint">会自动打开 Claude 的登录页：登录 → 点 Authorize → 复制页面上的码 → 回来贴进框里，就好了。{loggedIn ? '再登录一个账号是新加一个，原来的账号和令牌都留着、照常能用（别的项目在用的不受影响）；新登录的会设成默认。要登录的是另一个 Claude 账号：等登录页出来后点「复制链接」，在浏览器的无痕窗口里打开再登录（不然会直接用浏览器里已经登录的那个账号）。' : ''}</p>
+              <Field label="已经有令牌？贴这里" hint="claude setup-token 打印出来的那一整串（一般 sk-ant-oat 开头）；贴进来验证能用就保存。登录页上显示的授权码（中间有 #）是一次性的，不能贴这里。">
+                <input type="password" value={code} onChange={(e) => setCode(e.target.value)} onPaste={onPaste} placeholder="令牌" autoComplete="new-password" disabled={!installed || !!live} onKeyDown={(e) => e.key === 'Enter' && submit(code)} />
               </Field>
               {!installed && <p className="field-hint">先完成第 1 步</p>}
             </>

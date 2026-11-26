@@ -1,4 +1,5 @@
-// 我：个人 · 我的习惯 · 定制和二开 · 用量和成本 · 设置 · 安全 · 关于（个人版：只有你一个人）
+// 我：只放跟你这个人有关的——资料、我的习惯、外观和通知、账号安全、退出登录。
+// 这套 Opero 的配置（AI 执行器、用量和预算、系统设置、开机向导、关于和升级、定制和二开）都在「应用」里（apps.tsx DEMO_CONFIG / live.tsx LIVE_CONFIG）。
 import { useState } from 'react'
 import type { Settings } from '../types'
 import { empName, logout, mergeOfficialUpdate, replaySetup, requireVerify, setSettings, toast, useStore } from '../store'
@@ -12,12 +13,9 @@ import { MeHeader } from '../components/MeHeader'
 import { appVersion, getShell, nativeUnpair, setShell, type ShellPrefs } from '../native'
 import { CUR, LIVE } from '../mode'
 import { LangPicker } from '../components/LangPicker'
-import { LIVE_APPS } from './live'
 import { UsageDetail } from './live2'
 
 export function MePage({ params, nav }: PageProps) {
-  const me = useStore((s) => s.me)
-  const custom = useStore((s) => s.custom)
   const go = (page: any) => () => nav.push({ page })
   return (
     <div className="page">
@@ -26,36 +24,11 @@ export function MePage({ params, nav }: PageProps) {
         <MeHeader onEdit={go('meEdit')} />
         <Section title="按你的习惯">
           <Row title="我的习惯" sub="所有员工都遵守的个人规矩，每次派活都带上" chevron onClick={go('habits')} />
-          {LIVE
-            ? <Row title="AI 执行器" sub="Claude Code / Codex、API Key、测试" chevron onClick={go('executors')} />
-            : <Row title="定制和二开" sub="这套 Opero 是你的：改菜单、加插件、合并官方新版" chevron onClick={go('customize')}
-                right={custom.update ? <span className="count-badge">新</span> : undefined} />}
+          <Row title="外观和通知" sub="风格、语言、推送什么、这台手机" chevron onClick={go('settings')} />
+          <Row title="账号安全" sub={LIVE ? '改密码、通行密钥、两步验证、登录的设备' : '通行密钥、登录设备'} chevron onClick={go('security')} />
         </Section>
-        {nav.mobile && LIVE && (
-          <Section title="应用">{LIVE_APPS.map((a) => <Row key={a.page} title={a.name} sub={a.desc} chevron onClick={go(a.page)} />)}</Section>
-        )}
-        {nav.mobile && !LIVE && (
-          <Section title="应用">
-            <Row title="服务器" chevron onClick={go('servers')} />
-            <Row title="发布" chevron onClick={go('releases')} />
-            <Row title="凭证" chevron onClick={go('credentials')} />
-            <Row title="消息渠道" chevron onClick={go('channels')} />
-            <Row title="知识库" chevron onClick={go('knowledge')} />
-            <Row title="流程" chevron onClick={go('flows')} />
-            <Row title="数据" chevron onClick={go('data')} />
-            <Row title="触发器" chevron onClick={go('triggers')} />
-            <Row title="插件" chevron onClick={go('plugins')} />
-            <Row title="操作记录" chevron onClick={go('audit')} />
-          </Section>
-        )}
-        <Section title="设置">
-          <Row title="用量和成本" sub="每个员工花了多少" chevron onClick={go('usage')} />
-          <Row title="设置" sub="生产保护、通知、外观" chevron onClick={go('settings')} />
-          <Row title="账号安全" sub="通行密钥、登录设备" chevron onClick={go('security')} />
-          <Row title="关于 Opero" chevron onClick={go('about')} />
-        </Section>
+        <p className="hint">AI 执行器、用量和预算、系统设置这些配置都在「应用」里。</p>
         <Section>
-          <Row title="重新走一遍开机向导" chevron onClick={() => replaySetup()} />
           {params.onReplaySplash && <Row title="再看一次启动动画" chevron onClick={params.onReplaySplash} />}
           <Row title="退出登录" danger onClick={() => logout()} />
         </Section>
@@ -118,7 +91,35 @@ export function SettingsPage({ nav }: PageProps) {
   const up = (p: Partial<Settings>) => setSettings(p)
   return (
     <div className="page">
-      <PageHeader title="设置" {...headNav(nav)} />
+      <PageHeader title="外观和通知" sub="只管你自己看到的样子和收到的提醒" {...headNav(nav)} />
+      <div className="page-body">
+        <PhoneSection />
+        <Section title="通知">
+          <div className="lrow col">
+            <span className="row-main"><span className="row-title">推送什么</span><span className="row-sub">免打扰的会话一律不推</span></span>
+            <Segmented value={s.notify} onChange={(v) => up({ notify: v })}
+              options={[{ value: 'decide', label: '只推要我决定的' }, { value: 'errors', label: '出错也推' }, { value: 'all', label: '全部' }]} />
+          </div>
+        </Section>
+        <Section title="外观">
+          <ThemePicker />
+          <div className="lrow col">
+            <span className="row-main"><span className="row-title">语言</span></span>
+            <LangPicker onPick={(p) => up({ lang: p })} />
+          </div>
+        </Section>
+      </div>
+    </div>
+  )
+}
+
+/** 系统设置（在「应用」里）：生产保护、每轮小结、提醒发到哪、AI 用不了时、开机向导 */
+export function SystemSettingsPage({ nav }: PageProps) {
+  const s = useStore((x) => x.settings)
+  const up = (p: Partial<Settings>) => setSettings(p)
+  return (
+    <div className="page">
+      <PageHeader title="系统设置" sub="这套 Opero 怎么干活" {...headNav(nav)} />
       <div className="page-body">
         <Section title="安全（信任 AI、少打扰）" right={<span className="sub">危险操作永远要你本人验证</span>}>
           <div className="lrow">
@@ -130,14 +131,6 @@ export function SettingsPage({ nav }: PageProps) {
           <div className="lrow">
             <span className="row-main"><span className="row-title">每轮做完显示小结</span><span className="row-sub">改了哪些文件、提交推送了没有、这一轮和这个会话用了多少；能一键撤销或发布这次改动</span></span>
             <Toggle on={s.runSummary !== false} onChange={(v) => up({ runSummary: v })} />
-          </div>
-        </Section>
-        <PhoneSection />
-        <Section title="通知">
-          <div className="lrow col">
-            <span className="row-main"><span className="row-title">推送什么</span><span className="row-sub">免打扰的会话一律不推</span></span>
-            <Segmented value={s.notify} onChange={(v) => up({ notify: v })}
-              options={[{ value: 'decide', label: '只推要我决定的' }, { value: 'errors', label: '出错也推' }, { value: 'all', label: '全部' }]} />
           </div>
         </Section>
         {!LIVE && <Section title="AI 用不了时" right={<span className="sub">欠费、限流、执行器挂了</span>}>
@@ -161,12 +154,8 @@ export function SettingsPage({ nav }: PageProps) {
           </div>
           <p className="hint">Telegram / Slack 要先在「消息渠道」里接上；每个员工提醒不提醒，在它的「聊天设置」里单独设。</p>
         </Section>}
-        <Section title="外观">
-          <ThemePicker />
-          <div className="lrow col">
-            <span className="row-main"><span className="row-title">语言</span></span>
-            <LangPicker onPick={(p) => up({ lang: p })} />
-          </div>
+        <Section title="开机向导">
+          <Row title="重新走一遍开机向导" sub="接 AI、建第一个员工、接服务器这些步骤再来一遍" chevron onClick={() => replaySetup()} />
         </Section>
       </div>
     </div>

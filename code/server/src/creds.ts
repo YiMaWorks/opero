@@ -181,7 +181,19 @@ export async function gitRepos(kind: string, m: Record<string, string>, token: s
 }
 
 // ---------- AI ----------
-async function testAi(kind: string, m: Record<string, string>, key: string): Promise<TestResult> {
+async function testAi(kind: string, m: Record<string, string>, key0: string): Promise<TestResult> {
+  const key = key0.trim()
+  // Claude 订阅令牌（claude setup-token 拿到的 sk-ant-oat…）：不是 API Key，按订阅的方式验
+  // Anthropic / 令牌类里不是 sk-ant-api 开头的，就当订阅令牌验（令牌格式变了也认）
+  const oat = key.match(/sk-ant-oat\d{2}-[A-Za-z0-9_-]{40,}/)?.[0] ?? (/anthropic|claude|token/i.test(kind) && !m.base?.trim() && !/^sk-ant-api/i.test(key) && !key.includes('#') && key.length >= 40 ? key : undefined)
+  if (key.includes('#') && /anthropic|claude|token/i.test(kind)) return { ok: false, msg: '这是浏览器给的一次性授权码，不是令牌：到「AI 执行器」里点登录，用那里打开的登录页拿码贴回去' }
+  if (oat) {
+    const r = await http('https://api.anthropic.com/v1/models?limit=100', { headers: { Authorization: `Bearer ${oat}`, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'oauth-2025-04-20' } })
+    if (r.status === 401 || r.status === 403) return { ok: false, msg: `订阅令牌不对或者已经失效（${r.status}）：重新在「AI 执行器」里登录一次拿新的` }
+    if (r.status >= 400) return { ok: false, msg: `${r.status}：${String(r.json?.error?.message ?? r.text).slice(0, 160)}` }
+    const ids: string[] = (r.json?.data ?? []).map((x: any) => String(x.id ?? '')).filter(Boolean)
+    return { ok: true, msg: `Claude 订阅令牌能用${ids.length ? ` · 能用 ${ids.length} 个模型` : ''}；会出现在「AI 执行器」的账号列表里` }
+  }
   const v = AI_BASE[kind]
   const base = (m.base?.trim() || v?.base || '').replace(/\/+$/, '')
   if (!base) return { ok: false, msg: '这个厂商要填接口地址' }

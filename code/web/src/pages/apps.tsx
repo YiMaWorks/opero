@@ -14,6 +14,14 @@ const envTone = (e: EnvTag) => (e === '生产' ? 'danger' : e === '测试' ? 'wa
 const ENVS: { value: EnvTag; label: string }[] = [{ value: '开发', label: '开发' }, { value: '测试', label: '测试' }, { value: '生产', label: '生产' }]
 
 // ---------- 应用首页 ----------
+/** 这套 Opero 的配置（不放在「我」里）：应用页下面一组、电脑侧栏「应用」下面一段 */
+export const DEMO_CONFIG: { page: any; name: string; desc: string }[] = [
+  { page: 'usage', name: '用量和成本', desc: '每个员工花了多少、每月预算' },
+  { page: 'system', name: '系统设置', desc: '生产保护、每轮小结、AI 用不了时、提醒发到哪、开机向导' },
+  { page: 'customize', name: '定制和二开', desc: '这套 Opero 是你的：改菜单、加插件、合并官方新版' },
+  { page: 'about', name: '关于 Opero', desc: '版本、开源许可' },
+]
+
 export function AppsPage({ nav }: PageProps) {
   const s = useStore((x) => x)
   const tiles: { page: any; name: string; desc: string; n: string; letter: string }[] = [
@@ -43,6 +51,7 @@ export function AppsPage({ nav }: PageProps) {
             </button>
           ))}
         </div>
+        <Section title="这套 Opero 的配置">{DEMO_CONFIG.map((a) => <Row key={a.page} title={a.name} sub={a.desc} chevron onClick={() => nav.push({ page: a.page })} />)}</Section>
       </div>
     </div>
   )

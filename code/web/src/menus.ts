@@ -27,7 +27,7 @@ export const MENU_REGISTRY: Record<string, MenuDef> = {
   知识库: { plugin: 'core', desc: '所有员工共用的资料', route: () => ({ page: 'knowledge' }) },
   流程: { plugin: 'core', desc: '存好的固定步骤，点一下就跑', route: () => ({ page: 'flows' }) },
   员工: { plugin: 'core', desc: '所有员工', route: () => ({ page: 'employees' }) },
-  设置: { plugin: 'core', desc: '系统设置', route: () => ({ page: 'settings' }) },
+  设置: { plugin: 'core', desc: '系统设置', route: () => ({ page: 'system' }) },
   插件: { plugin: 'core', desc: '插件列表', route: () => ({ page: 'plugins' }) },
 }
 

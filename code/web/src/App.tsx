@@ -41,7 +41,7 @@ const TABS: { tab: Tab; label: string; desktopOnly?: boolean }[] = [
   { tab: 'chat', label: '会话' },
   { tab: 'people', label: '员工' },
   { tab: 'workspace', label: '项目' },
-  { tab: 'apps', label: '应用', desktopOnly: true },
+  { tab: 'apps', label: '应用' },
   { tab: 'me', label: '我' },
 ]
 
