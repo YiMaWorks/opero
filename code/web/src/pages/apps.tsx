@@ -9,6 +9,7 @@ import { Empty, Field, Meter, PageHeader, Row, Section, Segmented, Sheet, Status
 import { IconCheck, IconPlus } from '../components/icons'
 import { headNav, type PageProps } from './nav'
 import { LIVE } from '../mode'
+import { AppIcon } from '../components/AppIcon'
 
 const envTone = (e: EnvTag) => (e === '生产' ? 'danger' : e === '测试' ? 'warn' : 'mute')
 const ENVS: { value: EnvTag; label: string }[] = [{ value: '开发', label: '开发' }, { value: '测试', label: '测试' }, { value: '生产', label: '生产' }]
@@ -44,14 +45,13 @@ export function AppsPage({ nav }: PageProps) {
         <div className="tiles">
           {tiles.map((t) => (
             <button key={t.page} className="tile" onClick={() => nav.push({ page: t.page })}>
-              <span className="ws-icon">{t.letter}</span>
-              <b>{t.name}</b>
+              <span className="tile-head"><AppIcon page={t.page} fallback={t.letter} /><b>{t.name}</b></span>
               <span className="sub">{t.desc}</span>
               <span className="tile-n">{t.n}</span>
             </button>
           ))}
         </div>
-        <Section title="这套 Opero 的配置">{DEMO_CONFIG.map((a) => <Row key={a.page} title={a.name} sub={a.desc} chevron onClick={() => nav.push({ page: a.page })} />)}</Section>
+        <Section title="这套 Opero 的配置">{DEMO_CONFIG.map((a) => <Row key={a.page} icon={<AppIcon page={a.page} size={34} />} title={a.name} sub={a.desc} chevron onClick={() => nav.push({ page: a.page })} />)}</Section>
       </div>
     </div>
   )
@@ -255,7 +255,7 @@ const GROUP_HINT: Record<CredGroup, string> = {
   数据库: '你的数据库账号；只读账号就只能查，读写账号改数据也会先存快照',
   代码仓库: '你的 Codeup / GitHub 令牌；你能看哪些仓库，员工就能看哪些',
   云账号: '你的云子账号（AccessKey）；按它的策略来',
-  签名证书: 'Android 签名证书（keystore）：发布时和员工签名用，密码员工拿不到',
+  签名证书: '安卓签名（keystore）、苹果证书（.p12）、App Store Connect API Key（.p8）、Windows 代码签名（.pfx）：密码员工拿不到',
   AI: '模型的 API Key；按量计费',
   消息渠道: '邮箱、Slack、Telegram 的账号；消息助理用它收消息、起草回复（发之前要你点）',
   其它: '签名证书、第三方密钥……',

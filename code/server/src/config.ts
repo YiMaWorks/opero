@@ -29,6 +29,8 @@ export const cfg = {
   /** 执行器命令（默认在 AI 用户的 PATH 里找） */
   claudeBin: env.OPERO_CLAUDE_BIN || 'claude',
   codexBin: env.OPERO_CODEX_BIN || 'codex',
+  qwenBin: env.OPERO_QWEN_BIN || 'qwen',
+  codebuddyBin: env.OPERO_CODEBUDDY_BIN || 'codebuddy',
   /** 每轮最多多少步（Claude Code --max-turns） */
   maxTurns: Number(env.OPERO_MAX_TURNS || 200),
 }

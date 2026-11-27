@@ -11,6 +11,9 @@ export const isLocal = (host?: string) => !host || host === LOCAL
 /** 执行器命令：OPERO_CLAUDE_BIN / OPERO_CODEX_BIN 只是 Opero 这台的路径（比如自己打包的 claude）；别的服务器上一律用 AI 用户 PATH 里的（一键安装装在 ~/.local/bin） */
 export const claudeBin = (host?: string) => (isLocal(host) ? cfg.claudeBin : 'claude')
 export const codexBin = (host?: string) => (isLocal(host) ? cfg.codexBin : 'codex')
+/** 各种执行器的命令（claude / codex / qwen / codebuddy）：本机按配置，远程用 AI 用户 PATH 里的 */
+export const execBin = (kind: string, host?: string) =>
+  kind === 'codex' ? codexBin(host) : kind === 'qwen' ? (isLocal(host) ? cfg.qwenBin : 'qwen') : kind === 'codebuddy' ? (isLocal(host) ? cfg.codebuddyBin : 'codebuddy') : claudeBin(host)
 
 /** 本机：以 AI 用户跑一个命令（登录 shell，PATH 里有它自己装的 claude / codex） */
 export function spawnAi(bin: string, args: string[], env: Record<string, string>, cwd: string): ChildProcess {

@@ -96,7 +96,10 @@ fun MessageItem(
                         val hold = Modifier.combinedClickable(onClick = {}, onLongClick = { host.haptic(); onMenu() })
                         when {
                             m.kind == "file" && m.file != null -> FileBubble(m.file, hold, onImage, onFile)
-                            m.kind == "card" && m.card != null -> Box(hold) { CardView(m.card) { card, a, ans -> onCardAction(m, card, a, ans) } }
+                            m.kind == "card" && m.card != null -> Box(hold) {
+                                if (isReleaseCard(m.card)) ReleaseCard(m.card) { card, a, ans -> onCardAction(m, card, a, ans) }
+                                else CardView(m.card) { card, a, ans -> onCardAction(m, card, a, ans) }
+                            }
                             me -> Text(
                                 m.text.orEmpty(), color = Color.White, fontSize = 15.sp, lineHeight = 22.sp,
                                 modifier = Modifier.clip(RoundedCornerShape(12.dp, 4.dp, 12.dp, 12.dp)).background(c.primary).then(hold).padding(horizontal = 12.dp, vertical = 9.dp),
@@ -148,7 +151,7 @@ private fun Typing(owner: String, what: String?, onStop: () -> Unit) {
     }
 }
 
-/** 图片（按比例占位，点开看大图）/ 文件（点了下载、用系统打开） */
+/** 图片（按比例占位，点开看大图）/ 文件（点一下存到「下载」；长按还有打开、分享、转给员工） */
 @Composable
 private fun FileBubble(f: FileInfo, hold: Modifier, onImage: (FileInfo) -> Unit, onFile: (FileInfo) -> Unit) {
     val c = Opero.colors
@@ -172,7 +175,7 @@ private fun FileBubble(f: FileInfo, hold: Modifier, onImage: (FileInfo) -> Unit,
         )
         Column(Modifier.padding(start = 10.dp)) {
             Text(f.name, color = c.text, fontSize = 14.sp, maxLines = 2)
-            Text(f.size + if (url != null) " · " + t("点开预览") else "", color = c.faint, fontSize = 12.sp)
+            Text(f.size + if (url != null) " · " + t("点一下下载") else "", color = c.faint, fontSize = 12.sp)
         }
     }
 }

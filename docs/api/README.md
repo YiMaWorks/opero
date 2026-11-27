@@ -101,6 +101,7 @@ App 没提供 `open` 时（老外壳 / 浏览器里），网页在自己里面�
 | 和员工开会话 | `POST /api/sessions/for/:emp` |
 | 发消息 | `POST /api/sessions/:id/messages`，`{ text, files: [{ id, w, h }], mode }`；`mode`：`auto`（员工在干活就插话，插不进就排队）/ `queue`（排队） |
 | 发图片 / 文件 | 先传：`POST /api/sessions/:id/files?name=&type=&w=&h=`（请求体是文件字节）→ `{ att }`；撤回：`DELETE /api/sessions/:id/files/:file`；发的时候放进 `files` |
+| 转给别的员工（server 0.29.0） | `POST /api/sessions/<目标员工的会话 id>/forward`，`{ msg: <消息 id> }`：文字照转（带「转自「某某」」）；图片 / 文件**把文件本身**复制进目标员工的 `uploads/`，目标会话里是一条 `file` 消息 + 一句「转自「某某」的图片」，员工直接能看能用。在干活就插话 / 排队，同发消息。目标会话先用 `POST /api/sessions/for/:emp` 拿 |
 | 排队 | `bootstrap.queue` + `events`；改：`PUT /api/queue/:id`；删：`DELETE /api/queue/:id`；员工闲着时开始：`POST /api/sessions/:id/queue/run` |
 | 停止 | `POST /api/sessions/:id/stop` |
 | 卡片上的按钮 | `POST /api/messages/<消息 id>/action`（**消息** id，不是卡片 id），`{ action, answer? }`（`ask` 卡片带选中的选项文字）→ `{ ok, result }`；按钮带 `panel` 的不调接口，本地打开页面；危险按钮先验证本人。详见 [卡片.md](卡片.md) |
@@ -113,7 +114,36 @@ App 没提供 `open` 时（老外壳 / 浏览器里），网页在自己里面�
 
 - 附件（`QAtt.url`、排队里的附件）：`api/uploads/<员工 id>/<文件>`；员工发的文件（`message.file.url`）：`api/files/<id>?name=<文件名>`。
 - 都是**相对地址**，前面拼 Opero 地址（装在子路径下就带上子路径，比如 `https://example.com/opero/` + `api/files/…`）。
+- 下载：地址后面加 `dl=1`（`api/files/<id>?name=…&dl=1`、`api/uploads/…?dl=1`），图片也回 `Content-Disposition: attachment`，浏览器直接存；不加的话图片是 `inline`（在页面里显示）。
+- 各端看到图片 / 文件都要给：**看大图**（左右翻同一会话里的图）、**下载 / 存到相册**、**系统分享**（发微信等）、**转给员工**（上面的 forward）；网页的做法见 `code/web/src/components/FileView.tsx`。
 - 取文件和别的主人接口一样要登录：原生带 `Authorization: Bearer <会话令牌>`（网页里的 `<img>` 用 cookie）。图片原图直接返回，自己缩略。
+
+## 网络出口（server 0.31.0）
+
+Opero 自己往外连（收发邮件、提醒渠道、AI Key、生图、DNS、流水线、代码平台的接口）时，按域名经某台 Agent 出去。规则 `EgressRule`（`code/server/src/egress.ts`）：`{ id, host, via: 服务器 id | 'direct', lan?, note?, at, by?, test?: { ok, ms?, err?, at, port } }`，最具体的生效，写域名也管子域名。
+
+| 做什么 | 接口 |
+|---|---|
+| 规则 + 最近连不上的 | `GET /api/egress` → `{ rules, failures: [{ host, port, what, err, at, n }], min: 'Agent 最低版本' }` |
+| 加 / 改（同域名就是改） | `POST /api/egress { host（网址、邮箱、host:port 都认）, via, port?（测试用）, lan?, note?, force? }`：先测，经出口不通回 `{ saved: false, test }`，`force` 照存；`lan: true` 要验证本人 |
+| 就地改 | `PUT /api/egress/:id { host?, via?, lan?, note? }`（打开 `lan` 要验证本人） |
+| 删 | `DELETE /api/egress/:id` |
+| 测 | `POST /api/egress/test { host, port?, via?, lan?, id? }` → `{ host, port, direct: { ok, ms?, err? }, via? }`（只连 TCP；给 `id` 记到那条规则上） |
+| 忽略一个连不上的 | `DELETE /api/egress/failures/:host` |
+
+## 安装包（server 0.26.0）
+
+每个项目按「端 × 渠道」一格：端 `android / ios / mac / windows / linux`，渠道 `test / prod`；**每格只留最新一个**，新的进来旧的删掉。数据结构 `AppPackage`（`code/server/src/packages.ts`），启动数据里是 `packages`，实时推送的集合名也是 `packages`。
+
+| 做什么 | 接口 |
+|---|---|
+| 列一个项目的 | `GET /api/workspaces/:id/packages` |
+| 上传（请求体就是文件，边收边写，最多 2 GB） | `POST /api/workspaces/:id/packages?name=<文件名>&platform=&channel=&version=&build=&note=&signed=1` ——`platform` 不给就按扩展名认（.apk/.aab 安卓、.ipa、.dmg/.pkg、.msix/.exe/.msi、.AppImage/.deb/.rpm），`channel` 默认 `test` |
+| 下载（要登录） | `GET /api/packages/:id/file`（`:id` 是 `项目:端:渠道`，要 URL 编码） |
+| 删 | `DELETE /api/packages/:id` |
+| 分享链接 | `POST /api/packages/:id/share {days}`（默认 7、最多 90，0 = 关掉）；拿到的 `share.token` 拼成 `<Opero 地址>/dl/<token>` 就是不用登录的下载页，`/dl/<token>/file` 直接下文件。换了包链接照样能用，到期失效 |
+
+前面有 nginx 的要放开这几个地址的大小（`code/server/scripts/nginx.conf` 里有现成的 `location`）。员工用 MCP 的 `package_list / package_upload / package_get / package_share`；发布环境设 `package: {platform, channel}` 就是编完（签好名）自动放进来。
 
 ## 后台只提供接口
 

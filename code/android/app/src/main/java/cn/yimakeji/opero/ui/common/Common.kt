@@ -40,6 +40,10 @@ interface AppHost {
     fun openExternal(url: String)
     /** 下载好的文件交给系统打开 */
     fun openFile(name: String, bytes: ByteArray, mime: String)
+    /** 存到手机：图片进相册（Pictures/Opero），别的进「下载」（Download/Opero）；安卓 9 及以下让用户选存哪 */
+    fun saveFile(name: String, bytes: ByteArray, mime: String)
+    /** 交给系统分享（发微信、邮件…） */
+    fun shareFile(name: String, bytes: ByteArray, mime: String)
     fun haptic()
     /** 马上要打开选图 / 相机 / 语音这些系统界面：回来不锁 */
     fun skipLock()

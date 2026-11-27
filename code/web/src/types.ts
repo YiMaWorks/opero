@@ -22,8 +22,12 @@ export interface User {
 
 export interface Employee {
   claudeAccount?: string // 用哪个 Claude 账号（不设 = 默认）
+  /** 用哪个 Codex 账号（同上；ChatGPT 订阅或 API Key）；不设 = 默认账号 */
+  codexAccount?: string
   id: string
   name: string
+  /** 职位标签（安卓开发、运维、日志值班…）：显示在名字后面、小一号 */
+  role?: string
   avatar: string // 头像上的字
   color: string
   title: string // 职责一句话
@@ -164,6 +168,10 @@ export interface Workspace {
 /** 发布环境：发到哪几台、部署目录、部署脚本 / 命令、签名、检查、留几个版本、员工能不能发 */
 export interface Deploy {
   id: string; name: string; servers: string[]; dir?: string; script?: string; command?: string
+  /** 不发服务器，编完（签好）存进项目安装包的哪一格 */
+  package?: { platform: PkgPlatform; channel: PkgChannel }
+  /** 这是哪个环境（生产 / 预发 / 测试 / 开发…）；不填 = 看发到的服务器的环境标签 */
+  env?: string
   /** 发哪个编译组件（编号）；'none' = 不编译，只跑部署命令；不填 = 项目只有一个组件时就是它 */
   build?: string
   sign?: string; health?: string; keep?: number; ai?: 'auto' | 'ask' | 'off'; autoRollback?: boolean; last?: string; lastOk?: boolean
@@ -190,7 +198,7 @@ export interface BuildCfg {
 /** 服务器上登记的日志：file = 文件（可带 *），dir = 目录（里面的 *.log），service = 系统服务（journalctl） */
 export interface LogSource { kind: 'file' | 'dir' | 'service'; path: string; note?: string }
 export interface ServerDir { path: string; mode: 'read' | 'write' | 'deploy'; note?: string; ok?: boolean; error?: string }
-export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
+export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback' | 'store'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
 /** 真的一套的一次发布 */
 export interface LiveRelease {
   id: string; ws: string; target: string; targetName: string; build?: string; version: string; sha: string; status: 'running' | 'success' | 'failed'
@@ -281,7 +289,7 @@ export interface Server {
   agentVersion?: string
   joinedAt?: number // 最近一次接入的时间（不是心跳）
   lastSeen?: number
-  executors?: { claude?: string | null; codex?: string | null }
+  executors?: { claude?: string | null; codex?: string | null; qwen?: string | null; codebuddy?: string | null }
   /** 机器信息（Agent 心跳 / Opero 这台自己读，自动填） */
   sys?: { hostname: string; os: string; kernel: string; arch: string; cpuModel: string; cores: number; memGb: number; diskGb: number; ips: string[]; uptime: number }
   error?: string
@@ -462,7 +470,7 @@ export interface Settings {
 }
 
 // ---------- 界面 ----------
-export type PanelKind = 'diff' | 'query' | 'menu' | 'profile' | 'credentialEdit'
+export type PanelKind = 'diff' | 'query' | 'menu' | 'profile' | 'credentialEdit' | 'release'
 
 export type Tab = 'chat' | 'people' | 'workspace' | 'apps' | 'me'
 
@@ -479,4 +487,13 @@ export type PageName =
 export interface Route {
   page: PageName
   params?: Record<string, any>
+}
+
+/** 项目的安装包（后台 packages.ts）：每个项目按「端 × 渠道」一格，每格只留最新 */
+export type PkgPlatform = 'android' | 'ios' | 'mac' | 'windows' | 'linux'
+export type PkgChannel = 'test' | 'prod'
+export interface AppPackage {
+  id: string; ws: string; platform: PkgPlatform; channel: PkgChannel; slot: string
+  file: string; size: number; sha256: string; version?: string; build?: string; commit?: string; signed?: boolean; note?: string
+  by: string; at: number; share?: { token: string; until: number }
 }

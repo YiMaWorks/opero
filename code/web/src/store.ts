@@ -2,7 +2,7 @@
 // 现在数据来自 data/mock.ts（演示）；接后台时：初始数据改成调接口、消息改成服务器推送，动作改成调接口——页面不用改。
 import { useRef, useSyncExternalStore } from 'react'
 import type {
-  AuditEntry, Card, QueueItem, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, LiveIssue, LiveRelease, Domain, InboxItem, InChannel, Notifier, Message, Plugin, ReleaseApp,
+  AuditEntry, Card, QueueItem, Channel, Credential, Customization, DataSource, Flow, KbDoc, Employee, Issue, LiveIssue, LiveRelease, AppPackage, Domain, InboxItem, InChannel, Notifier, Message, Plugin, ReleaseApp,
   ReleaseRecord, SavedQuery, Server, Session, Settings, Trigger, Usage, User, Workspace,
 } from './types'
 import * as seed from './data/mock'
@@ -23,6 +23,8 @@ export interface State {
   issues: Issue[]
   liveIssues: LiveIssue[]
   liveReleases: LiveRelease[]
+  /** 各项目的安装包（真的一套） */
+  packages: AppPackage[]
   domains: Domain[]
   inbox: InboxItem[]
   inChannels: InChannel[]
@@ -45,6 +47,8 @@ export interface State {
   /** 真的一套：排队的消息（所有员工的） */
   queue: QueueItem[]
   toast: string | null
+  /** 有新版本（右下角的提示卡）：后台版本从哪到哪、网页换没换、更新了什么；null = 没有 / 点了「稍后」 */
+  upgrade: { from: string; to: string; web: boolean; notes?: { title: string; items: string[] } | null } | null
   verify: { title: string; desc?: string; onOk: () => void } | null
 }
 
@@ -70,7 +74,7 @@ function init(): State {
       employees: [], sessions: [], messages: {}, workspaces: [], issues: [], servers: [], apps: [], releases: [], credentials: [],
       dataSources: [], savedQueries: [], triggers: [], plugins: [], audit: [], usage: [],
       settings: { ...seed.seedSettings, prodProtect: true, budget: 0, budgetStop: false, fallback: '', aiDown: false, notifyTo: ['App 推送'], ...(saved.settings ?? {}) },
-      custom: seed.seedCustom, channels: [], kb: [], flows: [], queue: [], liveIssues: [], liveReleases: [], domains: [], inbox: [], inChannels: [], notifiers: [], toast: null, verify: null,
+      custom: seed.seedCustom, channels: [], kb: [], flows: [], queue: [], liveIssues: [], liveReleases: [], packages: [], domains: [], inbox: [], inChannels: [], notifiers: [], toast: null, upgrade: null, verify: null,
     }
   }
   const prefs = saved.prefs ?? {}
@@ -101,11 +105,13 @@ function init(): State {
     queue: [],
     liveIssues: [],
     liveReleases: [],
+    packages: [],
     domains: [],
     inbox: [],
     inChannels: [],
     notifiers: [],
     toast: null,
+    upgrade: null,
     verify: null,
   }
 }
@@ -379,7 +385,7 @@ export function compactContext(sid: string, empId: string) {
 }
 /** 换 work：旧的先把交接写进员工的 git，新的读交接接着干（上下文满了 / 卡住了 / 换服务器） */
 /** 换 AI 执行器（Claude Code ↔ Codex）：开一段新的 work，Opero 自动发一条交接（负责什么、目录、上一段在做什么），员工读完自己的文档接着干 */
-export function switchExecutor(empId: string, to: 'Claude Code' | 'Codex') {
+export function switchExecutor(empId: string, to: string) {
   if (LIVE) { live.call('POST', `/api/employees/${empId}/switch`, { executor: to }, `已换成 ${to}：新 work 收到交接，正在接手`); return }
   set((s) => ({ employees: s.employees.map((x) => (x.id === empId ? { ...x, executor: to } : x)) }))
   toast(`已换成 ${to}`)

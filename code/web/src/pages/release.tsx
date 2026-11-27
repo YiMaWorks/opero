@@ -7,9 +7,11 @@ import { call } from '../live'
 import { Empty, PageHeader, Segmented, Sheet, Tag } from '../components/ui'
 import { IconCheck } from '../components/icons'
 import { headNav, type PageProps } from './nav'
+import { DeployForm } from './live2'
+import { PLATS } from '../components/Packages'
 
 type Nav = PageProps['nav']
-const STEP: Record<ReleaseStep['k'], string> = { build: '编译', checkout: '核对产物', transfer: '发到服务器', sign: '签名', deploy: '部署', health: '检查', rollback: '退回上一版' }
+const STEP: Record<ReleaseStep['k'], string> = { build: '编译', checkout: '核对产物', transfer: '发到服务器', sign: '签名', deploy: '部署', health: '检查', rollback: '退回上一版', store: '存进安装包' }
 const ST: Record<LiveRelease['status'], { label: string; tone: 'primary' | 'ok' | 'danger' }> = { running: { label: '发布中', tone: 'primary' }, success: { label: '成功', tone: 'ok' }, failed: { label: '失败', tone: 'danger' } }
 const KIND: Record<string, string> = { node: 'Node 服务', go: 'Go 程序', android: '安卓 App', spring: 'Java 程序', custom: '自定义' }
 const PIPE: Record<string, string> = { yunxiao: '云效流水线', github: 'GitHub Actions', gitlab: 'GitLab CI', jenkins: 'Jenkins', local: '本地编' }
@@ -23,27 +25,30 @@ const compText = (b: BuildComp) => `${KIND[b.kind] ?? b.kind} · ${b.where === '
 const buildText = (w: Workspace) => { const l = w.builds ?? []; return !l.length ? '不编译 · 直接跑部署命令' : l.length === 1 ? compText(l[0]) : `${l.length} 个编译组件：${l.map((b) => b.name).join('、')}` }
 /** 这个环境发哪个组件（不编译 / 没选清楚 = undefined） */
 const compOfDeploy = (w: Workspace, d: Deploy) => (d.build === 'none' ? undefined : d.build ? w.builds?.find((x) => x.id === d.build) : w.builds?.length === 1 ? w.builds[0] : undefined)
-const repoShort = (u: string) => u.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '')
+// 仓库地址只留最后两段（AI/opero-yima）：Codeup 前面那串组织编号太长，看不出是什么
+const repoShort = (u: string) => u.replace(/^https?:\/\/[^/]+\//, '').replace(/\.git$/, '').split('/').slice(-2).join('/')
 
-/** 这个环境「像不像生产」：看它发到的服务器的环境标签 */
+const PROD = /生产|正式|線上|线上|prod|production|live/i
+/** 这个环境是什么、算不算生产：自己标了就用标的（Deploy.env），没标看发到的服务器；服务器是生产的照样算生产 */
 function envLabel(d: Deploy, servers: Server[]) {
-  const envs = [...new Set(d.servers.map((id) => servers.find((s) => s.id === id)?.env).filter(Boolean))] as string[]
-  const prod = envs.some((e) => /生产|prod/i.test(e))
-  return { text: envs.join(' / ') || '—', prod }
+  const svs = d.servers.map((id) => servers.find((s) => s.id === id)).filter((x): x is Server => !!x)
+  const envs = [...new Set(svs.map((s) => s.env).filter(Boolean))]
+  const prod = (!!d.env && PROD.test(d.env)) || svs.some((s) => s.protect ?? PROD.test(s.env))
+  return { text: d.env || envs.join(' / ') || '—', prod }
 }
 const releasesOf = (list: LiveRelease[], wid: string, did?: string) => list.filter((r) => r.ws === wid && (!did || r.target === did)).sort((a, b) => b.started - a.started)
 
 // ======================= 看板 =======================
-export function LiveReleasesPage({ params, nav }: PageProps) {
+/** 「项目」页（项目和发布合在一起，2026-11-27 主人定的）：上面发布概况，中间每个项目一张卡（各环境线上是哪个版本、最近一次发布），下面全部发布记录。
+ *  点卡片进项目页，发布是项目页最上面一块（ReleaseSection）。旧的 releases 路由在 pages/index.tsx 里转过来 */
+export function ProjectsPage({ nav }: PageProps) {
   const list = useStore((s) => s.liveReleases)
   const wss = useStore((s) => s.workspaces)
   const servers = useStore((s) => s.servers)
-  const w = params.ws ? wss.find((x) => x.id === params.ws) : undefined
-  if (w) return <ProjectReleases w={w} nav={nav} list={list} servers={servers} />
   return <Board nav={nav} list={list} wss={wss} servers={servers} />
 }
 
-function Board({ nav, list, wss, servers }: { nav: Nav; list: LiveRelease[]; wss: Workspace[]; servers: Server[] }) {
+function Board({ nav, list, wss }: { nav: Nav; list: LiveRelease[]; wss: Workspace[]; servers: Server[] }) {
   const [tab, setTab] = useState<'all' | 'running' | 'success' | 'failed'>('all')
   const [ws, setWs] = useState('')
   const since = Date.now() - 30 * 86400_000
@@ -54,7 +59,7 @@ function Board({ nav, list, wss, servers }: { nav: Nav; list: LiveRelease[]; wss
   const rows = [...list].filter((r) => (tab === 'all' || r.status === tab) && (!ws || r.ws === ws)).sort((a, b) => b.started - a.started).slice(0, 50)
   return (
     <div className="page">
-      <PageHeader title="发布" sub="每个项目发到哪些环境、线上是哪个版本；你能自己发，也能交给员工发（发生产照旧要你验证本人）" {...headNav(nav)}
+      <PageHeader title="项目" sub="员工干活的代码仓库，和它们发到哪、线上是哪个版本；点一个项目进去发布、编译、管员工" {...headNav(nav)}
         right={<button className="btn primary sm" onClick={() => nav.push({ page: 'workspaceAdd' })}>+ 接入项目</button>} />
       <div className="page-body">
         <div className="rel-kpis">
@@ -66,15 +71,15 @@ function Board({ nav, list, wss, servers }: { nav: Nav; list: LiveRelease[]; wss
           <div><b className={list.some((r) => r.status === 'running') ? 'run' : ''}>{list.filter((r) => r.status === 'running').length}</b><span>正在发</span></div>
         </div>
         <div className="rel-note">发布 = 编译（本地或流水线）→ 核对产物 → 发到服务器 → 部署 → 检查，失败自动退回上一版；每一步都有记录。环境怎么配，在项目里跟员工说一句就行。</div>
-        {wss.length === 0 && <Empty>还没有项目：先在「项目」里接入一个仓库</Empty>}
+        {wss.length === 0 && <Empty>还没有项目：点右上「+ 接入项目」，接一个 GitHub / Codeup / Gitee 仓库</Empty>}
         <div className="rel-grid">
           {wss.map((w) => {
             const deploys = w.deploys ?? []
             return (
-              <div key={w.id} className="rel-card2" onClick={() => nav.push({ page: 'releases', params: { ws: w.id } })}>
+              <div key={w.id} className="rel-card2" onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })}>
                 <div className="rel-card2-head">
                   <span className="rel-tile">{w.name.slice(0, 1).toUpperCase()}</span>
-                  <span className="rel-card2-title"><b>{w.name}</b><small className="mono" data-no-i18n="">{repoShort(w.repo)}</small></span>
+                  <span className="rel-card2-title"><b>{w.name}{(w as Workspace & { error?: string }).error && <Tag tone="danger">有问题</Tag>}</b><small className="mono" data-no-i18n="">{repoShort(w.repo)}</small></span>
                 </div>
                 <div className="rel-chips">
                   <span className="rel-chip">{buildText(w)}</span>
@@ -89,7 +94,7 @@ function Board({ nav, list, wss, servers }: { nav: Nav; list: LiveRelease[]; wss
                     const st = !last ? 'idle' : last.status === 'running' ? 'run' : last.status === 'success' ? 'ok' : 'bad'
                     return (
                       <div key={d.id} className={'rel-line ' + st} title={last ? `线上 ${online?.version ?? '—'} · 最近一次 ${last.version || '…'} ${ST[last.status].label} · ${at(last.started)}` : '还没发布过'}
-                        onClick={(e) => { e.stopPropagation(); nav.push(last ? { page: 'release', params: { id: last.id } } : { page: 'releases', params: { ws: w.id } }) }}>
+                        onClick={(e) => { e.stopPropagation(); nav.push(last ? { page: 'release', params: { id: last.id } } : { page: 'workspace', params: { id: w.id } }) }}>
                         <span className="rel-line-name">{d.name}</span>
                         <span className="rel-line-ver mono" data-no-i18n="">{online?.version || '—'}</span>
                         <span className="rel-line-when">{last ? (last.status === 'running' ? '发布中…' : at(last.started)) : '还没发布过'}</span>
@@ -137,23 +142,21 @@ function HistoryTable({ rows, nav, wss }: { rows: LiveRelease[]; nav: Nav; wss?:
 }
 
 // ======================= 一个项目的发布 =======================
-function ProjectReleases({ w, nav, list, servers }: { w: Workspace; nav: Nav; list: LiveRelease[]; servers: Server[] }) {
+/** 项目页最上面的「发布」：各环境（线上版本、发布、回滚、编辑）+ 这个项目的发布记录 */
+export function ReleaseSection({ w, nav }: { w: Workspace; nav: Nav }) {
+  const list = useStore((s) => s.liveReleases)
+  const servers = useStore((s) => s.servers)
   const [dlg, setDlg] = useState<{ d: Deploy; mode: 'release' | 'rollback' } | null>(null)
+  const [edit, setEdit] = useState<Deploy | null>(null)
+  const [allRows, setAllRows] = useState(false)
+  const saveDeploy = async (x: Deploy) => { if (await call('PUT', `/api/workspaces/${w.id}`, { deploys: (w.deploys ?? []).map((y) => (y.id === x.id ? x : y)) }, '已保存')) setEdit(null) }
   const rows = releasesOf(list, w.id)
   const sv = (id: string) => servers.find((x) => x.id === id)
   return (
-    <div className="page">
-      <PageHeader title={w.name} sub={`发布 · ${repoShort(w.repo)}`} {...headNav(nav)}
-        right={<span className="row-actions"><button className="btn ghost sm" onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })}>编译 / 环境设置</button></span>} />
-      <div className="page-body">
-        <dl className="rel-info">
-          <div><dt>代码仓库</dt><dd className="mono" data-no-i18n="">{repoShort(w.repo)}</dd></div>
-          <div><dt>发布分支</dt><dd className="mono" data-no-i18n="">{w.branch}</dd></div>
-          <div><dt>编译</dt><dd>{buildText(w)}</dd></div>
-          <div><dt>环境</dt><dd>{`${(w.deploys ?? []).length} 个`}</dd></div>
-        </dl>
-        <h3 className="rel-h3-plain">环境</h3>
-        {(w.deploys ?? []).length === 0 && <Empty>还没有发布环境：点右上「编译 / 环境设置」，跟员工说一句「加一个测试环境」，它会看好服务器和目录配好</Empty>}
+    <div className="rel-section">
+      <div className="rel-h3"><h3>{`发布 · ${(w.deploys ?? []).length} 个环境`}</h3><span className="rel-sec-sub">{`发布分支 ${w.branch} · ${buildText(w)}`}</span></div>
+      <div>
+        {(w.deploys ?? []).length === 0 && <Empty>还没有发布环境：跟这个项目的员工说一句「加一个测试环境」，它会看好服务器和目录配好</Empty>}
         <div className="rel-envs">
           {(w.deploys ?? []).map((d) => {
             const rs = releasesOf(list, w.id, d.id)
@@ -168,6 +171,7 @@ function ProjectReleases({ w, nav, list, servers }: { w: Workspace; nav: Nav; li
                   <span className={'rel-env-tag' + (env.prod ? ' prod' : '')}>{env.text}</span>
                   <b>{d.name}</b>
                   <span className="rel-env-ai">{AI[d.ai ?? 'ask']}</span>
+                  <button className="btn ghost sm rel-env-edit" onClick={() => setEdit(d)}>编辑</button>
                 </div>
                 <div className="rel-cur">
                   <small>线上版本</small>
@@ -180,25 +184,36 @@ function ProjectReleases({ w, nav, list, servers }: { w: Workspace; nav: Nav; li
                   </button>
                 )}
                 <dl className="rel-kv">
-                  <div><dt>服务器</dt><dd>{d.servers.map((id) => <span key={id} className={'rel-chip' + (sv(id) ? '' : ' bad')} onClick={() => sv(id) && nav.push({ page: 'server', params: { id } })}>{sv(id)?.name ?? `${id}（不在了）`}</span>)}</dd></div>
+                  {d.package
+                    ? <div><dt>存进</dt><dd>{`安装包 · ${PLATS.find((x) => x.p === d.package!.platform)?.label} · ${d.package.channel === 'prod' ? '正式' : '测试'}（只留最新）`}</dd></div>
+                    : <div><dt>服务器</dt><dd>{d.servers.map((id) => <span key={id} className={'rel-chip' + (sv(id) ? '' : ' bad')} onClick={() => sv(id) && nav.push({ page: 'server', params: { id } })}>{sv(id)?.name ?? `${id}（不在了）`}</span>)}</dd></div>}
                   {((w.builds?.length ?? 0) > 1 || d.build === 'none') && <div><dt>编译组件</dt><dd>{compOfDeploy(w, d)?.name ?? (d.build === 'none' ? '不编译' : '还没选')}</dd></div>}
                   {d.dir && <div><dt>部署目录</dt><dd className="mono" data-no-i18n="">{d.dir}</dd></div>}
-                  <div><dt>怎么部署</dt><dd>{d.command ? <span className="mono" data-no-i18n="">{d.command.length > 60 ? d.command.slice(0, 60) + '…' : d.command}</span> : compOfDeploy(w, d) ? <>包里的 <span className="mono">{d.script || 'deploy.sh'}</span></> : '把包里的东西放进部署目录'}</dd></div>
+                  {!d.package && <div><dt>怎么部署</dt><dd>{d.command ? <span className="mono" data-no-i18n="">{d.command.length > 60 ? d.command.slice(0, 60) + '…' : d.command}</span> : compOfDeploy(w, d) ? <>包里的 <span className="mono">{d.script || 'deploy.sh'}</span></> : '把包里的东西放进部署目录'}</dd></div>}
                   {d.health && <div><dt>发完检查</dt><dd className="mono" data-no-i18n="">{d.health}</dd></div>}
-                  <div><dt>其它</dt><dd>{[d.sign && '签名', `留 ${d.keep ?? 5} 个版本能回滚`, d.autoRollback !== false && '失败自动退回'].filter(Boolean).join(' · ')}</dd></div>
+                  <div><dt>其它</dt><dd>{(d.package ? [d.sign && '编完签名'] : [d.sign && '签名', `留 ${d.keep ?? 5} 个版本能回滚`, d.autoRollback !== false && '失败自动退回']).filter(Boolean).join(' · ') || '—'}</dd></div>
                 </dl>
                 <div className="rel-env-foot">
                   <button className="btn primary sm" disabled={running} onClick={() => setDlg({ d, mode: 'release' })}>{running ? '发布中…' : '发布'}</button>
-                  <button className="btn default sm" disabled={!canRollback || running} onClick={() => setDlg({ d, mode: 'rollback' })}>回滚</button>
+                  {!d.package && <button className="btn default sm" disabled={!canRollback || running} onClick={() => setDlg({ d, mode: 'rollback' })}>回滚</button>}
                   <span className="rel-env-count">{rs.length ? `发过 ${rs.length} 次` : ''}</span>
                 </div>
               </div>
             )
           })}
         </div>
-        <h3 className="rel-h3-plain">发布历史</h3>
-        <HistoryTable rows={rows.slice(0, 50)} nav={nav} />
+        {rows.length > 0 && (
+          <>
+            <div className="rel-h3 rel-hist"><h3>{`发布记录 · ${rows.length}`}</h3>{rows.length > 5 && <button className="btn ghost sm" onClick={() => setAllRows(!allRows)}>{allRows ? '收起' : '全部'}</button>}</div>
+            <HistoryTable rows={rows.slice(0, allRows ? 50 : 5)} nav={nav} />
+          </>
+        )}
       </div>
+      {edit && (
+        <Sheet title={`编辑发布环境 · ${edit.name}`} onClose={() => setEdit(null)} size="lg">
+          <DeployForm bare init={edit} servers={servers} builds={w.builds ?? []} onCancel={() => setEdit(null)} onSave={saveDeploy} />
+        </Sheet>
+      )}
       {dlg && <ReleaseSheet w={w} d={dlg.d} mode={dlg.mode} servers={servers} nav={nav} onClose={() => setDlg(null)} />}
     </div>
   )
@@ -311,7 +326,7 @@ export function LiveReleasePage({ params, nav }: PageProps) {
       <div className="page-body">
         <div className="rel-head">
           <div className="rel-head-line">
-            {w ? <button className="rel-link strong" onClick={() => nav.push({ page: 'releases', params: { ws: w.id } })}>{w.name}</button> : <b>?</b>}
+            {w ? <button className="rel-link strong" onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })}>{w.name}</button> : <b>?</b>}
             <span className="rel-arrow">→</span><b>{x.targetName}</b>
             <span className="rel-head-ver mono" data-no-i18n="">{x.version || '…'}</span>
             <Tag tone={ST[x.status].tone}>{ST[x.status].label}</Tag>

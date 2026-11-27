@@ -1,12 +1,15 @@
 package cn.yimakeji.opero
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.speech.RecognizerIntent
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -83,6 +86,17 @@ class MainActivity : FragmentActivity(), WebEnv {
     private val pickFiles = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
         fileCallback = null
+    }
+    /** 安卓 9 及以下存文件：让用户选存哪（不用存储权限） */
+    private var pendingSave: ByteArray? = null
+    private val createDoc = registerForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val bytes = pendingSave
+        pendingSave = null
+        if (uri == null || bytes == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            val ok = try { withContext(Dispatchers.IO) { contentResolver.openOutputStream(uri)?.use { it.write(bytes) } != null } } catch (_: Exception) { false }
+            Live.toast(if (ok) t("已保存") else t("保存失败"))
+        }
     }
     private val askMicPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         pendingMic?.let { if (ok) it.grant(it.resources) else it.deny() }
@@ -267,6 +281,52 @@ class MainActivity : FragmentActivity(), WebEnv {
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), name))
             } catch (_: Exception) {
                 Live.toast(t("这台手机上没有能打开它的 App"))
+            }
+        }
+    }
+
+    override fun saveFile(name: String, bytes: ByteArray, mime: String) {
+        val safe = name.replace(Regex("[/\\\\:*?\"<>|]"), "_").ifBlank { "file" }
+        if (Build.VERSION.SDK_INT < 29) {
+            pendingSave = bytes
+            AppLock.skipNext()
+            try { createDoc.launch(safe) } catch (_: Exception) { pendingSave = null; Live.toast(t("保存失败")) }
+            return
+        }
+        val image = mime.startsWith("image/")
+        lifecycleScope.launch {
+            val ok = try {
+                withContext(Dispatchers.IO) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, safe)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, (if (image) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_DOWNLOADS) + "/Opero")
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    val coll = if (image) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                    val uri = contentResolver.insert(coll, values) ?: return@withContext false
+                    contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                    contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                    true
+                }
+            } catch (_: Exception) { false }
+            Live.toast(if (!ok) t("保存失败") else if (image) t("已存到相册") else t("已存到「下载」"))
+        }
+    }
+
+    override fun shareFile(name: String, bytes: ByteArray, mime: String) {
+        lifecycleScope.launch {
+            try {
+                val f = withContext(Dispatchers.IO) {
+                    val dir = File(cacheDir, "open").apply { mkdirs() }
+                    File(dir, name.replace(Regex("[/\\\\]"), "_").ifBlank { "file" }).apply { writeBytes(bytes) }
+                }
+                val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.files", f)
+                val send = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                AppLock.skipNext()
+                startActivity(Intent.createChooser(send, name))
+            } catch (_: Exception) {
+                Live.toast(t("分享没成功"))
             }
         }
     }

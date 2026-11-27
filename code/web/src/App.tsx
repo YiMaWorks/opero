@@ -4,13 +4,14 @@ import {
   append, audit, badgeOf, empName, getState, later, markRead, now, patchCard, patchSession, promotePreview, requireVerify, revertMerge, runFixDemo,
   saveQuery, sessionFor, set, setIssueStatus, toast, toggleMute, togglePin, uid, useStore,
 } from './store'
-import { Mark, Splash } from './components/brand'
+import { Mark, Splash, LiveMark } from './components/brand'
 import { SessionList } from './components/SessionList'
 import { Chat } from './components/Chat'
 import { ThemeQuick } from './components/ThemeQuick'
 import { SideNav } from './components/SideNav'
 import { ImageEditHost } from './components/ImageEditor'
 import { NewChatSheet, ReplySuggestSheet, SearchOverlay, Toast, VerifyModal } from './components/overlays'
+import { UpgradeToast } from './components/UpgradeToast'
 import { IconGlobe, IconPalette, TabIcon } from './components/icons'
 import { LangSheet } from './components/LangPicker'
 import { PageView } from './pages'
@@ -148,6 +149,7 @@ export default function App() {
     if (action.panel === 'diff') { setPanel([{ page: 'diff', params: { sid } }]); return }
     if (action.panel === 'credentialEdit') { setPanel([{ page: 'credentialEdit', params: (action.args ?? {}) as Record<string, string> }]); return }
     if (action.panel === 'query') { setPanel([{ page: 'queryResult', params: { sid, cardId: card.id } }]); return }
+    if (action.panel === 'release') { setPanel([{ page: 'release', params: { id: String(action.args?.id ?? card.data.rel ?? '') } }]); return }
     if (LIVE) { cardAction(card, action, extra); return }
     const emp = sessions.find((s) => s.id === sid)?.employee ?? ''
     switch (card.type) {
@@ -279,6 +281,14 @@ export default function App() {
   // 页签角标只算「红点」：要你决定的 + 设成「全部提醒」的员工的未读（少红点）
   const unread = sessions.reduce((a, s) => a + (badgeOf(s, employees.find((e) => e.id === s.employee)) === 'red' ? Math.max(1, s.unread ?? 0) : 0), 0)
   const badge = (t: Tab) => (t === 'chat' ? unread : 0)
+  // 点「会话」上的数字：直接打开最近一个等你决定的会话（没有就打开最近一个有红点的），不用在列表里找
+  const openWaiting = (ev?: React.MouseEvent) => {
+    ev?.stopPropagation()
+    const red = sessions.filter((s) => badgeOf(s, employees.find((e) => e.id === s.employee)) === 'red').sort((a, b) => Number(!!b.waiting) - Number(!!a.waiting) || b.ts - a.ts)[0]
+    if (!red) return
+    switchTab('chat')
+    openSession(red.id)
+  }
   useEffect(() => { nativeBadge(unread) }, [unread])
   useEffect(() => { nativeRoute(current && tab === 'chat' ? `chat/${current}` : '') }, [current, tab])
   // App 里点通知：外壳把路由交过来（chat/<会话编号>）
@@ -325,7 +335,7 @@ export default function App() {
         <button key={t.tab} className={tab === t.tab ? 'on' : ''} onClick={() => switchTab(t.tab)}>
           <TabIcon tab={t.tab} />
           <span>{t.label}</span>
-          {badge(t.tab) > 0 && <i className="nav-badge">{badge(t.tab)}</i>}
+          {badge(t.tab) > 0 && <i className="nav-badge" role="button" title="点数字直接打开等你处理的那个会话" onClick={openWaiting}>{badge(t.tab)}</i>}
         </button>
       ))}
     </nav>
@@ -351,11 +361,11 @@ export default function App() {
     main = (
       <div className={'app desktop' + (panel && tab === 'chat' ? ' with-panel' : '')}>
         <nav className="nav">
-          <div className="nav-logo"><Mark size={40} /></div>
+          <div className="nav-logo"><LiveMark size={40} onWaiting={() => openWaiting()} /></div>
           {TABS.filter((t) => t.tab !== 'me').map((t) => (
             <button key={t.tab} className={'nav-btn' + (tab === t.tab ? ' on' : '')} onClick={() => switchTab(t.tab)}>
               <TabIcon tab={t.tab} /><span>{t.label}</span>
-              {badge(t.tab) > 0 && <i className="nav-badge">{badge(t.tab)}</i>}
+              {badge(t.tab) > 0 && <i className="nav-badge" role="button" title="点数字直接打开等你处理的那个会话" onClick={openWaiting}>{badge(t.tab)}</i>}
             </button>
           ))}
           <span className="grow" />
@@ -416,6 +426,7 @@ export default function App() {
       <ImageEditHost />
       {!LIVE && !mobile && authState.loggedIn && <a className="demo-pill" href="/" title="试用版：假数据，不连任何服务器">试用版 · 假数据 · 回官网</a>}
       <Toast />
+      <UpgradeToast />
       {splash && <Splash onDone={hideSplash} />}
     </>
   )

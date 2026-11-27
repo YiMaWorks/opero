@@ -355,10 +355,12 @@ object Live {
         messages = messages + (sid to (add + (messages[sid] ?: emptyList())))
     }
 
-    /** 转给别的员工：发到那个员工的会话里 */
-    suspend fun forward(toEmp: String, fromName: String, text: String): Boolean {
+    /**
+     * 转给别的员工（POST /api/sessions/<目标会话>/forward {msg}）：文字照转（后台加「转自「某某」」），
+     * 图片 / 文件由后台把文件本身复制给对方，对方员工直接能看能用；对方在干活就插话 / 排队
+     */
+    suspend fun forward(toEmp: String, msgId: String): Boolean {
         val sid = sessionFor(toEmp) ?: return false
-        val body = JSONObject().put("text", t("转自「{0}」：", fromName) + "\n" + text).put("files", JSONArray())
-        return tryCall { Api.owner("POST", "/api/sessions/$sid/messages", body) } != null
+        return tryCall { Api.owner("POST", "/api/sessions/$sid/forward", JSONObject().put("msg", msgId)) } != null
     }
 }

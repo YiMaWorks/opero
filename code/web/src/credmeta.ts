@@ -306,7 +306,7 @@ export const CRED_META: CredGroupMeta[] = [
   },
   {
     group: '签名证书',
-    desc: '给安卓 apk / aab 签名：发布时 Opero 自己签，证书和密码不给员工',
+    desc: '给 App 签名：安卓的发布时 Opero 自己签；苹果证书、App Store Connect API Key、Windows 代码签名给 Mac / Windows 上打包用。证书和密码都不给员工',
     types: [{
       kind: '安卓签名', fields: [], secret: { label: '证书' },
       guide: {
@@ -316,6 +316,42 @@ export const CRED_META: CredGroupMeta[] = [
           '选签名文件，填密钥库密码和别名（生成时 -alias 后面那个）；密钥密码和密钥库密码一样就不填',
         ],
         snippet: { label: '生成签名文件', code: 'keytool -genkeypair -v -keystore release.jks -alias release -keyalg RSA -keysize 2048 -validity 36500' },
+      },
+    }, {
+      kind: '苹果证书', fields: [], secret: { label: '证书' },
+      guide: {
+        link: { label: '打开苹果开发者网站 · 证书', url: 'https://developer.apple.com/account/resources/certificates/list' },
+        steps: [
+          '要付费的 Apple 开发者账号。上架 / TestFlight 用「Apple Distribution」证书，真机调试用「Apple Development」',
+          '在 Mac 的「钥匙串访问」→「我的证书」里找到它，展开、连同下面的私钥一起选中 → 右键「导出 2 项…」→ 存成 .p12，设一个导出密码',
+          '还没有证书：Xcode → 设置 → Accounts → 选团队 → Manage Certificates → 左下角 + 新建一个，再按上一步导出',
+          '描述文件（.mobileprovision，可选）：开发者网站 Profiles 里下载；Team ID 会从描述文件里自动读出来，没有描述文件就在开发者网站 Membership 里看',
+          '苹果的签名只能在 Mac 上做（Xcode / codesign）：存在这里是给 Mac 上打包用，密码员工拿不到',
+        ],
+      },
+    }, {
+      kind: 'App Store Connect API Key', fields: [], secret: { label: '证书' },
+      guide: {
+        link: { label: '打开 App Store Connect · API 密钥', url: 'https://appstoreconnect.apple.com/access/integrations/api' },
+        steps: [
+          'App Store Connect →「用户和访问」→「集成」→「App Store Connect API」→「团队密钥」点 +',
+          '名字随便起（比如 Opero），访问权限选「App 管理」（传 TestFlight、改 App 信息都够）→ 生成',
+          '马上点「下载 API 密钥」拿到 AuthKey_XXXXXXXXXX.p8：只能下载一次，丢了只能撤销重建',
+          '在这里选 .p8 文件（Key ID 会从文件名里读出来），再填页面上方的 Issuer ID',
+          '用来在 Mac 上传 TestFlight / App Store（xcrun altool、fastlane），不用你的 Apple ID 密码',
+        ],
+        perms: 'App 管理（App Manager）',
+      },
+    }, {
+      kind: 'Windows 代码签名', fields: [], secret: { label: '证书' },
+      guide: {
+        steps: [
+          '向证书机构（DigiCert、Sectigo、GlobalSign…）买代码签名证书，或者用公司已有的',
+          '导出成带私钥的 .pfx：运行 certmgr.msc →「个人」→「证书」→ 右键证书「所有任务 → 导出」→ 选「是，导出私钥」→ 设密码',
+          '2023 年 6 月以后发的证书，私钥一般在硬件令牌或云签名服务里、导不出 .pfx：那就在 Windows 本机用证书商的工具签，这里不用存',
+          '时间戳服务器用证书商给的（DigiCert 是 http://timestamp.digicert.com）：签了时间戳，证书过期后签名照样有效',
+        ],
+        snippet: { label: '在 Windows 上签名', code: 'signtool sign /fd SHA256 /f cert.pfx /p 密码 /tr http://timestamp.digicert.com /td SHA256 app.msix' },
       },
     }],
   },

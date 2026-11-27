@@ -69,15 +69,21 @@ function toServer(tn: Tunnel, buf: Buffer) {
   else send(tn.server, { t: 'tdata', id: tn.id, data: buf.toString('base64') })
 }
 
-/** 开一条隧道：egress = 'local'（Opero 这台出去）或 Agent 服务器编号 */
-async function open(client: End, id: string, egress: string, host: string, port: number) {
+/** Agent 要多新才能当「网络出口」（连任意地址、端口，见 egress.ts） */
+export const ANY_MIN = '0.31.0'
+
+/** 开一条隧道：egress = 'local'（Opero 这台出去）或 Agent 服务器编号。
+ *  any：Opero 自己往外连（网络出口规则，egress.ts）——任意域名和端口；lan：规则上勾了「允许内网」才许连内网地址。
+ *  不带 any 的是执行器的 AI 出口，只许 AI 的域名、443 */
+async function open(client: End, id: string, egress: string, host: string, port: number, o: { any?: boolean; lan?: boolean } = {}) {
   const tn: Tunnel = { id, client, open: false, closed: false }
   tunnels.set(id, tn)
-  if (port !== 443 || !allowedHost(host)) return fail(tn, `出口只连 AI 的接口（${host}:${port} 不在名单里）`)
+  if (!o.any && (port !== 443 || !allowedHost(host))) return fail(tn, `出口只连 AI 的接口（${host}:${port} 不在名单里）`)
+  if (!(port >= 1 && port <= 65535) || !host) return fail(tn, `地址不对：${host}:${port}`)
   if (egress === 'local') {
     try {
       const addrs = await dns.lookup(host, { all: true })
-      if (!addrs.length || addrs.some((a) => privateIp(a.address))) return fail(tn, `${host} 解析到了内网地址，拒绝`)
+      if (!addrs.length || (!o.lan && addrs.some((a) => privateIp(a.address)))) return fail(tn, `${host} 解析到了内网地址，拒绝（要连内网，在出口规则上勾「允许内网」）`)
       const sock = net.connect({ host: addrs[0].address, port })
       tn.server = { kind: 'sock', sock }
       sock.on('connect', () => clientOk(tn))
@@ -89,9 +95,22 @@ async function open(client: End, id: string, egress: string, host: string, port:
   }
   const sv = get<Server>('servers', egress)
   if (!agents.agentOnline(sv)) return fail(tn, `出口「${sv?.name ?? egress}」的 Agent 不在线`)
+  if (o.any && !agents.agentAtLeast(sv, ANY_MIN)) return fail(tn, `出口「${sv!.name}」的 Agent 是 ${sv!.agentVersion || '很旧的版本'}，要 ${ANY_MIN} 以上：到「应用 → 服务器和 Agent → ${sv!.name}」点「升级 Agent」`)
   tn.server = { kind: 'agent', serverId: egress }
-  send(tn.server, { t: 'tconn', id, host, port })
+  send(tn.server, { t: 'tconn', id, host, port, ...(o.any ? { any: true, lan: !!o.lan } : {}) })
   setTimeout(() => { if (!tn.open && !tn.closed) fail(tn, '出口连不上（20 秒没回应）') }, 20_000)
+}
+
+/** 给 egress.ts 的内部代理用：这个 socket（已经回过 CONNECT 之前）接到出口；连上回「200」，失败回 502 + X-Opero-Error */
+export function openFromSocket(sock: net.Socket, head: Buffer, egress: string, host: string, port: number, o: { any?: boolean; lan?: boolean }) {
+  const id = uid('t')
+  sock.on('error', () => { const tn = tunnels.get(id); if (tn) close(tn) })
+  sock.on('close', () => { const tn = tunnels.get(id); if (tn) close(tn) })
+  sock.on('data', (b: Buffer) => { const tn = tunnels.get(id); if (tn?.open) toServer(tn, b) })
+  open({ kind: 'sock', sock }, id, egress, host, port, o).then(() => {
+    const tn = tunnels.get(id)
+    if (tn && head?.length) toServer(tn, head)
+  })
 }
 
 /** Agent 报上来的隧道事件（tup：它那台的执行器要开隧道；topen / tdata / tclose） */

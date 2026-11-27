@@ -43,19 +43,21 @@ export async function call<T = any>(method: string, path: string, body?: unknown
 }
 
 // ---------- 开机：拉全部数据 ----------
-/** 这一页打开时的 Opero 版本：断线重连后版本变了（升级过）就刷新页面用上新版；正在打字就先提示，不打断 */
+/** 这一页打开时的 Opero 版本：后台或网页换了，右下角出一张「有新版本」的卡片（UpgradeToast），你点刷新才刷新——
+ *  不再自己刷（会打断正在看 / 正在操作的）。点了「稍后」半小时后再提醒。没发出去的话存在本机，刷新也在 */
 let loadedVersion = ''
-function checkUpgrade(info: { version?: string; web?: string } | undefined) {
+let loadedServer = ''
+let snoozeUntil = 0
+function checkUpgrade(info: { version?: string; web?: string; notes?: { title: string; items: string[] } | null } | undefined) {
   const v = info?.version ? `${info.version}/${info.web ?? ''}` : ''
   if (!v) return
-  if (!loadedVersion) { loadedVersion = v; return }
-  if (v === loadedVersion) return
-  const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
-  const typing = !!el && /^(INPUT|TEXTAREA)$/.test(el.tagName) && !!el.value
-  if (typing) toast(`Opero 已升级到 ${info?.version}，打完这句刷新一下页面用上新版`)
-  else location.reload()
+  if (!loadedVersion) { loadedVersion = v; loadedServer = info!.version!; return }
+  if (v === loadedVersion || Date.now() < snoozeUntil) return
+  set({ upgrade: { from: loadedServer, to: info!.version!, web: !v.endsWith(`/${loadedVersion.split('/')[1]}`), notes: info?.notes ?? null } })
 }
-// 标签页切回来、以及每 5 分钟：问一下版本（只换了网页、或者连接一直没断，也能刷新到新版）
+/** 「稍后」：卡片收起，半小时后（还没刷新的话）再提醒 */
+export function snoozeUpgrade() { snoozeUntil = Date.now() + 30 * 60_000; set({ upgrade: null }) }
+// 标签页切回来、以及每 5 分钟：问一下版本（只换了网页、或者连接一直没断，也能知道有新版）
 const pollVersion = () => { if (loadedVersion) api<{ version: string; web: string }>('GET', '/api/version').then(checkUpgrade).catch(() => {}) }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pollVersion() })
 window.setInterval(pollVersion, 5 * 60_000)
@@ -72,7 +74,7 @@ export async function boot() {
       instance: b.instance,
       me: { ...s.me, ...b.me },
       employees: b.employees, sessions: b.sessions, messages: b.messages, servers: b.servers, credentials: b.credentials,
-      dataSources: b.dataSources, savedQueries: b.savedQueries, triggers: b.triggers, kb: b.kb, workspaces: b.workspaces, queue: b.queue ?? [], liveIssues: b.issues ?? [], liveReleases: b.releases ?? [], domains: b.domains ?? [], inbox: b.inbox ?? [], inChannels: b.channels ?? [], notifiers: b.notifiers ?? [],
+      dataSources: b.dataSources, savedQueries: b.savedQueries, triggers: b.triggers, kb: b.kb, workspaces: b.workspaces, queue: b.queue ?? [], liveIssues: b.issues ?? [], liveReleases: b.releases ?? [], packages: b.packages ?? [], domains: b.domains ?? [], inbox: b.inbox ?? [], inChannels: b.channels ?? [], notifiers: b.notifiers ?? [],
       audit: b.audit, usage: b.usage, settings: { ...s.settings, ...b.settings },
     }))
     syncLang(b.settings?.lang)
@@ -105,8 +107,8 @@ function connect() {
   }
 }
 
-type Coll = 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries' | 'triggers' | 'kb' | 'workspaces' | 'queue' | 'liveIssues' | 'liveReleases' | 'domains' | 'inChannels' | 'notifiers'
-const COLLS: Coll[] = ['inChannels', 'notifiers', 'employees', 'sessions', 'servers', 'credentials', 'dataSources', 'savedQueries', 'triggers', 'kb', 'workspaces', 'queue', 'liveIssues', 'liveReleases', 'domains']
+type Coll = 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries' | 'triggers' | 'kb' | 'workspaces' | 'queue' | 'liveIssues' | 'liveReleases' | 'packages' | 'domains' | 'inChannels' | 'notifiers'
+const COLLS: Coll[] = ['inChannels', 'notifiers', 'employees', 'sessions', 'servers', 'credentials', 'dataSources', 'savedQueries', 'triggers', 'kb', 'workspaces', 'queue', 'liveIssues', 'liveReleases', 'packages', 'domains']
 /** 后台的集合名 → 本地 store 的字段（问题清单在 store 里叫 liveIssues，issues 是试用版的） */
 const collOf = (c: string) => (c === 'issues' ? 'liveIssues' : c === 'releases' ? 'liveReleases' : c === 'channels' ? 'inChannels' : c) as Coll
 
@@ -156,7 +158,8 @@ function apply(ev: any) {
 export function cardAction(card: Card, action: CardAction, extra?: Record<string, unknown>) {
   const msg = Object.values(getState().messages).flat().find((m) => m.card?.id === card.id)
   if (!msg) return
-  const go = () => call('POST', `/api/messages/${msg.id}/action`, { action: action.id, answer: extra?.answer })
+  // 发布卡片的按钮（重新发布、回滚、让员工修）：卡片还要跟着进度更新，结果用提示告诉你
+  const go = () => call<{ result?: string }>('POST', `/api/messages/${msg.id}/action`, { action: action.id, answer: extra?.answer }).then((r) => { if (r?.result && card.type === 'release') toast(r.result) })
   if (action.style === 'danger') requireVerify(String(card.data.title ?? '确认'), go, String(card.data.why ?? ''))
   else go()
 }

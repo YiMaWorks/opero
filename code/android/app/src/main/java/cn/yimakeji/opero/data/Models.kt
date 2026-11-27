@@ -8,7 +8,7 @@ import org.json.JSONObject
 
 private fun JSONObject.str(k: String): String? = if (has(k) && !isNull(k)) optString(k) else null
 private fun JSONObject.strList(k: String): List<String> = optJSONArray(k)?.let { a -> (0 until a.length()).map { a.optString(it) } } ?: emptyList()
-private inline fun <T> JSONArray?.mapObj(f: (JSONObject) -> T): List<T> =
+private inline fun <T : Any> JSONArray?.mapObj(f: (JSONObject) -> T): List<T> =
     if (this == null) emptyList() else (0 until length()).mapNotNull { optJSONObject(it)?.let(f) }
 
 @Immutable
@@ -233,4 +233,4 @@ data class Me(val name: String, val avatar: String?, val avatarImg: String?) {
     }
 }
 
-internal fun <T> JSONArray?.list(f: (JSONObject) -> T): List<T> = mapObj(f)
+internal fun <T : Any> JSONArray?.list(f: (JSONObject) -> T): List<T> = mapObj(f)

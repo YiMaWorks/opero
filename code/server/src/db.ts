@@ -27,7 +27,7 @@ try { db.exec("ALTER TABLE auth_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT '
 
 export type Coll =
   | 'employees' | 'sessions' | 'servers' | 'credentials' | 'dataSources' | 'savedQueries'
-  | 'triggers' | 'kb' | 'workspaces' | 'devices' | 'queue' | 'issues' | 'releases' | 'domains' | 'channels' | 'notifiers'
+  | 'triggers' | 'kb' | 'workspaces' | 'devices' | 'queue' | 'issues' | 'releases' | 'domains' | 'channels' | 'notifiers' | 'packages'
 
 export interface Doc { id: string }
 

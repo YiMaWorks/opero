@@ -214,6 +214,7 @@ export function AboutPage({ nav }: PageProps) {
         </div>
         <Section>
           <Row title="开源许可" right="Apache-2.0" />
+          <Row title="用到的素材" sub="默认头像：写实那套是 AI 生成的（通义万相），不是真人；其它来自 DiceBear（Lorelei © Lisa Wischofsky、CC0；Avataaars、Bottts © Pablo Stanley，可商用；Micah © Micah Lanier、Toon Head © Johan Melin、Personas © Draftbit，CC BY 4.0）· 图标：Lucide（ISC）" />
           <Row title="规范" sub="MCP 2026-07-28 · 卡片 / 工具 / 插件规范见 docs" />
           <Row title="定制和二开" chevron onClick={() => nav.push({ page: 'customize' })} />
         </Section>

@@ -6,6 +6,7 @@ import { badgeOf, empName, useStore } from '../store'
 import { Avatar } from './Avatar'
 import { Wordmark } from './brand'
 import { IconBellOff, IconChevron, IconPalette, IconPlus, IconSearch } from './icons'
+import { EmpName } from './EmpName'
 
 interface Props {
   sessions: Session[]
@@ -39,7 +40,7 @@ export function SessionList({ sessions, current, mobile, onOpen, onPin, onMute, 
       {mobile ? (
         <header className="slist-head m">
           <span className="head-side"><button className="icon-btn" aria-label="换风格" onClick={onTheme}><IconPalette /></button></span>
-          <span className="head-title"><Wordmark size={22} /></span>
+          <span className="head-title"><Wordmark size={22} live onWaiting={() => { const w = sessions.find((x) => x.waiting); if (w) onOpen(w.id) }} /></span>
           <span className="head-side right">
             <button className="icon-btn" aria-label="搜索" onClick={onSearch}><IconSearch /></button>
             <button className="icon-btn" aria-label="找员工聊" onClick={onNew}><IconPlus /></button>
@@ -111,18 +112,20 @@ function Item({ s, mobile, active, onOpen, onMenu, onPin }: {
     >
       <span className="sitem-av">
         <Avatar id={e.id} size={mobile ? 48 : 44} />
-        {badge === 'red' && <i className="badge">{Math.max(1, s.unread ?? 0) > 99 ? '99+' : Math.max(1, s.unread ?? 0)}</i>}
+        {badge === 'red' && <i className="badge" title={s.waiting ? '有事等你决定：点开聊天，最上面那条提示里「去看」或「以后再说」，红点就消' : '新消息：点开看了就消'}>{Math.max(1, s.unread ?? 0) > 99 ? '99+' : Math.max(1, s.unread ?? 0)}</i>}
         {badge === 'grey' && !s.working && <i className="grey-dot" />}
         {s.working && <i className="s-dot run" />}
       </span>
       <span className="sitem-main">
         <span className="sitem-top">
-          <b>{e.name}</b>
+          <b><EmpName e={e} /></b>
           <time>{s.time}</time>
         </span>
         <span className="sitem-bottom">
           <span className={'sitem-last' + (s.working ? ' run' : '')}>
-            {s.working ? <><i className="pulse" />{s.working}</> : <>{s.waiting && <em className="pfx-warn">[{s.waiting}]</em>}{s.last}</>}
+            {/* 要你决定的放最前面，员工在干活（比如正等你确认）也不能被盖住 */}
+            {s.waiting && <em className="pfx-warn">[{s.waiting}]</em>}
+            {s.working ? <><i className="pulse" />{s.working}</> : s.last}
           </span>
           {e.notify === 'none' && <span className="muted-icon"><IconBellOff /></span>}
         </span>

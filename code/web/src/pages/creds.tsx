@@ -11,6 +11,7 @@ import { IconPlus } from '../components/icons'
 import { headNav, type PageProps } from './nav'
 import { EnvPicker, envTone } from './live'
 import { SignCertFields } from './live3'
+import { EmpName } from '../components/EmpName'
 
 /** 目录里没有的类型（消息渠道里存的、以前存的）：照原样能改 */
 const GENERIC: CredType = { kind: '', fields: [], user: { label: '用户名 / 附加密钥', optional: true }, secret: { label: '值' }, guide: { steps: ['这是以前存的或别处（消息渠道）存的凭证：值加密存着，要换就贴新的'] } }
@@ -202,7 +203,7 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
           </div>
         )}
 
-        {group === '签名证书' ? <SignCertFields onChange={setSecret} /> : t && (
+        {group === '签名证书' ? <SignCertFields key={kind} kind={kind} onChange={setSecret} /> : t && (
           <>
             {group === '数据库' && !existing && (
               <Field label="连接串（有就贴，没有跳过）" hint="项目配置里那一串：mysql://用户:密码@地址:3306/库、jdbc:…、Server=…;Database=…、mysql -h … 都认，贴进来自动拆到下面">
@@ -272,7 +273,7 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
         {existing && (
           <Section title="谁在用">
             {users.length
-              ? users.map((e) => <Row key={e.id} title={e.name} sub={e.title} chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })} />)
+              ? users.map((e) => <Row key={e.id} title={<EmpName e={e} />} sub={e.title} chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })} />)
               : <Empty>还没给员工用：打开员工资料 →「能用的凭证」勾上它</Empty>}
             {!users.length && emps.length > 0 && <div className="pad chips">{emps.map((e) => <button key={e.id} className="chip" onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}>{e.name} ›</button>)}</div>}
           </Section>

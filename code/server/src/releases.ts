@@ -22,7 +22,10 @@ import * as build from './build.ts'
 import * as agents from './agents.ts'
 import * as hosts from './hosts.ts'
 import * as runner from './runner.ts'
-import type { Card, Deploy, Employee, Release, ReleaseStep, Server, Workspace } from './types.ts'
+import type { Card, CardAction, Deploy, Employee, Release, ReleaseStep, Server, Workspace } from './types.ts'
+import { deployProtected, isProtected } from './env.ts'
+import * as packages from './packages.ts'
+import * as version from './version.ts'
 
 const save = (r: Release) => { put('releases', r); emit({ t: 'put', coll: 'releases', item: r }); return r }
 export const list = (o: { ws?: string; limit?: number } = {}) => all<Release>('releases').filter((r) => !o.ws || r.ws === o.ws).sort((a, b) => b.started - a.started).slice(0, o.limit ?? 100)
@@ -33,6 +36,9 @@ export const serversOf = (d: Deploy) => (d.servers?.length ? d.servers : [])
 
 // ---------- 产物在服务器之间搬：key → 谁能传 / 谁能拿、放哪（api.ts 的 /api/agent/blob/:key 用） ----------
 const pulls = new Map<string, { to: string; file: string; exp: number }>()
+/** 让某台服务器的 Agent 来拿 Opero 这台的一个文件（安装包发给员工也用它）：登记一个一次性的口令 */
+export function allowPull(key: string, serverId: string, file: string) { pulls.set(key, { to: serverId, file, exp: Date.now() + 2 * 3600_000 }) }
+export const forgetPull = (key: string) => pulls.delete(key)
 export function blobAllowed(key: string, serverId: string, dir: 'push' | 'pull'): string | null {
   if (!/^[\w-]+$/.test(key)) return null
   if (dir === 'pull') { const k = pulls.get(key); return k && k.exp > Date.now() && k.to === serverId ? k.file : null }
@@ -58,13 +64,19 @@ export function start(w: Workspace, targetId: string, o: { by: string; emp?: Emp
   const d = (w.deploys ?? []).find((x) => x.id === targetId)
   if (!d) throw new Error('没有这个发布环境')
   const svs = serversOf(d).map((id) => get<Server>('servers', id))
-  if (!svs.length || svs.some((x) => !x)) throw new Error('发布环境的服务器不在了')
+  if (d.package) {
+    // 存进安装包：不发到服务器；要有编译组件，不能回滚（每格只留最新）
+    if (o.rollbackOf) throw new Error('存进安装包的环境不能回滚：安装包每一格只留最新一个，要旧版就重新编一次那个提交')
+  } else if (!svs.length || svs.some((x) => !x)) throw new Error('发布环境的服务器不在了')
   if (running(w.id, d.id)) throw new Error(`「${w.name} → ${d.name}」正在发，等它发完`)
   if (d.dir) for (const sv of svs) if (!dirAllowed(sv!, d.dir)) throw new Error(`「${sv!.name}」没把 ${d.dir} 登记成「能部署」的目录：到服务器详情「目录」里加`)
   const rb = o.rollbackOf
   const b = build.buildForDeploy(w, d) // 发哪个编译组件（没选 / 删了会报清楚）
+  if (d.package && !b) throw new Error(`「${d.name}」是存进安装包的：要选一个编译组件（编出 apk / ipa / msix 这些的）`)
   const reuse = !!(rb && (rb.kept || !b)) // 没编译的（命令型）回滚 = 用那个提交再跑一次部署命令
-  const steps: ReleaseStep[] = reuse
+  const steps: ReleaseStep[] = d.package
+    ? [{ k: 'build', s: 'pending' }, { k: 'checkout', s: 'pending' }, ...(d.sign ? [{ k: 'sign' as const, s: 'pending' as const }] : []), { k: 'store', s: 'pending' }]
+    : reuse
     ? [{ k: 'deploy', s: 'pending' }, ...(d.health ? [{ k: 'health' as const, s: 'pending' as const }] : [])]
     : [
         { k: 'build', s: b ? 'pending' : 'skipped' },
@@ -89,18 +101,74 @@ export function start(w: Workspace, targetId: string, o: { by: string; emp?: Emp
   return r
 }
 
-const STEP_NAME: Record<ReleaseStep['k'], string> = { build: '编译', checkout: '核对产物', transfer: '发到服务器', sign: '签名', deploy: '部署', health: '检查', rollback: '退回上一版' }
+const STEP_NAME: Record<ReleaseStep['k'], string> = { build: '编译', checkout: '核对产物', transfer: '发到服务器', sign: '签名', deploy: '部署', health: '检查', rollback: '退回上一版', store: '存进安装包' }
 const MARK: Record<ReleaseStep['s'], string> = { pending: '…', running: '进行中', done: '✓', failed: '✗', skipped: '—' }
-function card(r: Release, w: Workspace): Card {
+/** 聊天里的发布卡片（内核类型 release，规范见 docs/规范/表单与卡片.md「发布卡片」）：
+ *  data.rel 有值 = 新版：环境、版本、每一步的状态和用时（附上次成功时这一步用了多久当估计）、失败原因和日志、下一步按钮。
+ *  title / tag / rows / url 是给还不认识它的端（老版本 App）照通用卡片画的。 */
+export function card(r: Release, w: Workspace): Card {
+  const d = (w.deploys ?? []).find((x) => x.id === r.target)
+  const svs = (r.servers ?? (d ? serversOf(d) : [])).map((id) => get<Server>('servers', id)).filter((x): x is Server => !!x)
+  const prod = d ? deployProtected(d, (id) => get<Server>('servers', id)) : svs.some((x) => isProtected(x))
+  const env = d?.env || [...new Set(svs.map((x) => x.env).filter(Boolean))].join(' / ')
+  const same = all<Release>('releases').filter((x) => x.ws === r.ws && x.target === r.target && x.id !== r.id).sort((a, b) => b.started - a.started)
+  // 估计：上次成功（不算回滚）的那次每一步用了多久
+  const lastOk = same.find((x) => x.status === 'success' && !x.rollbackOf && x.started < r.started)
+  const est: Partial<Record<ReleaseStep['k'], number>> = {}
+  for (const s of lastOk?.steps ?? []) if (s.t0 && s.t1 && s.s === 'done') est[s.k] = s.t1 - s.t0
+  // 成功了能回滚到的：这次之前最近一个成功、包还留着（或者不用编译）的版本
+  const back = r.status === 'success' ? same.find((x) => x.status === 'success' && x.started < r.started && x.version !== r.version && (x.kept || !r.build)) : undefined
+  const autoFix = r.status === 'failed' && !!r.emp && (d?.ai ?? 'ask') === 'auto' && !r.rollbackOf
+  // 显示的版本号：老记录只存了提交号的，从产物文件名里认（0.30.0 比 c0b6caa 好认）
+  const shown = (x: Release) => (version.shaLike(x.version) && version.fromFileName(x.pkgName)) || x.version
+  const err = (r.error ?? '').trim()
+  const nl = err.indexOf('\n')
+  const actions: CardAction[] = [
+    ...(r.status === 'failed' && r.emp && !autoFix ? [{ id: 'rel:fix', label: '让员工修', style: 'primary' as const }] : []),
+    ...(r.status === 'failed' ? [{ id: 'rel:retry', label: '重新发布', style: (r.emp && !autoFix ? 'default' : 'primary') as CardAction['style'] }] : []),
+    ...(back ? [{ id: `rel:rollback:${back.id}`, label: `回滚到 ${shown(back)}`, style: 'default' as const }] : []),
+    { id: 'rel:view', label: '看详情', style: 'ghost', panel: 'release', args: { id: r.id } },
+  ]
   return {
-    id: `c-${r.id}`, type: 'generic', v: 1, state: r.status === 'running' ? 'open' : 'done', level: r.status === 'failed' ? 'danger' : 'info',
+    id: `c-${r.id}`, type: 'release', v: 1, state: r.status === 'running' ? 'open' : 'done', level: r.status === 'failed' ? 'danger' : 'info',
     data: {
+      rel: r.id, ws: w.id, app: w.name, target: r.targetName, env, prod, rollback: !!r.rollbackOf, comp: r.build ?? '',
+      version: shown(r), sha: r.sha, note: r.note ?? '', by: r.by, status: r.status, started: r.started, ended: r.ended ?? 0,
+      steps: r.steps.filter((s) => s.s !== 'skipped').map((s) => ({ k: s.k, label: STEP_NAME[s.k], s: s.s, msg: s.msg ?? '', t0: s.t0 ?? 0, t1: s.t1 ?? 0, est: est[s.k] ?? 0 })),
+      url: r.buildUrl ?? '', servers: svs.map((x) => x.name),
+      reason: nl > 0 ? err.slice(0, nl) : err.slice(0, 400), log: nl > 0 ? err.slice(nl + 1).split('\n').slice(0, 45).join('\n') : '',
+      autoFix, back: back ? shown(back) : '', pkg: d?.package ? `${packages.PLATFORMS[d.package.platform].label} · ${packages.CHANNELS[d.package.channel]}` : '',
+      // 老版本端照通用卡片画
       title: `发布 ${w.name} → ${r.targetName}${r.rollbackOf ? '（回滚）' : ''}`, tag: r.status === 'running' ? '发布中' : r.status === 'success' ? '发布成功' : '发布失败',
-      rows: [...(r.build ? [['编译组件', r.build]] : []), ['版本', r.version || '…'], ...r.steps.filter((s) => s.s !== 'skipped').map((s) => [STEP_NAME[s.k], `${MARK[s.s]}${s.msg ? ' ' + s.msg : ''}`]), ...(r.error ? [['原因', r.error.slice(0, 300)]] : [])],
-      ...(r.buildUrl ? { url: r.buildUrl } : {}),
+      rows: [...(r.build ? [['编译组件', r.build]] : []), ['版本', shown(r) || '…'], ...r.steps.filter((s) => s.s !== 'skipped').map((s) => [STEP_NAME[s.k], `${MARK[s.s]}${s.msg ? ' ' + s.msg : ''}`]), ...(r.error ? [['原因', r.error.slice(0, 300)]] : [])],
     },
-    actions: [], result: r.status === 'running' ? null : r.status === 'success' ? '发布成功' : `发布失败：${(r.error ?? '').slice(0, 120)}`,
+    actions, result: null,
   }
+}
+/** 发布卡片上的按钮：让员工修 / 重新发布 / 回滚（「看详情」是网页自己打开发布详情，不到这里） */
+export function cardAct(r: Release, actId: string, by: string): string {
+  const w = get<Workspace>('workspaces', r.ws)
+  const d = w?.deploys?.find((x) => x.id === r.target)
+  if (!w || !d) throw new Error('这个项目或发布环境已经没了')
+  if (actId === 'rel:fix') {
+    if (!r.emp) throw new Error('这次不是员工发的，没人接着修：点「重新发布」或者交给项目的员工')
+    runner.send(r.emp, [`发布 ${w.name} → ${d.name}${r.version ? `（${r.version}）` : ''} 失败了，主人让你修。`, `原因：${(r.error ?? '').slice(0, 1500)}`,
+      '先找到原因（build_status / release_status 看日志），改好提交推送，build_try 编通后再 release_publish 发一次，发完告诉主人结果。'].join('\n\n'))
+    return '已交给员工去修'
+  }
+  if (actId === 'rel:retry') {
+    const emp = r.emp ? get<Employee>('employees', r.emp) : undefined
+    const n = start(w, d.id, { by, emp, sid: r.sid, note: r.note })
+    return `已重新发布（${n.id}）`
+  }
+  if (actId.startsWith('rel:rollback:')) {
+    const to = get<Release>('releases', actId.slice('rel:rollback:'.length))
+    if (!to || to.status !== 'success') throw new Error('要回滚到的那个版本不在了')
+    const emp = r.emp ? get<Employee>('employees', r.emp) : undefined
+    start(w, d.id, { by, emp, sid: r.sid, rollbackOf: to, note: `回滚到 ${to.version}` })
+    return `已开始回滚到 ${to.version}`
+  }
+  throw new Error('不认识的按钮')
 }
 
 function step(r: Release, w: Workspace, k: ReleaseStep['k'], s: ReleaseStep['s'], msg?: string) {
@@ -156,7 +224,10 @@ async function run(r: Release, w: Workspace, d: Deploy, reuse?: Release) {
     pkgName = pickFile(res.files, build.fileOf(b)) ?? ''
     if (!pkgName) { step(r, w, 'checkout', 'failed', `没有 ${build.fileOf(b)}`); throw new Error(`产物里没有 ${build.fileOf(b)}（有：${res.files.join('、')}）`) }
     r.pkgName = pkgName
+    // 编译设置没配版本号文件时 res.version 是提交号：从产物文件名 / 仓库里认出真正的版本号（卡片上给主人看 0.30.0，不是 c0b6caa）
+    if (version.shaLike(r.version)) { r.version = await version.decide({ built: res.version, pkgName, w, sha: r.sha }); save(r) }
     step(r, w, 'checkout', 'done', `${pkgName} · SHA256 对上了`)
+    if (d.package) return toPackage(r, w, d, res.dir, pkgName)
     // 发到每台服务器、解开
     step(r, w, 'transfer', 'running')
     const file = path.join(res.dir, pkgName)
@@ -180,7 +251,7 @@ async function run(r: Release, w: Workspace, d: Deploy, reuse?: Release) {
   } else {
     const lr = await git(['ls-remote', w.repo, w.branch || 'HEAD'], { cred: w.credential, timeoutMs: 60_000 })
     r.sha = lr.out.split(/\s+/)[0] || ''
-    r.version = r.sha.slice(0, 7)
+    r.version = await version.decide({ w, sha: r.sha })
     save(r)
   }
 
@@ -202,6 +273,29 @@ async function run(r: Release, w: Workspace, d: Deploy, reuse?: Release) {
     }
     step(r, w, 'health', 'done')
   }
+  finish(r, w, d, true)
+}
+
+/** 存进安装包的环境：在 Opero 这台签名（apk / aab），放进项目安装包那一格（旧的删掉），发布就算成功 */
+async function toPackage(r: Release, w: Workspace, d: Deploy, dir: string, pkgName: string) {
+  const pk = d.package!
+  let name = pkgName
+  if (d.sign) {
+    step(r, w, 'sign', 'running')
+    const local = get<Server>('servers', 'local')
+    if (!local) { step(r, w, 'sign', 'failed', '找不到 Opero 这台'); throw new Error('签名要在 Opero 这台做，但服务器列表里没有它') }
+    const s = await signDir(local, dir, d.sign)
+    if (!s.ok) { step(r, w, 'sign', 'failed', s.msg); throw new Error(`签名失败：${s.msg}`) }
+    step(r, w, 'sign', 'done', s.msg)
+    name = name.replace(/-unsigned(?=\.[^.]+$)/, '')
+  }
+  step(r, w, 'store', 'running')
+  try {
+    const x = packages.store(w, pk.platform, pk.channel, path.join(dir, pkgName), { name, version: r.version, commit: r.sha, signed: d.sign ? true : undefined, by: `发布 · ${d.name}`, note: r.note })
+    step(r, w, 'store', 'done', `${packages.pub(x).slot} · ${x.file}`)
+  } catch (e) { step(r, w, 'store', 'failed', (e as Error).message); throw e }
+  fs.rmSync(dir, { recursive: true, force: true })
+  r.kept = false
   finish(r, w, d, true)
 }
 

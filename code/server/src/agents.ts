@@ -133,7 +133,7 @@ export function health(sv: Server, b: any, ip?: string) {
   const next: Server = {
     ...sv, lastSeen: Date.now(), online: true, error: undefined, ip: ip || sv.ip, sys: cleanSys(b.sys) ?? sv.sys,
     cpu: num(b.cpu), mem: num(b.mem), disk: num(b.disk), os: String(b.os || sv.os || ''), agentVersion: String(b.version || sv.agentVersion || ''),
-    executors: b.executors && typeof b.executors === 'object' ? { claude: b.executors.claude ?? null, codex: b.executors.codex ?? null } : sv.executors,
+    executors: b.executors && typeof b.executors === 'object' ? { claude: b.executors.claude ?? null, codex: b.executors.codex ?? null, qwen: b.executors.qwen ?? null, codebuddy: b.executors.codebuddy ?? null } : sv.executors,
     // 那台本机的出口代理（只听 127.0.0.1）：端口和口令，给跑在那台的执行器配 HTTPS_PROXY
     proxyPort: Number(b.proxy?.port) || sv.proxyPort, proxyToken: typeof b.proxy?.token === 'string' ? b.proxy.token : sv.proxyToken,
   }
@@ -233,7 +233,19 @@ export function spawnRemote(serverId: string, o: SpawnOpts): ChildProcess {
 }
 
 /** 发布产物在服务器之间搬：这台把文件传给 Opero（push）/ 从 Opero 拿（pull）；返回 Agent 的输出和退出码 */
+/** 这台 Agent 的版本够不够（a ≥ b，按 x.y.z 比）；没报版本的当不够 */
+export function agentAtLeast(sv: Server | undefined, min: string): boolean {
+  const v = String(sv?.agentVersion ?? '').match(/\d+(\.\d+)*/)?.[0]
+  if (!v) return false
+  const a = v.split('.').map(Number), b = min.split('.').map(Number)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) { const d = (a[i] ?? 0) - (b[i] ?? 0); if (d) return d > 0 }
+  return true
+}
+/** 传文件（push：那台 → Opero；pull：Opero → 那台）是 Agent 0.9.0 加的：旧 Agent 收到不认识的活不回话，会一直等到超时，所以先看版本，不够直接说怎么办 */
+const BLOB_MIN = '0.9.0'
 export function blobTask(serverId: string, task: { t: 'push' | 'pull'; key: string; path: string; sha256?: string }, timeoutMs = 30 * 60_000): Promise<{ code: number; out: string }> {
+  const sv0 = get<Server>('servers', serverId)
+  if (sv0 && !agentAtLeast(sv0, BLOB_MIN)) return Promise.resolve({ code: 1, out: `「${sv0.name}」的 Agent 是 ${sv0.agentVersion || '很旧的版本'}，不会传文件（要 ${BLOB_MIN} 以上）：到「应用 → 服务器和 Agent → ${sv0.name}」点「升级 Agent」（升级时这台上在干活的员工会被打断，挑空闲的时候点）` })
   const id = uid('p')
   const p = new RemoteProc(serverId, id)
   procs.set(id, p)

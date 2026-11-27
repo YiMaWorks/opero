@@ -8,14 +8,25 @@ import { getSecret } from './vault.ts'
 import type { Credential, Server } from './types.ts'
 
 // ---------- 签名：apk 用 apksigner，aab 用 jarsigner；证书在保险箱里（凭证「签名证书」），密码只经环境变量 ----------
-/** 签名证书凭证的值：JSON { keystore: base64, storePass, alias, keyPass } */
-export interface SignSecret { keystore: string; storePass: string; alias: string; keyPass?: string }
+/** 签名证书凭证的值（JSON）。type 不写 = 安卓（以前存的都是安卓）：
+ *  android { keystore: base64, storePass, alias, keyPass? }
+ *  apple   { p12: base64, password, profile?: base64（.mobileprovision）, teamId?, use?: 'development' | 'distribution' }——iOS / Mac 签名，要在 Mac 上用
+ *  asc     { p8: 文本, keyId, issuerId }——App Store Connect API Key：传 TestFlight / App Store（xcrun altool / fastlane）
+ *  windows { pfx: base64, password, timestamp?: 时间戳服务器 }——Windows 代码签名（signtool），要在 Windows 上用 */
+export interface SignSecret { type?: 'android' | 'apple' | 'asc' | 'windows'; keystore: string; storePass: string; alias: string; keyPass?: string }
+export const CERT_TYPES = { android: '安卓签名', apple: '苹果证书', asc: 'App Store Connect API Key', windows: 'Windows 代码签名' } as const
+/** 这张证书是哪种（看存的值；读不出来当安卓） */
+export function certType(credId: string): keyof typeof CERT_TYPES {
+  try { const t = JSON.parse(getSecret(credId) ?? '{}').type; return t in CERT_TYPES ? t : 'android' } catch { return 'android' }
+}
+const notAndroid = (s: SignSecret) => s.type && s.type !== 'android' ? `这是「${CERT_TYPES[s.type]}」，不能签安卓包：${s.type === 'windows' ? 'Windows 代码签名要在 Windows 上用 signtool' : s.type === 'asc' ? 'App Store Connect API Key 是用来上传 TestFlight / App Store 的' : '苹果证书要在 Mac 上用 Xcode / codesign'}` : ''
 export async function signDir(sv: Server, out: string, credId: string): Promise<{ ok: boolean; msg: string }> {
   const c = get<Credential>('credentials', credId)
   const raw = getSecret(credId)
   if (!c || !raw) return { ok: false, msg: '签名证书不在了' }
   let s: SignSecret
   try { s = JSON.parse(raw) } catch { return { ok: false, msg: '签名证书的内容不对（要在「权限和凭证」里重新上传）' } }
+  if (notAndroid(s)) return { ok: false, msg: notAndroid(s) }
   const ks = `/tmp/opero-ks-${crypto.randomBytes(6).toString('hex')}`
   const env = { OPERO_KS_B64: s.keystore, KS_PASS: s.storePass, KEY_PASS: s.keyPass || s.storePass, KS_ALIAS: s.alias }
   const script = `set -e
@@ -46,6 +57,7 @@ export async function signFile(sv: Server, file: string, credId: string): Promis
   if (!c || !raw || c.group !== '签名证书') return { ok: false, msg: '没有这个签名证书' }
   let s: SignSecret
   try { s = JSON.parse(raw) } catch { return { ok: false, msg: '签名证书的内容不对（在「权限和凭证」里重新上传）' } }
+  if (notAndroid(s)) return { ok: false, msg: notAndroid(s) }
   if (!/\.(apk|aab)$/i.test(file)) return { ok: false, msg: '只能签 .apk / .aab' }
   const out = file.replace(/\.(apk|aab)$/i, '-signed.$1')
   const ks = `/tmp/opero-ks-${crypto.randomBytes(6).toString('hex')}`

@@ -1,7 +1,7 @@
 {
   "name": "opero-server",
   "private": true,
-  "version": "0.25.6",
+  "version": "0.32.0",
   "description": "Opero backend: auth, chat, Claude Code / Codex employees, MCP agent proxy, vault, servers, databases, triggers",
   "type": "module",
   "engines": {
@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test src/*.test.ts"
   },
   "dependencies": {
     "imapflow": "^1.7.8",
@@ -19,7 +20,8 @@
     "nodemailer": "^7.0.13",
     "oracledb": "^6.10.0",
     "pg": "^8.23.0",
-    "ssh2": "^1.17.0"
+    "ssh2": "^1.17.0",
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@types/mailparser": "^3.9.0",

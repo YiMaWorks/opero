@@ -9,8 +9,8 @@ import ts from 'typescript'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const web = path.resolve(here, '..')
 const roots = [path.join(web, 'src'), path.resolve(web, '../server/src')]
-// 不显示给人的：Agent / 命令行程序 / MCP 桥 / 翻译本身
-const skip = /(\/server\/src\/(agent|cli|mcp|vault|config)\.ts$)|(\/src\/i18n\/)/
+// 不显示给人的：Agent / 命令行程序 / MCP 桥 / 翻译本身 / 测试
+const skip = /(\/server\/src\/(agent|cli|mcp|vault|config)\.ts$)|(\/src\/i18n\/)|(\.test\.ts$)/
 const CJK = /[㐀-鿿]/
 
 const files = []

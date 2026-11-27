@@ -38,4 +38,8 @@ object OperoIcons {
     val Back by lazy { icon("back", "M15 5l-7 7 7 7") }
     val BellOff by lazy { icon("bellOff", "M9.5 19a2.5 2.5 0 0 0 5 0M6 8a6 6 0 0 1 10.3-4.2M18 10v3.5l1.5 2.5H7M4 4l16 16") }
     val Send by lazy { icon("send", "M4 12l16-8-6 16-2.5-6.5z") }
+    val Download by lazy { icon("download", "M12 4v11M7 10.5l5 5 5-5", "M5 20h14") }
+    val Share by lazy { icon("share", "M12 15V4M8 8l4-4 4 4", "M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7") }
+    val Forward by lazy { icon("forward", "M15 5l6 6-6 6", "M21 11H9a6 6 0 0 0-6 6v2") }
+    val Close by lazy { icon("close", "M6 6l12 12M18 6L6 18") }
 }

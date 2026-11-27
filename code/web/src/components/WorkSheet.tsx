@@ -5,23 +5,25 @@ import type { Employee } from '../types'
 import { compactContext, newTopic, setWork, switchExecutor, switchWork, toast } from '../store'
 import { call } from '../live'
 import { LIVE } from '../mode'
-import type { ClaudeAccount } from './ExecutorSetup'
-import { APPROVALS, EFFORTS, modelsFor } from '../work'
+import { ExecPicker, type ClaudeAccount } from './ExecutorSetup'
+import { APPROVALS, EFFORTS, execKind, execName, modelsFor, type ExecName } from '../work'
 import { Meter, Segmented, Sheet } from './ui'
-
-const EXECUTORS = ['Claude Code', 'Codex'] as const
 
 /** 一行一项：左边名字、右边选；思考方式、审核方式下面一行小字说明当前这档是什么意思 */
 export function WorkSettings({ emp, onSwitched }: { emp: Employee; onSwitched?: () => void }) {
   const models = modelsFor(emp.executor)
   const save = (p: Partial<Pick<Employee, 'model' | 'effort' | 'approval'>>) => { setWork(emp.id, p); toast('已记住，下次派活也用它') }
-  const cur = /codex/i.test(emp.executor) ? 'Codex' : 'Claude Code'
-  // 登录了好几个 Claude 账号时：这个员工用哪个
+  const cur = execName(emp.executor)
+  // 登录了好几个 Claude / Codex 账号时：这个员工用哪个
+  const ak = execKind(cur)
+  const multi = ak === 'claude' || ak === 'codex'
   const [accts, setAccts] = useState<ClaudeAccount[]>([])
-  useEffect(() => { if (LIVE && cur === 'Claude Code') void call<ClaudeAccount[]>('GET', '/api/ai/accounts?kind=claude').then((r) => r && setAccts(r)) }, [emp.id, cur])
-  const [acct, setAcct] = useState(emp.claudeAccount ?? '')
-  const pickAcct = async (id: string) => { setAcct(id); await call('PUT', `/api/employees/${emp.id}`, { claudeAccount: id }, id ? '已指定，下一轮起用它' : '改回用默认账号') }
-  const swap = (to: (typeof EXECUTORS)[number]) => {
+  useEffect(() => { setAccts([]); if (LIVE && multi) void call<ClaudeAccount[]>('GET', `/api/ai/accounts?kind=${ak}`).then((r) => r && setAccts(r)) }, [emp.id, ak, multi])
+  const field = ak === 'codex' ? 'codexAccount' : 'claudeAccount'
+  const [acct, setAcct] = useState((ak === 'codex' ? emp.codexAccount : emp.claudeAccount) ?? '')
+  useEffect(() => setAcct((ak === 'codex' ? emp.codexAccount : emp.claudeAccount) ?? ''), [emp.id, ak, emp.codexAccount, emp.claudeAccount])
+  const pickAcct = async (id: string) => { setAcct(id); await call('PUT', `/api/employees/${emp.id}`, { [field]: id }, id ? '已指定，下一轮起用它' : '改回用默认账号') }
+  const swap = (to: ExecName) => {
     if (to === cur) return
     if (!confirm(`把「${emp.name}」换成 ${to}？\n\n会开一段新的 work（新执行器、上下文清空），Opero 自动发一条交接：它负责什么、目录和项目在哪、上一段做到哪。它读完自己的文档接着干。现在在干活的话先等这一轮做完。`)) return
     switchExecutor(emp.id, to)
@@ -33,8 +35,8 @@ export function WorkSettings({ emp, onSwitched }: { emp: Employee; onSwitched?: 
     <div className="ws-form">
       <div className="ws-row">
         <span className="ws-k">执行器</span>
-        <Segmented value={cur} onChange={swap} options={EXECUTORS.map((x) => ({ value: x, label: x }))} />
-        <span className="ws-hint">换了开一段新的 work，自动交接；目录、项目、记忆都在。要先在「应用 → AI 执行器」装好、登录</span>
+        <ExecPicker compact value={cur} onChange={swap} />
+        <span className="ws-hint">换了会开新 work、自动交接（先在「应用 → AI 执行器」装好）</span>
       </div>
       <div className="ws-row">
         <span className="ws-k">模型</span>
@@ -43,13 +45,14 @@ export function WorkSettings({ emp, onSwitched }: { emp: Employee; onSwitched?: 
           : <select className="ctl-select" value={emp.model} onChange={(e) => save({ model: e.target.value })}>{models.map((m) => <option key={m} value={m}>{m}</option>)}</select>}
         {models.length === 1 && <span className="ws-hint">{emp.executor} 用它自己配置里的模型</span>}
       </div>
-      {accts.length > 1 && (
+      {multi && accts.length > 1 && (
         <div className="ws-row">
           <span className="ws-k">账号</span>
           <select className="ctl-select" value={acct} onChange={(e) => pickAcct(e.target.value)}>
             <option value="">{`默认账号（${accts.find((a) => a.isDefault)?.name ?? ''}）`}</option>
-            {accts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.limitedUntil > 0 ? '（用量到上限）' : ''}</option>)}
+            {accts.map((a) => <option key={a.id} value={a.id}>{a.name}{a.sub ? '' : '（API Key）'}{a.limitedUntil > 0 ? '（用量到上限）' : ''}</option>)}
           </select>
+          <span className="ws-hint">用的账号用量到上限，后面的活自动先换别的账号</span>
         </div>
       )}
       <div className="ws-row">

@@ -33,8 +33,9 @@ export const AI_BASE: Record<string, { base: string; style: 'anthropic' | 'opena
 }
 
 const net400 = (e: unknown) => {
-  const m = (e as Error).message || String(e)
-  return /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|timeout|aborted/i.test(m) ? `连不上（${m}）：这台 Opero 可能访问不到那边，检查地址和网络` : m
+  const x = e as Error & { cause?: { message?: string } }
+  const m = [x.message || String(e), x.cause?.message].filter(Boolean).join('：')
+  return /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|timeout|aborted|出口/i.test(m) ? `连不上（${m}）：这台 Opero 可能访问不到那边。检查地址；网络不通的话到「应用 → 服务器和 Agent → 网络出口」让它经别的服务器出去` : m
 }
 async function http(url: string, init: RequestInit = {}, ms = 12_000) {
   const r = await fetch(url, { ...init, signal: AbortSignal.timeout(ms) })

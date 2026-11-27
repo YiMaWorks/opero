@@ -15,7 +15,7 @@ export interface Employee {
   title: string
   prompt: string
   persona?: string
-  executor: string // 'Claude Code' | 'Codex'
+  executor: string // 'Claude Code' | 'Codex' | 'Qwen Code' | 'CodeBuddy Code'
   host: string
   workspace: string // 项目 id；空 = 在自己的目录里干活
   menus: string[]
@@ -25,12 +25,16 @@ export interface Employee {
   notify: 'all' | 'decide' | 'none'
   bg?: string
   avatarImg?: string
+  /** 职位标签（「安卓开发」「运维」「日志值班」…）：显示在名字后面、小一号；名字是人名。员工互相找人时名字和职位都认 */
+  role?: string
   contextUsed?: number
   repo: string
   repoSynced?: string
   works?: { no: number; from: string; to?: string; reason: string; host: string }[]
   /** 执行器自己的会话编号（Claude Code session_id / Codex thread_id），下一轮 --resume 接着聊 */
   resumeId?: string
+  /** 执行器会话最后报的累计花费（Claude Code 续上会话时会把之前的花费带回来，算「这一轮花了多少」要减掉它）：sid 会话号、total 美元、tok 累计 token */
+  costMark?: { sid: string; total: number; tok: number }
   /** 人设：性别（写进记忆仓库「我的人设」） */
   gender?: string
   /** 记忆仓库的远端（可选）：git 地址 + 凭证；不配就只在干活那台机器上 */
@@ -40,6 +44,8 @@ export interface Employee {
   canManage?: boolean
   /** 用哪个 Claude 账号（凭证 id，「AI 执行器」里登录的那几个）；不设 = 默认账号 */
   claudeAccount?: string
+  /** 用哪个 Codex 账号（同上；ChatGPT 订阅或 API Key）；不设 = 默认账号 */
+  codexAccount?: string
   /** 能只读看的别的项目（最多 8 个，要和员工在同一台机器上） */
   reads?: string[]
   /** 这个员工每月预算（美元，0 / 不填 = 不单独限） */
@@ -138,7 +144,7 @@ export interface Server {
   joinedAt?: number
   lastSeen?: number
   agentUrl?: string
-  executors?: { claude?: string | null; codex?: string | null }
+  executors?: { claude?: string | null; codex?: string | null; qwen?: string | null; codebuddy?: string | null }
   /** 机器信息：Agent 每次心跳报、Opero 这台自己读（主机名、系统、内核、CPU、内存 / 磁盘大小、内网地址、开机时长） */
   sys?: SysInfo
   /** Agent 那台本机出口代理（127.0.0.1）的端口和口令 */
@@ -237,10 +243,14 @@ export interface Workspace {
 export interface Deploy {
   id: string
   name: string
+  /** 这是哪个环境（生产 / 预发 / 测试 / 开发，或者自己起的标签）；不填 = 看发到的服务器的环境标签。标成像生产的 = 当生产保护 */
+  env?: string
   /** 发哪个编译组件（Workspace.builds 的编号）；'none' = 不编译，只跑部署命令；不填 = 项目只有一个组件时就是它 */
   build?: string
-  /** 发到哪几台（每台都要在「目录」里把部署目录登记成「能部署」） */
+  /** 发到哪几台（每台都要在「目录」里把部署目录登记成「能部署」）；存进安装包的环境不用 */
   servers: string[]
+  /** 不发到服务器，编完（签好名）存进项目的安装包：哪个端、哪个渠道（packages.ts；那一格只留最新） */
+  package?: { platform: 'android' | 'ios' | 'mac' | 'windows' | 'linux'; channel: 'test' | 'prod' }
   /** 部署目录（OPERO_DIR = KL_DIR） */
   dir?: string
   /** 包里的部署脚本（默认 deploy.sh）：bash <脚本> <包目录> <发布编号> */
@@ -257,7 +267,7 @@ export interface Deploy {
   lastOk?: boolean
 }
 
-export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
+export interface ReleaseStep { k: 'build' | 'checkout' | 'transfer' | 'sign' | 'deploy' | 'health' | 'rollback' | 'store'; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg?: string; t0?: number; t1?: number }
 /** 一次发布 */
 export interface Release {
   id: string

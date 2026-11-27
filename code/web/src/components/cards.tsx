@@ -1,7 +1,8 @@
 // 内核卡片：一份描述（Card）→ 一个组件。按钮统一交给 onAction（= 走网关调工具 / 打开面板）。
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Card, CardAction } from '../types'
 import { IconCheck, IconChevron } from './icons'
+import { Check, CircleDashed, ExternalLink, X } from 'lucide-react'
 
 type OnAction = (card: Card, action: CardAction, extra?: Record<string, unknown>) => void
 
@@ -205,6 +206,7 @@ export function CardView({ card, onAction }: { card: Card; onAction: OnAction })
       )
 
     case 'release': {
+      if (d.rel) return <ReleaseCard card={card} onAction={onAction} />
       const steps = d.steps as string[]
       const step = d.step as number // 正在做第几步；= steps.length 表示都做完
       return (
@@ -338,4 +340,72 @@ function tagTone(tag?: string) {
   if (/要你|等你|待/.test(tag)) return 't-warn'
   if (/完成|已|通过|正常/.test(tag)) return 't-ok'
   return 't-mute'
+}
+
+// ---------- 发布卡片（后台 releases.card：data.rel 有值的新版） ----------
+interface RelStep { k: string; label: string; s: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; msg: string; t0: number; t1: number; est: number }
+const dur = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s} 秒` : s < 3600 ? `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, '0')} 秒` : `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分` }
+const STATUS: Record<string, { label: string; cls: string }> = { running: { label: '发布中', cls: 'run' }, success: { label: '发布成功', cls: 'ok' }, failed: { label: '发布失败', cls: 'bad' } }
+
+/** 一次发布：环境、版本、每一步（状态、用时、上次用了多久）、总进度；失败给原因和日志，成功给回滚。进行中时每秒走表 */
+function ReleaseCard({ card, onAction }: { card: Card; onAction: OnAction }) {
+  const d = card.data
+  const steps = (d.steps ?? []) as RelStep[]
+  const running = d.status === 'running'
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => { if (!running) return; const t = window.setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [running])
+  const end = running ? now : Number(d.ended) || now
+  // 总进度：做完的步骤 + 正在做的那步按上次用时估一个比例（最多算 90%）
+  const doneN = steps.filter((x) => x.s === 'done').length
+  const cur = steps.find((x) => x.s === 'running')
+  const part = cur && cur.est ? Math.min(0.9, (now - cur.t0) / cur.est) : cur ? 0.3 : 0
+  const pct = d.status === 'success' ? 100 : Math.round(((doneN + part) / Math.max(1, steps.length)) * 100)
+  const st = STATUS[String(d.status)] ?? STATUS.running
+  const [log, setLog] = useState(false)
+  return (
+    <div className={'card rel2 k-' + (d.status === 'failed' ? 'danger' : d.prod ? 'warn' : 'info') + (running ? '' : ' is-done')}>
+      <div className="rel2-head">
+        <span className="card-kind k-info">发布</span>
+        {d.env && <span className={'rel2-env' + (d.prod ? ' prod' : '')}>{d.env}</span>}
+        {d.rollback && <span className="rel2-env">回滚</span>}
+        <span className={'rel2-status ' + st.cls}>{running ? <i className="spinner" /> : d.status === 'success' ? <Check size={13} strokeWidth={2.6} /> : <X size={13} strokeWidth={2.6} />}{st.label}<span className="rel2-took">{dur(end - Number(d.started))}</span></span>
+      </div>
+      <div className="rel2-title"><b>{d.app}</b><span className="rel2-arrow">→</span><b>{d.target}</b></div>
+      <div className="rel2-ver">
+        {d.version ? <span className="mono rel2-v" data-no-i18n="">{d.version}</span> : <span className="rel2-wait">取最新提交…</span>}
+        {d.sha && !String(d.sha).startsWith(String(d.version)) && <span className="mono rel2-sha" title={`提交 ${d.sha}`} data-no-i18n="">{String(d.sha).slice(0, 7)}</span>}
+        {d.comp && <span>{d.comp}</span>}
+        <span>{d.by}</span>
+      </div>
+      {d.note && <p className="rel2-note" data-no-i18n="">{d.note}</p>}
+      <div className={'rel2-bar ' + st.cls}><b style={{ width: `${Math.max(3, pct)}%` }} /></div>
+      <ol className="rel2-steps">
+        {steps.map((x) => (
+          <li key={x.k} className={'rel2-step ' + x.s}>
+            <span className="rel2-dot">{x.s === 'done' ? <Check size={12} strokeWidth={3} /> : x.s === 'failed' ? <X size={12} strokeWidth={3} /> : x.s === 'running' ? <i className="spinner" /> : <CircleDashed size={14} strokeWidth={2} />}</span>
+            <span className="rel2-step-main">
+              <b>{x.label}</b>
+              {x.msg && <small data-no-i18n="">{x.msg}</small>}
+              {x.k === 'build' && d.url && <a href={d.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>看流水线<ExternalLink size={11} /></a>}
+            </span>
+            <span className="rel2-time">
+              {x.s === 'done' || x.s === 'failed' ? (x.t0 && x.t1 ? dur(x.t1 - x.t0) : '')
+                : x.s === 'running' ? `${dur(now - x.t0)}${x.est ? ` / 约 ${dur(x.est)}` : ''}`
+                : x.est ? `约 ${dur(x.est)}` : ''}
+            </span>
+          </li>
+        ))}
+      </ol>
+      {d.status === 'failed' && (
+        <div className="rel2-fail">
+          <b data-no-i18n="">{d.reason || '发布失败'}</b>
+          {d.log && <button type="button" className="rel2-logbtn" onClick={() => setLog(!log)}>{log ? '收起日志' : `看日志（${String(d.log).split('\n').length} 行）`}<IconChevron /></button>}
+          {d.log && log && <pre className="console small" data-no-i18n="">{d.log}</pre>}
+          {d.autoFix && <span className="rel2-hint">已把原因发给员工接着修</span>}
+        </div>
+      )}
+      {d.status === 'success' && <div className="rel2-ok"><Check size={14} strokeWidth={2.6} />{d.pkg ? `已存进安装包 · ${d.pkg}${d.version ? ` · ${d.version}` : ''}` : `线上已经是 ${d.version}${(d.servers ?? []).length ? ` · ${(d.servers as string[]).join('、')}` : ''}`}</div>}
+      <Actions card={card} onAction={onAction} />
+    </div>
+  )
 }

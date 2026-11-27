@@ -45,5 +45,16 @@
  "搜索员工、聊天记录": "Rechercher employés et discussions",
  "{0} 个置顶聊天": "{0} discussions épinglées",
  "还没有会话：点右上角 ＋ 找个员工聊": "Pas encore de discussion : touche ＋ en haut à droite pour parler à un employé",
- "没找到": "Rien trouvé"
+ "没找到": "Rien trouvé",
+ "已发布": "Publié",
+ "已用 {0}": "{0} écoulé",
+ "失败原因已经发给员工，它会接着修": "La cause de l'échec a été envoyée à l'employé, qui continue de corriger",
+ "线上已经是 {0}": "En ligne : {0}",
+ "保存失败": "Échec de l'enregistrement",
+ "已存到相册": "Enregistré dans la galerie",
+ "已存到「下载」": "Enregistré dans « Téléchargements »",
+ "看大图": "Voir en grand",
+ "存到相册": "Enregistrer dans la galerie",
+ "点一下下载": "Touche pour télécharger",
+ "长按拖动排序": "Appui long et glisser pour réordonner"
 }

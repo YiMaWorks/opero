@@ -145,7 +145,76 @@ function keystoreAliases(b: Uint8Array): string[] {
   }
   return out
 }
-export function SignCertFields({ onChange }: { onChange: (secret: string) => void }) {
+/** 选一个文件读成 base64（或文本）；太大的不要 */
+async function readFile(f: File, max: number, text = false): Promise<string | null> {
+  if (f.size > max) { toast('文件太大，不像证书'); return null }
+  if (text) return f.text()
+  const b = new Uint8Array(await f.arrayBuffer())
+  let bin = ''
+  for (const x of b) bin += String.fromCharCode(x)
+  return btoa(bin)
+}
+/** 签名证书：按类型出不同的表单，拼成一份 JSON（带 type）加密存。安卓的照旧（不写 type） */
+export function SignCertFields({ kind, onChange }: { kind?: string; onChange: (secret: string) => void }) {
+  if (kind === '苹果证书') return <AppleCertFields onChange={onChange} />
+  if (kind === 'App Store Connect API Key') return <AscKeyFields onChange={onChange} />
+  if (kind === 'Windows 代码签名') return <WinCertFields onChange={onChange} />
+  return <AndroidCertFields onChange={onChange} />
+}
+function FilePick({ label, accept, name, onFile }: { label: string; accept: string; name: string; onFile: (f: File) => void }) {
+  return (
+    <Field label={label}>
+      <label className="btn default sm">{name || '选文件'}<input type="file" hidden accept={accept} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onFile(f) }} /></label>
+    </Field>
+  )
+}
+function AppleCertFields({ onChange }: { onChange: (secret: string) => void }) {
+  const [v, setV] = useState({ p12: '', file: '', password: '', profile: '', profileFile: '', teamId: '', use: 'distribution' })
+  const up = (p: Partial<typeof v>) => { const n = { ...v, ...p }; setV(n); onChange(n.p12 && n.password ? JSON.stringify({ type: 'apple', p12: n.p12, password: n.password, profile: n.profile || undefined, teamId: n.teamId.trim() || undefined, use: n.use }) : '') }
+  return (
+    <>
+      <FilePick label="证书（.p12，从钥匙串导出的，带私钥）" accept=".p12,.pfx" name={v.file} onFile={async (f) => { const b = await readFile(f, 256 * 1024); if (b) up({ p12: b, file: f.name }) }} />
+      <Field label="导出时设的密码"><input type="password" value={v.password} onChange={(e) => up({ password: e.target.value })} autoComplete="new-password" /></Field>
+      <Field label="用途"><Segmented value={v.use} onChange={(x) => up({ use: x })} options={[{ value: 'distribution', label: '上架 / TestFlight（Distribution）' }, { value: 'development', label: '真机调试（Development）' }]} /></Field>
+      <FilePick label="描述文件（.mobileprovision，可选）" accept=".mobileprovision,.provisionprofile" name={v.profileFile} onFile={async (f) => {
+        const b = await readFile(f, 512 * 1024)
+        if (!b) return
+        // 描述文件里有明文的 plist：读出 Team ID，不用填
+        const team = (await f.text()).match(/<key>TeamIdentifier<\/key>\s*<array>\s*<string>([A-Z0-9]{10})<\/string>/)?.[1]
+        up({ profile: b, profileFile: f.name, ...(team ? { teamId: team } : {}) })
+      }} />
+      <Field label="Team ID" hint="10 位，选了描述文件会自动读出来；开发者网站 Membership 里也能看"><input className="mono" value={v.teamId} onChange={(e) => up({ teamId: e.target.value.toUpperCase() })} placeholder="ABCDE12345" autoComplete="off" /></Field>
+    </>
+  )
+}
+function AscKeyFields({ onChange }: { onChange: (secret: string) => void }) {
+  const [v, setV] = useState({ p8: '', file: '', keyId: '', issuerId: '' })
+  const up = (p: Partial<typeof v>) => { const n = { ...v, ...p }; setV(n); onChange(n.p8 && n.keyId.trim() && n.issuerId.trim() ? JSON.stringify({ type: 'asc', p8: n.p8, keyId: n.keyId.trim(), issuerId: n.issuerId.trim() }) : '') }
+  return (
+    <>
+      <FilePick label="API 密钥（AuthKey_XXXXXXXXXX.p8）" accept=".p8" name={v.file} onFile={async (f) => {
+        const t = await readFile(f, 16 * 1024, true)
+        if (!t) return
+        if (!/BEGIN PRIVATE KEY/.test(t)) { toast('这不像 .p8 密钥文件'); return }
+        up({ p8: t, file: f.name, keyId: f.name.match(/AuthKey_([A-Z0-9]+)\.p8/i)?.[1]?.toUpperCase() ?? v.keyId })
+      }} />
+      <Field label="Key ID" hint="从文件名里读出来的；读不出来就填 App Store Connect 列表里那一列"><input className="mono" value={v.keyId} onChange={(e) => up({ keyId: e.target.value.toUpperCase() })} placeholder="ABC123DEFG" autoComplete="off" /></Field>
+      <Field label="Issuer ID" hint="App Store Connect「集成 → App Store Connect API」页面上方那一串"><input className="mono" value={v.issuerId} onChange={(e) => up({ issuerId: e.target.value })} placeholder="69a6de70-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autoComplete="off" /></Field>
+    </>
+  )
+}
+function WinCertFields({ onChange }: { onChange: (secret: string) => void }) {
+  const [v, setV] = useState({ pfx: '', file: '', password: '', timestamp: 'http://timestamp.digicert.com' })
+  const up = (p: Partial<typeof v>) => { const n = { ...v, ...p }; setV(n); onChange(n.pfx && n.password ? JSON.stringify({ type: 'windows', pfx: n.pfx, password: n.password, timestamp: n.timestamp.trim() || undefined }) : '') }
+  return (
+    <>
+      <FilePick label="证书（.pfx，带私钥）" accept=".pfx,.p12" name={v.file} onFile={async (f) => { const b = await readFile(f, 256 * 1024); if (b) up({ pfx: b, file: f.name }) }} />
+      <Field label="导出时设的密码"><input type="password" value={v.password} onChange={(e) => up({ password: e.target.value })} autoComplete="new-password" /></Field>
+      <Field label="时间戳服务器" hint="证书商给的；签了时间戳，证书过期后签名照样有效"><input className="mono" value={v.timestamp} onChange={(e) => up({ timestamp: e.target.value })} autoComplete="off" /></Field>
+    </>
+  )
+}
+function AndroidCertFields({ onChange }: { onChange: (secret: string) => void }) {
   const [v, setV] = useState({ keystore: '', file: '', storePass: '', alias: '', keyPass: '' })
   const [aliases, setAliases] = useState<string[] | null>(null)
   const [diffKey, setDiffKey] = useState(false)

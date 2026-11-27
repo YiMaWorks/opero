@@ -3,10 +3,12 @@
 //   登录（Claude 订阅）：以 AI 用户跑 `claude setup-token`。它是全屏终端界面，输出不是终端时什么都不打，所以用 util-linux 的
 //     script 给它一个伪终端，再用下面的小终端模拟器还原屏幕找登录网址和 token；网页把网址给用户，用户在浏览器里批准后把授权码贴回来，
 //     这里写进它的输入；拿到 token 先跑一次最小请求验证，再加密存进保险箱。token 不落文件、不进日志。
+//   登录（Codex 的 ChatGPT 订阅）：以 AI 用户跑 `codex login --device-auth`（设备码：网页上显示网址和一次性码，任何设备上打开网址、登录 ChatGPT、
+//     输入码就行，不用回调服务器）。CODEX_HOME 指到这个账号自己的目录（~/.opero/codex/<账号>），登录完把 auth.json 读回来加密存进保险箱。
 // 同一时间只做一件事（一个 job），网页每秒问一次进度。
 import type { ChildProcess } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
-import { kvSet, put, uid } from './db.ts'
+import { get, kvSet, put, uid } from './db.ts'
 import { emit } from './bus.ts'
 import { audit } from './chat.ts'
 import { getSecret, setSecret } from './vault.ts'
@@ -18,14 +20,17 @@ import type { Credential } from './types.ts'
 export interface Job {
   id: string
   type: 'install' | 'login'
-  executor: 'claude' | 'codex'
+  executor: runner.ExecKind
   /** 在哪台机器上装 / 登录（local 或装了 Agent 的服务器） */
   host: string
   /** 登录界面现在显示的最后几行（令牌打码），卡住时给人看 */
   screen?: string
-  state: 'running' | 'waitCode' | 'verifying' | 'ok' | 'fail'
+  /** waitCode：等贴 Claude 的授权码；waitDevice：等你在浏览器里输入 Codex 的设备码（userCode） */
+  state: 'running' | 'waitCode' | 'waitDevice' | 'verifying' | 'ok' | 'fail'
   log: string
   url?: string
+  /** Codex 设备码登录：要在 url 那页输入的一次性码 */
+  userCode?: string
   message?: string
   started: number
   /** 授权码交上去的时间 */
@@ -76,13 +81,18 @@ fi
 npm install -g ${pkg} --prefix "$HOME/.local" --no-fund --no-audit${reg ? ` --registry ${reg}` : ''}`
 const MIRROR = 'https://registry.npmmirror.com'
 
-export function startInstall(executor: 'claude' | 'codex', host = hosts.LOCAL): Job {
-  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
+export function startInstall(executor: runner.ExecKind, host = hosts.LOCAL): Job {
+  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'waitDevice' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
   job = { id: uid('j'), type: 'install', executor, host, state: 'running', log: '', started: Date.now() }
+  // 国产的（Qwen Code、CodeBuddy Code）先走国内镜像
   const steps = executor === 'claude'
     ? [['用官方安装脚本装 Claude Code', CLAUDE_OFFICIAL], ['官方脚本没成功，改用 npm 装', NPM('@anthropic-ai/claude-code', 'claude')], ['再试国内镜像', NPM('@anthropic-ai/claude-code', 'claude', MIRROR)]]
-    : [['用 npm 装 Codex', NPM('@openai/codex', 'codex')], ['再试国内镜像', NPM('@openai/codex', 'codex', MIRROR)]]
-  const bin = executor === 'claude' ? hosts.claudeBin(host) : hosts.codexBin(host)
+    : executor === 'qwen'
+      ? [['用 npm 装 Qwen Code（国内镜像）', NPM('@qwen-code/qwen-code', 'qwen', MIRROR)], ['再试官方源', NPM('@qwen-code/qwen-code', 'qwen')]]
+      : executor === 'codebuddy'
+        ? [['用 npm 装 CodeBuddy Code（国内镜像）', NPM('@tencent-ai/codebuddy-code', 'codebuddy', MIRROR)], ['再试官方源', NPM('@tencent-ai/codebuddy-code', 'codebuddy')]]
+        : [['用 npm 装 Codex', NPM('@openai/codex', 'codex')], ['再试国内镜像', NPM('@openai/codex', 'codex', MIRROR)]]
+  const bin = hosts.execBin(executor, host)
   ;(async () => {
     for (const [title, script] of steps) {
       log(`\n▶ ${title}\n`)
@@ -91,7 +101,7 @@ export function startInstall(executor: 'claude' | 'codex', host = hosts.LOCAL): 
       const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
       if (v.code === 0) {
         log(`\n✓ 装好了：${v.out.split('\n').pop()}\n`)
-        audit({ via: '—', action: 'ai.install', target: executor === 'claude' ? 'Claude Code' : 'Codex', level: '写', result: '成功', how: '网页一键安装' })
+        audit({ via: '—', action: 'ai.install', target: runner.EXEC_NAMES[executor], level: '写', result: '成功', how: '网页一键安装' })
         return done('ok', v.out.split('\n').pop() ?? '')
       }
       if (code === 0) log(`\n装完了但找不到命令：${v.out.slice(-300)}\n`)
@@ -113,7 +123,7 @@ const ERR_RE = /(OAuth error|Login failed|Authentication failed|Invalid (authori
 const RETRY_RE = /(doesn't look like|does not look like|full code|Copy all of it)/i
 
 export function startLogin(host = hosts.LOCAL): Job {
-  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
+  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'waitDevice' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
   job = { id: uid('j'), type: 'login', executor: 'claude', host, state: 'running', log: '', started: Date.now() }
   const j = job
   const vt = new Screen(60, 500)
@@ -189,7 +199,7 @@ export function startLogin(host = hosts.LOCAL): Job {
 
 /** 已经有 setup-token 拿到的订阅令牌（sk-ant-oat…）：不走浏览器授权，验证能用就保存 */
 export function useToken(token: string, host = hosts.LOCAL): Job {
-  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
+  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'waitDevice' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
   const t = (token.trim().match(TOKEN_RE)?.[0] ?? token.trim()).replace(/^export\s+CLAUDE_CODE_OAUTH_TOKEN=/, '').replace(/^["']|["']$/g, '')
   if (t.includes('#')) throw new Error('这是浏览器给的一次性授权码，不是令牌：它只能贴回发它的那一次登录（在别处登录拿到的码在这里用不了）。点「再登录一个账号」，用 Opero 打开的登录页拿授权码贴回来')
   if (!looksToken(t)) throw new Error('这不像令牌：要贴 claude setup-token 打印出来的那一整串（没有空格）')
@@ -250,6 +260,91 @@ export function sendCode(code: string) {
 export function cancelJob() {
   kill()
   if (job && job.state !== 'ok' && job.state !== 'fail') done('fail', '已取消')
+}
+
+// ---------- Codex：用 ChatGPT 账号登录（codex login --device-auth） ----------
+const DEVICE_URL_RE = /https:\/\/auth\.openai\.com\/[^\s"'<>]*device[^\s"'<>]*/
+const DEVICE_CODE_RE = /\b([A-Z0-9]{4}-[A-Z0-9]{4,6})\b/
+const PLAN: Record<string, string> = { plus: 'Plus', pro: 'Pro', prolite: 'Pro', team: 'Business', business: 'Business', enterprise: 'Enterprise', edu: 'Edu', free: 'Free', go: 'Go' }
+export const planName = (p: string) => PLAN[p.toLowerCase()] ?? p
+/** 设备码登录没成功时最常见的几个原因，原话一起给人看 */
+const DEVICE_HELP = '常见原因：① ChatGPT 还没打开「设备码登录」——个人账号在 ChatGPT「设置 → 安全」里打开；Business / Enterprise / Edu 工作区要管理员在工作区权限里打开；② 码过期了（15 分钟内有效），或者输码时登录的不是要用的那个 ChatGPT 账号；③ 这台服务器连不上 auth.openai.com（上面第 2 步设网络出口）。'
+
+export function startCodexLogin(host = hosts.LOCAL): Job {
+  if (job && (job.state === 'running' || job.state === 'waitCode' || job.state === 'waitDevice' || job.state === 'verifying')) throw new Error('正在做另一件事，等它做完')
+  const acct = uid('cr')
+  job = { id: uid('j'), type: 'login', executor: 'codex', host, state: 'running', log: '', started: Date.now() }
+  const j = job
+  // CODEX_HOME = 这个账号自己的目录；codex 要一个终端才肯画登录提示，用 script 给它一个
+  const script = 'b="$HOME/.opero/codex"; d="$b/$1"; mkdir -p "$d"; chmod 700 "$HOME/.opero" "$b" "$d" 2>/dev/null; export CODEX_HOME="$d"; '
+    + 'exec script -qfec "stty cols 300 rows 50 2>/dev/null; exec \"$0\" login --device-auth -c cli_auth_credentials_store=file" /dev/null'
+  const p = hosts.spawnAiOn(host, 'bash', ['-c', script, hosts.codexBin(host), acct], { TERM: 'xterm-256color', NO_COLOR: '1', ...runner.egressEnv('codex', host) }, hosts.workRoot(host))
+  proc = p
+  p.stdin!.on('error', () => {})
+  let out = ''
+  const dec = new StringDecoder('utf8')
+  const onData = (b: Buffer) => {
+    out = (out + dec.write(b).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').replace(/\r(?!\n)/g, '\n')).slice(-20_000)
+    j.screen = out.trim().split('\n').slice(-6).join('\n').slice(-600)
+    if (!j.userCode) {
+      const url = out.match(DEVICE_URL_RE)?.[0]
+      const code = out.slice(url ? out.indexOf(url) : 0).match(DEVICE_CODE_RE)?.[1]
+      if (url && code) { j.url = url; j.userCode = code; j.state = 'waitDevice'; log(`设备码已生成：打开 ${url}，登录 ChatGPT，输入 ${code}\n`) }
+    }
+  }
+  p.stdout!.on('data', onData)
+  p.stderr!.on('data', onData)
+  const cleanup = () => void hosts.runAiOn(host, 'bash', ['-c', 'rm -rf "$HOME/.opero/codex/$1"', '_', acct], { timeoutMs: 20_000 })
+  const timer = setTimeout(() => { if (job === j && (j.state === 'running' || j.state === 'waitDevice')) { kill(); done('fail', j.userCode ? '等了 15 分钟没在浏览器里输码，码已经过期：重新点「用 ChatGPT 登录」' : `没拿到设备码：${j.screen || '没有输出'}`) } }, 16 * 60_000)
+  p.on('close', async (code) => {
+    clearTimeout(timer)
+    if (job !== j || j.state === 'fail' || j.state === 'ok') { if (j.state !== 'ok') cleanup(); return }
+    if (code !== 0) {
+      cleanup()
+      const said = out.trim().split('\n').filter((l) => l.trim()).slice(-3).join(' / ').slice(0, 300)
+      return done('fail', `没登录成功${said ? `（Codex 说：${said}）` : ''}。${DEVICE_HELP}`)
+    }
+    j.state = 'verifying'
+    log('浏览器里已经批准，正在读登录信息…\n')
+    const r = await hosts.runAiOn(host, 'bash', ['-c', 'cat "$HOME/.opero/codex/$1/auth.json" 2>/dev/null', '_', acct], { timeoutMs: 20_000 })
+    if (job !== j) return
+    try {
+      const { id, name } = saveCodexAuth(r.out.trim(), { id: acct, host })
+      if (id !== acct) cleanup() // 同一个 ChatGPT 账号以前登录过：更新的是原来那个
+      log('已加密保存\n')
+      done('ok', `已登录「${name}」（共 ${runner.codexAccounts().length} 个 Codex 账号，原来的照常能用），正在试一下`)
+    } catch (e) { cleanup(); done('fail', (e as Error).message) }
+  })
+  p.on('error', (e) => { clearTimeout(timer); done('fail', `启动不了：${e.message}`) })
+  return j
+}
+
+/** 存一个 Codex 的 ChatGPT 订阅登录（auth.json 的内容：设备码登录拿到的，或者在别的电脑上 `codex login` 以后贴进来的）。
+ *  同一个 ChatGPT 账号（邮箱一样）以前存过：更新那个账号的登录，不另加；新加的设成默认。返回账号 id */
+export function saveCodexAuth(json: string, o: { id?: string; host?: string; name?: string; makeDefault?: boolean } = {}): { id: string; name: string } {
+  let parsed: any
+  try { parsed = JSON.parse(json) } catch { throw new Error('贴进来的不是 auth.json 的内容：要整个文件（从 { 到 }）') }
+  const info = runner.codexAuthInfo(json)
+  if (!info.ok) {
+    if (typeof parsed?.OPENAI_API_KEY === 'string' && parsed.OPENAI_API_KEY) throw new Error('这个 auth.json 是用 API Key 登录的，不是 ChatGPT 订阅：直接在「贴 OpenAI API Key」里贴那个 Key')
+    throw new Error('这个 auth.json 里没有 ChatGPT 登录的令牌：在电脑上先跑 codex login 用 ChatGPT 登录，再贴 ~/.codex/auth.json')
+  }
+  const conf = runner.aiConf()
+  const same = info.email ? runner.codexAccounts().find((x) => runner.codexMode(x) === 'chatgpt' && get<Credential>('credentials', x)?.meta?.email === info.email) : undefined
+  const id = same ?? o.id ?? uid('cr')
+  const old = get<Credential>('credentials', id)
+  const plan = info.plan ? planName(info.plan) : ''
+  const name = o.name?.trim().slice(0, 60) || old?.name || `ChatGPT${plan ? ` ${plan}` : ''}${info.email ? ` · ${info.email}` : ' 订阅'}`
+  setSecret(id, json.trim())
+  const cred: Credential = { ...(old ?? { usedBy: [], group: 'AI', kind: 'Token', env: '生产', aiAllowed: true }), id, name,
+    scope: 'ChatGPT 订阅（Codex）', updated: new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16), ...(info.email ? { user: info.email } : {}),
+    meta: { ...(old?.meta ?? {}), authMode: 'chatgpt', gen: String(Number(old?.meta?.gen ?? 0) + 1), ...(info.email ? { email: info.email } : {}), ...(plan ? { plan } : {}) } } as Credential
+  put('credentials', cred)
+  emit({ t: 'put', coll: 'credentials', item: { ...cred, hasSecret: true } })
+  const accounts = [...new Set([...(conf.codexAccounts ?? []), ...(conf.codexCred ? [conf.codexCred] : []), id])]
+  kvSet('ai', { ...conf, codexAccounts: accounts, codexCred: o.makeDefault === false ? conf.codexCred ?? id : id })
+  audit({ via: '—', action: 'ai.login', target: `Codex（ChatGPT 订阅${plan ? ` ${plan}` : ''}）`, level: '危险', result: '成功', how: same ? '同一个 ChatGPT 账号重新登录，更新了它的登录' : `加了一个账号（共 ${accounts.length} 个），原来的照常能用` })
+  return { id, name }
 }
 
 /** 登录 / 贴令牌：加一个账号（同一个令牌已经有了就用那个），设成默认。原来的账号和令牌都留着、照样能用——

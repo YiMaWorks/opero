@@ -86,6 +86,8 @@ Tell the user to open the address and:
    1. **一键安装 Claude Code** (install): Opero installs it on the server for the AI user (1–3 minutes, progress shown).
    2. **开始登录** (log in): click "打开登录页", sign in to the Claude account in the browser, click **Authorize**, copy the code shown, paste it back and click "提交". Opero verifies it and stores the token encrypted. (Or choose "API Key" and paste a key from console.anthropic.com.)
    3. **让它回一句话** (test): it should answer within a few seconds.
+
+   The same page also connects Codex (ChatGPT subscription via device code, a pasted `auth.json`, or an OpenAI API key), Qwen Code (Alibaba Bailian API key) and CodeBuddy Code (Tencent, Standard plan or above). Step-by-step guide for each, including which plans are required: [docs/AI执行器接入.md](docs/AI执行器接入.md).
 3. Create employees, then chat.
 
 ## 6. More servers (Opero Agent)
@@ -112,7 +114,7 @@ Re-installing, or running a new command on the same machine, re-links the same s
 | service not active | `journalctl -u opero -n 80`; port in use → `--port`; then re-run the installer |
 | "一键安装" fails | usually no internet access to claude.ai / npm; check the log shown in the wizard, re-run with `--cn` mirrors, or `sudo opero ai -c 'curl -fsSL https://claude.ai/install.sh \| bash'` |
 | login says "Invalid code" | the code is single-use; click 开始登录 again and paste the new code right away |
-| employee replies "执行器退出了 … login / API key" | key missing or wrong: set it in 我 → AI 执行器, or log in as the AI user |
+| employee replies "执行器退出了 … login / API key" | key missing or wrong: add an account in 应用 → AI 执行器 (see docs/AI执行器接入.md) |
 | forgot password | `opero reset-password` |
 | Agent shows 离线 | on that server: `systemctl status opero-agent`, `journalctl -u opero-agent -n 50`; can it reach the Opero URL? |
 | Agent install says the token is invalid / expired | generate a new command in Opero (tokens are single-use, 30 minutes) |

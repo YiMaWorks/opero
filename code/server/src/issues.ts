@@ -1,10 +1,10 @@
 // 问题清单：员工巡检日志（log_scan）发现的线上问题记在这里（issue_report），同一个问题按 key 合并计数。
 // 新出现的严重问题发一张卡片给主人：修复（交给负责那个项目的员工）/ 已知 / 忽略 7 天；别的只记着，不打扰。
-import { all, get, put, uid } from './db.ts'
+import { all, db, get, put, uid } from './db.ts'
 import { emit } from './bus.ts'
-import { audit, empSays } from './chat.ts'
+import { audit, empSays, patchMsg } from './chat.ts'
 import * as runner from './runner.ts'
-import type { Card, Employee, Issue, Server, Workspace } from './types.ts'
+import type { Card, Employee, Issue, Message, Server, Workspace } from './types.ts'
 
 const save = (i: Issue) => { put('issues', i); emit({ t: 'put', coll: 'issues', item: i }); return i }
 const SEV: Record<string, Issue['severity']> = { high: 'high', mid: 'mid', low: 'low', 严重: 'high', 一般: 'mid', 轻微: 'low' }
@@ -82,7 +82,17 @@ export function act(id: string, action: string, o: { by: string; fixer?: string;
   else if (action === 'reopen') next = { ...next, status: 'new', ignoreUntil: undefined }
   else throw new Error('不认识的操作')
   audit({ via: o.by, action: `issue.${action}`, target: i.title, level: '写', result: '成功', how: o.by === '主人' ? '本人' : '员工' })
+  // 在问题清单页 / 员工那边处理了：聊天里这个问题还开着的卡片一起收起（红点跟着消）
+  if (action !== 'reopen') closeCards(i.id, `${o.by === '主人' ? '你' : o.by}${ACT_ZH[action] ?? '处理了'}`)
   return save(next)
+}
+const ACT_ZH: Record<string, string> = { fix: '交给员工去修了', known: '标成已知', ignore: '忽略 7 天', fixed: '标成已修好' }
+function closeCards(issueId: string, result: string) {
+  const rows = db.prepare(`SELECT id, data FROM messages WHERE data LIKE ? AND data LIKE '%"state":"open"%'`).all(`%"issueId":"${issueId}"%`) as { id: string; data: string }[]
+  for (const r of rows) {
+    const m = JSON.parse(r.data) as Message
+    if (m.card?.state === 'open' && m.card.data?.issueId === issueId) patchMsg(r.id, { card: { ...m.card, state: 'done', result } })
+  }
 }
 
 /** 员工改问题（修好了、补原因） */

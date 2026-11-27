@@ -6,13 +6,18 @@ import { empName, getState, logout, requireVerify, saveEmployee, SOON, toast, to
 import { api, boot, call } from '../live'
 import { Avatar } from '../components/Avatar'
 import { Mark, Wordmark } from '../components/brand'
-import { Empty, Field, Meter, PageHeader, Row, Section, Segmented, Sheet, Stat, StatusDot, Table, Tag, Toggle } from '../components/ui'
+import { Empty, Field, InlineText, Meter, PageHeader, Row, Section, Segmented, Sheet, Stat, StatusDot, Table, Tag, Toggle } from '../components/ui'
 import { IconCheck, IconChevron, IconPlus } from '../components/icons'
 import { Markdown } from '../components/Markdown'
 import { WorkSheet } from '../components/WorkSheet'
+import { EditableAvatar } from '../components/AvatarPicker'
+import { PackagesSection } from '../components/Packages'
+import { EgressSection } from '../components/Egress'
+import { ReleaseSection } from './release'
 import { AskBar, Manual } from '../components/AskBar'
-import { approvalLabel, effortLabel, modelsFor } from '../work'
-import { ExecutorSetup, type AiInfo } from '../components/ExecutorSetup'
+import { approvalLabel, effortLabel, execKind, modelsFor } from '../work'
+import { ExecPicker, ExecutorSetup, execState, type AiInfo } from '../components/ExecutorSetup'
+import { AppIcon } from '../components/AppIcon'
 import { LangPicker } from '../components/LangPicker'
 import { useLang } from '../i18n'
 import { CUR } from '../mode'
@@ -20,7 +25,8 @@ import { headNav, type PageProps } from './nav'
 import { BuildSection, DirsSection, EmployeeWorkSections, PolicySection, WorkspaceAutoSections } from './live2'
 import { LogViewer } from './live3'
 import { EmployeeCredsSection } from './creds'
-import { getPasskey, passkeySupported, createPasskey } from '../webauthn'
+import { getPasskey, passkeySupported, createPasskey, passkeyError, markPkHere } from '../webauthn'
+import { EmpName } from '../components/EmpName'
 
 // 环境是标签：随便起名、要几个都行；「改东西先确认」是单独的开关，没设过按标签猜（和后台 env.ts 一样）
 const PROD_RE = /生产|正式|線上|线上|prod|production|live/i
@@ -80,7 +86,7 @@ export function LiveLogin() {
   }
   const withPasskey = async () => {
     setBusy(true)
-    try { const o = await api('POST', '/api/auth/passkey/options', {}); await api('POST', '/api/auth/passkey/login', await getPasskey(o)); await boot() } catch (e) { toast((e as Error).message) } finally { setBusy(false) }
+    try { const o = await api('POST', '/api/auth/passkey/options', {}); let cred; try { cred = await getPasskey(o) } catch (e) { toast(passkeyError(e)); return } await api('POST', '/api/auth/passkey/login', cred); markPkHere(); await boot() } catch (e) { toast((e as Error).message) } finally { setBusy(false) }
   }
   if (ticket) return (
     <div className="auth">
@@ -184,7 +190,7 @@ export function LiveSetup() {
   const [exec, setExec] = useState('Claude Code')
   const [picked, setPicked] = useState<string[]>(['butler', 'dev', 'ops'])
   const [busy, setBusy] = useState(false)
-  const ready = !!info && (exec === 'Codex' ? !!info.codex && info.codexKey : !!info.claude && info.claudeKey)
+  const ready = !!info && (({ installed, loggedIn }) => !!installed && loggedIn)(execState(info, execKind(exec)))
   const make = async () => {
     setBusy(true)
     const r = await call('POST', '/api/setup/employees', { presets: picked.filter((k) => !emps.some((e) => e.id === k)), executor: exec, model: modelsFor(exec)[0] })
@@ -242,7 +248,7 @@ export function LiveSetup() {
 
         {step === 3 && (
           <StepCard title="④ 建几个员工" desc="每个员工是一个会话，有自己的角色；名字、职责以后都能改。">
-            <Field label="它们用哪个执行器"><Segmented value={exec} onChange={setExec} options={[{ value: 'Claude Code', label: 'Claude Code' }, { value: 'Codex', label: 'Codex' }]} /></Field>
+            <Field label="它们用哪个执行器"><ExecPicker value={exec} onChange={setExec} info={info} /></Field>
             <div className="sheet-list">
               {PRESETS.map((p) => (
                 <button key={p.key} className={'radio-row' + (picked.includes(p.key) ? ' on' : '')} onClick={() => setPicked((x) => (x.includes(p.key) ? x.filter((y) => y !== p.key) : [...x, p.key]))}>
@@ -303,7 +309,6 @@ export const LIVE_APPS: { page: any; name: string; desc: string; letter: string 
   { page: 'servers', name: '服务器和 Agent', desc: '装 Agent 让员工在上面干活；或 SSH 跑命令', letter: '服' },
   { page: 'credentials', name: '凭证', desc: '代码仓库、数据库、服务器、云账号、AI 的账号和令牌，加密存着', letter: '凭' },
   { page: 'data', name: '数据', desc: 'MySQL / PostgreSQL，默认只读', letter: '数' },
-  { page: 'releases', name: '发布', desc: '编译、签名、部署、检查，失败自动退回上一版', letter: '发' },
   { page: 'issues', name: '问题清单', desc: '日志巡检记下来的线上问题', letter: '问' },
   { page: 'domains', name: '域名', desc: 'DNS 解析，开给员工改', letter: '域' },
   { page: 'inbox', name: '收件箱', desc: '邮件、Slack 分好类，回复建议只写不发', letter: '收' },
@@ -314,7 +319,7 @@ export const LIVE_APPS: { page: any; name: string; desc: string; letter: string 
 ]
 /** 这套 Opero 的配置（不放在「我」里）：应用页下面一组、电脑侧栏「应用」下面一段 */
 export const LIVE_CONFIG: { page: any; name: string; desc: string }[] = [
-  { page: 'executors', name: 'AI 执行器', desc: 'Claude Code / Codex：装、登录，多个订阅账号、默认用哪个' },
+  { page: 'executors', name: 'AI 执行器', desc: 'Claude Code、Codex、Qwen Code、CodeBuddy：装、登录，多个账号、默认用哪个' },
   { page: 'usage', name: '用量和成本', desc: '每个员工花了多少、每月预算' },
   { page: 'system', name: '系统设置', desc: '生产保护、每轮小结、提醒发到哪、开机向导' },
   { page: 'about', name: '关于 Opero', desc: '版本、开源许可' },
@@ -334,12 +339,13 @@ export function LiveAppsPage({ nav }: PageProps) {
         <div className="tiles">
           {LIVE_APPS.map((t) => (
             <button key={t.page} className="tile" onClick={() => nav.push({ page: t.page })}>
-              <span className="ws-icon">{t.letter}</span><b>{t.name}</b><span className="sub">{t.desc}</span><span className="tile-n">{n[t.page]}</span>
+              <span className="tile-head"><AppIcon page={t.page} fallback={t.letter} /><b>{t.name}</b></span>
+              <span className="sub">{t.desc}</span>{n[t.page] && <span className="tile-n">{n[t.page]}</span>}
             </button>
           ))}
         </div>
         <p className="hint">还在做：{SOON_APPS.join('、')}。</p>
-        <Section title="这套 Opero 的配置">{LIVE_CONFIG.map((a) => <Row key={a.page} title={a.name} sub={a.desc} chevron onClick={() => nav.push({ page: a.page })} />)}</Section>
+        <Section title="这套 Opero 的配置">{LIVE_CONFIG.map((a) => <Row key={a.page} icon={<AppIcon page={a.page} size={34} />} title={a.name} sub={a.desc} chevron onClick={() => nav.push({ page: a.page })} />)}</Section>
       </div>
     </div>
   )
@@ -398,6 +404,7 @@ export function LiveServersPage({ nav }: PageProps) {
         )}
         <Section title={`员工能在上面干活 · ${work.length}`}>{work.map(row)}</Section>
         {ssh.length > 0 && <Section title={`只用 SSH 连 · ${ssh.length}`}>{ssh.map(row)}</Section>}
+        <EgressSection onJoin={() => nav.push({ page: 'serverAdd' })} />
         <p className="hint">接入别的服务器：点右上角「接入」→ 复制一条命令到那台机器用 root 跑 → 几秒后这里就出现。那台机器不用开端口；原来装的别的 Agent 不受影响。</p>
         <Section title="指纹和迁移">
           <Row title="这套 Opero 的指纹" sub="Agent 只执行这个指纹签过名的活；别人冒充这个地址也指挥不了你的机器" right={<span className="mono small" data-no-i18n="">{fp}</span>} />
@@ -622,12 +629,14 @@ export function LiveServerPage({ params, nav }: PageProps) {
           <Section title="AI 执行器（这台）" right={<button className="btn ghost sm" onClick={() => nav.push({ page: 'executors', params: { host: s.id } })}>装 / 登录</button>}>
             <Row title="Claude Code" right={s.executors?.claude ?? (s.id === 'local' ? '点右上角看' : '没装')} />
             <Row title="Codex" right={s.executors?.codex ?? (s.id === 'local' ? '点右上角看' : '没装')} />
+            <Row title="Qwen Code" right={s.executors?.qwen ?? (s.id === 'local' ? '点右上角看' : '没装')} />
+            <Row title="CodeBuddy Code" right={s.executors?.codebuddy ?? (s.id === 'local' ? '点右上角看' : '没装')} />
           </Section>
         )}
         {work && (
           <Section title={`跑在这台的员工 · ${onIt.length}`} right={<span className="sub">在员工「编辑 → 跑在哪台服务器」里选</span>}>
             {onIt.length === 0 && <Empty>还没有</Empty>}
-            {onIt.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={32} />} title={e.name} chevron onClick={() => nav.openChat(e.id)} />)}
+            {onIt.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={32} />} title={<EmpName e={e} />} chevron onClick={() => nav.openChat(e.id)} />)}
           </Section>
         )}
         {s.online && <LogViewer s={s} />}
@@ -953,25 +962,6 @@ export function LiveKnowledgePage({ nav }: PageProps) {
 }
 
 // ======================= 项目 =======================
-export function LiveWorkspacesPage({ nav }: PageProps) {
-  const list = useStore((s) => s.workspaces)
-  return (
-    <div className="page">
-      <PageHeader title="项目" sub="员工干活的代码仓库（拉到这台服务器上）" {...headNav(nav)}
-        right={<button className="btn primary sm" onClick={() => nav.push({ page: 'workspaceAdd' })}><IconPlus /> 接入</button>} />
-      <div className="page-body">
-        <Section flush>
-          {list.length === 0 && <Empty>还没有。接一个 GitHub / Codeup / Gitee 仓库，再在员工设置里选它当项目</Empty>}
-          {list.map((w) => (
-            <Row key={w.id} icon={<span className="ws-icon">{w.name.slice(0, 1).toUpperCase()}</span>} chevron onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })}
-              title={<>{w.name} {w.branch && <Tag>{w.branch}</Tag>} {(w as Workspace & { error?: string }).error && <Tag tone="danger">有问题</Tag>}</>} sub={`${w.provider} · ${w.repo} · ${w.last}`} />
-          ))}
-        </Section>
-      </div>
-    </div>
-  )
-}
-
 type RepoItem = { name: string; url: string; branch?: string; private?: boolean; group?: string; short?: string; updated?: number }
 const agoText = (t?: number) => {
   if (!t) return ''
@@ -1170,6 +1160,7 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
   const [brOpen, setBrOpen] = useState(false)
   const [remote, setRemote] = useState<{ def?: string; branches: string[] } | null>(null)
   const [switching, setSwitching] = useState('')
+  const [workOf, setWorkOf] = useState('') // 点员工那一行的「执行器 · 模型」：弹出它的 work 设置，不用进员工资料
   const refresh = async () => { if (!w) return; setBusy(true); await call('POST', `/api/workspaces/${w.id}/refresh`); setBusy(false) }
   useEffect(() => { refresh() }, [params.id]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!w) return <div className="page"><PageHeader title="项目" {...headNav(nav)} /><Empty>找不到这个项目</Empty></div>
@@ -1195,15 +1186,23 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
   }
   return (
     <div className="page">
-      <PageHeader title={w.name} sub={`${w.provider} · ${short}`} {...headNav(nav)} right={<span className="row-actions"><button className="btn ghost sm" onClick={() => copy(w.repo)}>复制地址</button><button className="btn default sm" disabled={busy} onClick={refresh}>{busy ? '刷新中…' : '刷新'}</button></span>} />
+      <PageHeader title={<InlineText value={w.name} onSave={(v) => call('PUT', `/api/workspaces/${w.id}`, { name: v }, '已改名')} />} sub={`${w.provider} · ${short}`} {...headNav(nav)} right={<span className="row-actions"><button className="btn ghost sm" onClick={() => copy(w.repo)}>复制地址</button><button className="btn default sm" disabled={busy} onClick={refresh}>{busy ? '刷新中…' : '刷新'}</button></span>} />
       <div className="page-body">
         {w.error && <div className="pad"><div className="banner b-warn">{w.error}</div></div>}
+        {/* 发布放最上面（项目和发布合在一起）：各环境线上版本、发布 / 回滚、发布记录 */}
+        <ReleaseSection w={w} nav={nav} />
         <BuildSection w={w} />
+        <PackagesSection w={w} />
         <Section title={`员工 · ${users.length}`} right={<button className="btn ghost sm" onClick={addEmp}>+ 加一个员工</button>}>
           {users.length === 0 && <Empty>还没有员工：点右上角「+ 加一个员工」，点了就建好</Empty>}
           {users.map((e) => (
-            <Row key={e.id} icon={<Avatar id={e.id} size={36} />} title={e.name} sub={`${e.executor} · ${e.model}`} onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
-              right={<button className="btn primary sm" onClick={(ev) => { ev.stopPropagation(); nav.openChat(e.id) }}>发消息</button>} />
+            <Row key={e.id} icon={<EditableAvatar id={e.id} size={36} />} onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
+              title={<><InlineText value={e.name} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { name: v }, '已改名')} /><InlineText className="role-tag" value={e.role ?? ''} placeholder="加职位" max={20} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { role: v }, '已改职位')} /></>}
+              sub={<InlineText value={e.title} placeholder="写一句它负责什么" max={80} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { title: v }, '已保存')} />}
+              right={<span className="row-actions">
+                <button className="btn ghost sm" onClick={(ev) => { ev.stopPropagation(); setWorkOf(e.id) }} title="执行器、模型、思考、审核">{`${e.executor.replace(' Code', '')} · ${e.model}`}</button>
+                <button className="btn primary sm" onClick={(ev) => { ev.stopPropagation(); nav.openChat(e.id) }}>发消息</button>
+              </span>} />
           ))}
           {users.length > 0 && <p className="hint">同一个项目的员工共用项目目录和 docs/ 里的交接；切分支大家一起切。</p>}
         </Section>
@@ -1239,6 +1238,7 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
         </Section>
         <div className="pad row-actions"><button className="btn ghost danger" onClick={remove}>去掉这个项目</button></div>
       </div>
+      {workOf && users.find((x) => x.id === workOf) && <WorkSheet emp={users.find((x) => x.id === workOf)!} onClose={() => setWorkOf('')} />}
     </div>
   )
 }
@@ -1266,11 +1266,14 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
   }
   return (
     <div className="page">
-      <PageHeader title={e.name} sub="员工资料" {...headNav(nav)} right={<button className="btn default sm" onClick={() => nav.push({ page: 'employeeEdit', params: { id: e.id } })}>编辑</button>} />
+      <PageHeader title={e.name} sub="员工资料" {...headNav(nav)} right={<button className="btn default sm" onClick={() => nav.push({ page: 'employeeEdit', params: { id: e.id } })}>更多设置</button>} />
       <div className="page-body">
         <div className="hero">
-          <Avatar id={e.id} size={64} />
-          <div className="hero-main"><b>{e.name}</b><span className="sub">{e.title}</span></div>
+          <EditableAvatar id={e.id} size={64} />
+          <div className="hero-main">
+            <b><InlineText value={e.name} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { name: v }, '已改名')} /><InlineText className="role-tag" value={e.role ?? ''} placeholder="加职位" max={20} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { role: v }, '已改职位')} /></b>
+            <span className="sub"><InlineText value={e.title} placeholder="写一句它负责什么" max={80} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { title: v }, '已保存')} /></span>
+          </div>
           <div className="row-actions">
             {sess && <button className="btn default" onClick={() => togglePin(sess.id)}>{sess.pinned ? '取消置顶' : '置顶'}</button>}
             <button className="btn primary" onClick={() => nav.openChat(e.id)}>发消息</button>
@@ -1392,9 +1395,10 @@ function PasskeySection() {
       const cred = await createPasskey(o)
       const name = deviceName()
       await api('POST', '/api/auth/passkey/register', { credential: cred, name })
+      markPkHere()
       toast('已加上：以后能用它登录、验证本人')
       load()
-    } catch (e) { toast((e as Error).message) }
+    } catch (e) { if ((e as DOMException)?.name === 'InvalidStateError') markPkHere(); toast(passkeyError(e, true)) }
   })
   return (
     <Section title="通行密钥" right={<span className="sub">指纹 / 面容 / 设备 PIN 登录，不用输密码</span>}>

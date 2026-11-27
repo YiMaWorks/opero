@@ -8,19 +8,15 @@ import { Markdown } from '../components/Markdown'
 import { Empty, Field, PageHeader, Row, Section, Segmented, Tag, Toggle } from '../components/ui'
 import { headNav, type PageProps } from './nav'
 import { AskBar } from '../components/AskBar'
+import { PLATS } from '../components/Packages'
 
 // ======================= 员工资料里的：记忆、会话、执行器 =======================
 export function EmployeeWorkSections({ e, nav }: { e: Employee; nav: PageProps['nav'] }) {
   const working = useStore((s) => s.sessions.find((x) => x.employee === e.id)?.working)
   const sid = useStore((s) => s.sessions.find((x) => x.employee === e.id)?.id)
-  const other = /codex/i.test(e.executor) ? 'Claude Code' : 'Codex'
   const handoff = async () => {
     if (!sid) return
     if (await call('POST', `/api/sessions/${sid}/handoff`, {}, '已开新会话：交接写在输入框里，看一下再发')) nav.openChat(e.id)
-  }
-  const switchTo = async () => {
-    if (!confirm(`把「${e.name}」换成 ${other}？现在的会话归档，开一个新会话，${other} 从记忆仓库接着做`)) return
-    if (await call('POST', `/api/employees/${e.id}/switch`, { executor: other }, `已换成 ${other}：交接写在输入框里，看一下再发`)) nav.openChat(e.id)
   }
   return (
     <>
@@ -30,10 +26,9 @@ export function EmployeeWorkSections({ e, nav }: { e: Employee; nav: PageProps['
         ))}
         <div className="pad row-actions wrap">
           <button className="btn default sm" disabled={!!working} onClick={handoff}>开新会话接着做</button>
-          <button className="btn default sm" disabled={!!working} onClick={switchTo}>换成 {other}</button>
           <button className="btn ghost sm" onClick={() => nav.push({ page: 'history', params: { id: e.id } })}>历史会话</button>
         </div>
-        {working && <p className="hint">员工在干活：这一轮做完或者停下后才能换。</p>}
+        {working && <p className="hint">员工在干活：这一轮做完或者停下后才能开新会话。（换执行器：点上面的「执行器」）</p>}
       </Section>
     </>
   )
@@ -310,11 +305,11 @@ export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProp
           return editing && editing !== 'new' && editing.id === d.id
             ? <DeployForm key={d.id} init={d} servers={servers} builds={w.builds ?? []} onCancel={() => setEditing(null)} onSave={async (x) => { if (await saveDeploys(list.map((y) => (y.id === d.id ? x : y)))) setEditing(null) }} />
             : <Row key={d.id} title={d.name}
-                sub={<>{(w.builds?.length ?? 0) > 1 || d.build === 'none' ? `${compOfDeploy(w, d) ? `发「${compOfDeploy(w, d)!.name}」` : d.build === 'none' ? '不编译' : '还没选发哪个组件'} · ` : ''}发到 {d.servers.map(sv).join('、')}{d.dir ? `（${d.dir}）` : ''}{d.sign ? ' · 签名' : ''}{d.health ? ' · 检查' : ''} · 员工{d.ai === 'auto' ? '直接发' : d.ai === 'off' ? '不许发' : '发前问你'}{lastR ? ` · 上次 ${lastR.status === 'success' ? '成功' : lastR.status === 'failed' ? '失败' : '发布中'}` : ''}</>}
+                sub={<>{(w.builds?.length ?? 0) > 1 || d.build === 'none' ? `${compOfDeploy(w, d) ? `发「${compOfDeploy(w, d)!.name}」` : d.build === 'none' ? '不编译' : '还没选发哪个组件'} · ` : ''}{d.package ? `存进安装包 · ${PLATS.find((x) => x.p === d.package!.platform)?.label} · ${d.package.channel === 'prod' ? '正式' : '测试'}` : <>发到 {d.servers.map(sv).join('、')}{d.dir ? `（${d.dir}）` : ''}</>}{d.sign ? ' · 签名' : ''}{d.health ? ' · 检查' : ''} · 员工{d.ai === 'auto' ? '直接发' : d.ai === 'off' ? '不许发' : '发前问你'}{lastR ? ` · 上次 ${lastR.status === 'success' ? '成功' : lastR.status === 'failed' ? '失败' : '发布中'}` : ''}</>}
                 right={<span className="row-actions"><button className="btn primary sm" onClick={() => run(d)}>发布</button><button className="btn ghost sm" onClick={() => setEditing(d)}>改</button><button className="btn ghost sm" onClick={() => { if (confirm(`删掉发布环境「${d.name}」？`)) saveDeploys(list.filter((x) => x.id !== d.id), '已删') }}>删</button></span>} />
         })}
         {editing === 'new' && <DeployForm servers={servers} builds={w.builds ?? []} onCancel={() => setEditing(null)} onSave={async (d) => { if (await saveDeploys([...list, d], '已添加')) setEditing(null) }} />}
-        {nav && releases.some((r) => r.ws === w.id) && <Row title="发布记录" chevron onClick={() => nav.push({ page: 'releases', params: { ws: w.id } })} />}
+        {nav && releases.some((r) => r.ws === w.id) && <Row title="发布记录" chevron onClick={() => nav.push({ page: 'workspace', params: { id: w.id } })} />}
       </Section>
     </>
   )
@@ -354,7 +349,8 @@ function BuildCard({ w, b, onEdit, onDelete }: { w: Workspace; b: BuildComp; onE
   const [showLog, setShowLog] = useState(false)
   const base = `/api/workspaces/${w.id}/builds/${encodeURIComponent(b.id)}`
   const tryBusy = last?.status === 'running'
-  const loadTry = () => call<Try | null>('GET', `${base}/try`).then((r) => setLast(r ?? null))
+  // 没试编过时后台回的是 {ok:true}（不是一次试编）：当成没有
+  const loadTry = () => call<Try | null>('GET', `${base}/try`).then((r) => setLast(r && 'status' in r && r.at ? r : null))
   useEffect(() => { void loadTry() }, [w.id, b.id]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!tryBusy) return; const t = window.setInterval(loadTry, 5000); return () => clearInterval(t) }, [tryBusy]) // eslint-disable-line react-hooks/exhaustive-deps
   const tryBuild = async () => { const r = await call<Try>('POST', `${base}/try`, undefined, `开始试编译「${b.name}」：编远端最新提交，只编不发`); if (r) { setLast(r); setShowLog(true) } }
@@ -481,14 +477,17 @@ const DEPLOY_CMDS: [string, string][] = [
   ['Docker Compose', 'docker compose pull && docker compose up -d'],
   ['PHP / 静态站：只拉代码', 'git pull --ff-only'],
 ]
-function DeployForm({ init, servers, builds, onSave, onCancel }: { init?: Deploy; servers: Server[]; builds: BuildComp[]; onSave: (d: Deploy) => void; onCancel: () => void }) {
-  const certs = useStore((s) => s.credentials).filter((c) => c.group === '签名证书')
+/** 一个发布环境的设置：这是哪个环境、叫什么、发哪个组件、发到哪、怎么部署。项目设置页和发布页（环境卡片上的「编辑」）共用 */
+export function DeployForm({ init, servers, builds, onSave, onCancel, bare }: { init?: Deploy; servers: Server[]; builds: BuildComp[]; onSave: (d: Deploy) => void; onCancel: () => void; bare?: boolean }) {
+  // 发布时签名只能用安卓证书（苹果 / Windows 的要在 Mac / Windows 上用）
+  const certs = useStore((s) => s.credentials).filter((c) => c.group === '签名证书' && !NOT_ANDROID.includes(c.kind))
   const [d, setD] = useState<Deploy>(init ?? { id: '', name: '', servers: [], keep: 5, autoRollback: true })
   // 发哪个编译组件：只有一个就默认它；'none' = 不编译只跑部署命令
   const sel = d.build ?? (builds.length === 1 ? builds[0].id : builds.length ? '' : 'none')
   const build = sel && sel !== 'none' ? builds.find((x) => x.id === sel) : undefined
   const [adv, setAdv] = useState(false)
   const up = (p: Partial<Deploy>) => setD((x) => ({ ...x, ...p }))
+  const pkg = d.package
   const dirsOf = (ids: string[]) => [...new Set(ids.flatMap((id) => (servers.find((s) => s.id === id)?.dirs ?? []).filter((x) => x.mode === 'deploy').map((x) => x.path)))]
   // 选中的服务器上登记成「能部署」的目录：点一下填进去；只有一个就直接用
   const deployDirs = dirsOf(d.servers)
@@ -498,55 +497,86 @@ function DeployForm({ init, servers, builds, onSave, onCancel }: { init?: Deploy
     const dirs = dirsOf(next)
     up({ servers: next, ...(!d.dir && dirs.length === 1 ? { dir: dirs[0] } : {}) })
   }
-  // 名字不填就用第一台的环境标签（生产 / 测试…）
+  // 这是哪个环境：自己标（生产 / 预发 / 测试 / 开发），不标就跟发到的服务器的环境标签走；名字不填就用它
   const envs = [...new Set(d.servers.map((id) => servers.find((s) => s.id === id)?.env).filter((x): x is string => !!x))]
-  const autoName = envs.join(' + ') || '发布'
+  const autoName = d.env || envs.join(' + ') || '发布'
+  const srvProd = d.servers.some((id) => { const s = servers.find((x) => x.id === id); return !!s && (s.protect ?? PROD.test(s.env)) })
+  const prod = (!!d.env && PROD.test(d.env)) || srvProd
+  const pickEnv = (e: string | undefined) => {
+    // 名字还是空的、或者就是原来的环境名：跟着改
+    const followName = !d.name.trim() || d.name === (d.env || envs.join(' + '))
+    up({ env: e, ...(followName ? { name: e ?? '' } : {}) })
+  }
   const svc = d.command?.match(/systemctl restart (\S+)/)?.[1] ?? ''
   const setSvc = (v: string) => up({ command: `${(d.command ?? '').replace(/\s*&&\s*systemctl restart \S+/, '')}${v ? `${d.command ? ' && ' : ''}systemctl restart ${v}` : ''}` || undefined })
   return (
-    <div className="pad form boxed">
+    <div className={bare ? 'form' : 'pad form boxed'}>
+      <Field label="这是哪个环境" hint={prod ? '按生产保护：每次发布要你验证本人，员工发之前先问你' : '测试 / 开发环境：员工可以直接发（下面能改）'}>
+        <div className="chips">
+          {ENVS.map((e) => <button key={e} type="button" className={'chip' + (d.env === e ? ' on' : '')} onClick={() => pickEnv(e)}>{e}</button>)}
+          {d.env && !ENVS.includes(d.env) && <button type="button" className="chip on">{d.env}</button>}
+          <button type="button" className={'chip' + (!d.env ? ' on' : '')} onClick={() => pickEnv(undefined)}>{`跟服务器${envs.length ? `（${envs.join(' / ')}）` : ''}`}</button>
+        </div>
+      </Field>
+      {d.env && !PROD.test(d.env) && srvProd && <div className="banner b-warn">发到的服务器里有生产的：这个环境照样按生产保护（发布要验证本人）。要改的话去服务器详情把它的环境标签或「改东西先确认」改掉</div>}
+      <Field label="名字" hint="发布页上显示的，员工说「发到某某」也用它"><input value={d.name} onChange={(v) => up({ name: v.target.value })} placeholder={autoName} /></Field>
+      <Field label="编完发到哪" hint={pkg ? '不发服务器：编完（签好名）放进项目的「安装包」那一格，每格只留最新' : 'App（apk / ipa / msix…）选「存进安装包」'}>
+        <Segmented value={pkg ? 'pkg' : 'srv'} onChange={(v) => up(v === 'pkg' ? { package: d.package ?? { platform: 'android', channel: 'test' }, servers: [] } : { package: undefined })}
+          options={[{ value: 'srv', label: '发到服务器' }, { value: 'pkg', label: '存进安装包（App）' }]} />
+      </Field>
+      {pkg && (
+        <Field label="放进哪一格">
+          <div className="chips">{PLATS.map((x) => <button key={x.p} type="button" className={'chip' + (pkg.platform === x.p ? ' on' : '')} onClick={() => up({ package: { ...pkg, platform: x.p } })}>{x.label}</button>)}</div>
+          <Segmented value={pkg.channel} onChange={(v) => up({ package: { ...pkg, channel: v } })} options={[{ value: 'test', label: '测试' }, { value: 'prod', label: '正式' }]} />
+        </Field>
+      )}
       {builds.length > 0 && (
-        <Field label="发哪个编译组件" hint="编出来的包发到下面这几台；「不编译」= 只在服务器上跑部署命令">
+        <Field label="发哪个编译组件" hint={pkg ? '编出安装包的那个组件' : '编出来的包发到下面这几台；「不编译」= 只在服务器上跑部署命令'}>
           <div className="chips">
             {builds.map((x) => <button key={x.id} type="button" className={'chip' + (sel === x.id ? ' on' : '')} onClick={() => up({ build: x.id })}>{x.name}<span className="sub"> · {KIND[x.kind]}</span></button>)}
-            <button type="button" className={'chip' + (sel === 'none' ? ' on' : '')} onClick={() => up({ build: 'none' })}>不编译</button>
+            {!pkg && <button type="button" className={'chip' + (sel === 'none' ? ' on' : '')} onClick={() => up({ build: 'none' })}>不编译</button>}
           </div>
         </Field>
       )}
-      <div className="field"><span className="field-label">发到哪几台</span>
+      {pkg && !builds.length && <div className="banner b-warn">存进安装包要先有编译组件：上面「编译」里加一个（或者跟员工说一句）</div>}
+      {!pkg && <><div className="field"><span className="field-label">发到哪几台</span>
         <div className="chips">{servers.map((s) => <button key={s.id} type="button" className={'chip' + (d.servers.includes(s.id) ? ' on' : '')} onClick={() => toggleServer(s.id)}>{s.name}<span className="sub"> · {s.env}</span></button>)}</div>
       </div>
       <Field label="部署目录（OPERO_DIR = KL_DIR）" hint="点下面登记过「能部署」的目录，或者「选…」在第一台上浏览">
         {deployDirs.length > 0 && <div className="chips">{deployDirs.map((x) => <button key={x} type="button" className={'chip mono' + (d.dir === x ? ' on' : '')} onClick={() => up({ dir: x })} data-no-i18n="">{x}</button>)}</div>}
         <PathInput server={d.servers[0]} value={d.dir ?? ''} onChange={(v) => up({ dir: v || undefined })} placeholder="/home/project/myapp" />
       </Field>
-      {notAllowed.length > 0 && <div className="banner b-warn">还没登记成能部署：{notAllowed.map((s) => s!.name).join('、')}（服务器详情 → 目录）</div>}
-      {build?.kind === 'android' && certs.length > 0 && (
+      {notAllowed.length > 0 && <div className="banner b-warn">还没登记成能部署：{notAllowed.map((s) => s!.name).join('、')}（服务器详情 → 目录）</div>}</>}
+      {(build?.kind === 'android' || pkg?.platform === 'android') && certs.length > 0 && (
         <Field label="给 apk / aab 签名"><div className="chips"><button type="button" className={'chip' + (!d.sign ? ' on' : '')} onClick={() => up({ sign: undefined })}>不签</button>{certs.map((c) => <button key={c.id} type="button" className={'chip' + (d.sign === c.id ? ' on' : '')} onClick={() => up({ sign: c.id })}>{c.name}</button>)}</div></Field>
       )}
-      {!build && (
+      {!build && !pkg && (
         <Field label="部署命令" hint="在部署目录里跑；点一个常用的，再选要重启的服务">
           <div className="chips">{DEPLOY_CMDS.map(([label, c]) => <button key={label} type="button" className={'chip' + ((d.command ?? '').startsWith(c) ? ' on' : '')} onClick={() => up({ command: c + (svc ? ` && systemctl restart ${svc}` : '') })}>{label}</button>)}</div>
           {d.servers[0] && <ServicePick server={d.servers[0]} value={svc} onChange={setSvc} />}
           <textarea className="mono" rows={2} value={d.command ?? ''} onChange={(v) => up({ command: v.target.value || undefined })} placeholder="git pull && systemctl restart app" />
         </Field>
       )}
-      <Field label="员工能不能发" hint="默认：发生产先问你，测试 / 开发直接发"><Segmented value={d.ai ?? (d.servers.some((id) => /生产|prod/i.test(servers.find((x) => x.id === id)?.env ?? '')) ? 'ask' : 'auto')} onChange={(v) => up({ ai: v })} options={[{ value: 'ask', label: '发前问你' }, { value: 'auto', label: '直接发（失败自动让它修）' }, { value: 'off', label: '不许' }]} /></Field>
-      <Field label="留几个版本（能回滚）"><div className="chips">{[3, 5, 10].map((n) => <button key={n} type="button" className={'chip' + ((d.keep ?? 5) === n ? ' on' : '')} onClick={() => up({ keep: n })}>{`${n} 个版本`}</button>)}</div></Field>
+      <Field label="员工能不能发" hint="默认：发生产先问你，测试 / 开发直接发"><Segmented value={d.ai ?? (prod ? 'ask' : 'auto')} onChange={(v) => up({ ai: v })} options={[{ value: 'ask', label: '发前问你' }, { value: 'auto', label: '直接发（失败自动让它修）' }, { value: 'off', label: '不许' }]} /></Field>
+      {!pkg && <><Field label="留几个版本（能回滚）"><div className="chips">{[3, 5, 10].map((n) => <button key={n} type="button" className={'chip' + ((d.keep ?? 5) === n ? ' on' : '')} onClick={() => up({ keep: n })}>{`${n} 个版本`}</button>)}</div></Field>
       <label className="lrow"><span className="row-main"><span className="row-title">失败自动退回上一版</span><span className="row-sub">部署或检查失败时，用上一个成功版本留着的包重新部署</span></span><Toggle on={d.autoRollback !== false} onChange={(v) => up({ autoRollback: v })} /></label>
-      <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起高级设置' : '高级设置（一般不用动）'}</button>
-      {adv && (
+      <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起高级设置' : '高级设置（一般不用动）'}</button></>}
+      {adv && !pkg && (
         <>
-          <Field label="名字（不填用环境标签）"><input value={d.name} onChange={(v) => up({ name: v.target.value })} placeholder={autoName} /></Field>
           <Field label="发完检查的地址" hint="在每台上 curl，1 分钟内 2xx / 3xx 算好；不填不检查"><input value={d.health ?? ''} onChange={(v) => up({ health: v.target.value || undefined })} placeholder="http://127.0.0.1:8080/health" /></Field>
           {build && <Field label="包里的部署脚本（不填用 deploy.sh）"><input className="mono" value={d.script ?? ''} onChange={(v) => up({ script: v.target.value || undefined })} placeholder="deploy.sh" /></Field>}
           {build && <Field label="部署命令（包里没有部署脚本时用）" hint="包在 $OPERO_PKG，提交在 $OPERO_REF，要密码用 {{secret:凭证名}}"><textarea className="mono" rows={2} value={d.command ?? ''} onChange={(v) => up({ command: v.target.value || undefined })} /></Field>}
         </>
       )}
-      <div className="row-actions"><button className="btn ghost" onClick={onCancel}>取消</button><button className="btn primary" disabled={!d.servers.length || !sel} onClick={() => onSave({ ...d, name: d.name.trim() || autoName, build: builds.length ? sel || undefined : undefined })}>保存</button></div>
+      <div className="row-actions"><button className="btn ghost" onClick={onCancel}>取消</button><button className="btn primary" disabled={pkg ? !builds.length || !sel || sel === 'none' : !d.servers.length || !sel} onClick={() => onSave({ ...d, name: d.name.trim() || autoName, build: builds.length ? sel || undefined : undefined })}>保存</button></div>
     </div>
   )
 }
+
+const ENVS = ['生产', '预发', '测试', '开发']
+/** 不是安卓的签名证书（凭证的类型）：发布时不能用来签 apk / aab */
+const NOT_ANDROID = ['苹果证书', 'App Store Connect API Key', 'Windows 代码签名']
+const PROD = /生产|正式|線上|线上|prod|production|live/i
 
 const SPRING_TASKS = ['clean package -DskipTests', 'clean package', 'bootJar']
 /** 选这台在跑的系统服务（点开才去读），也能手填 */

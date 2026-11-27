@@ -3,12 +3,12 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { cfg } from './config.ts'
+import { cfg, ROOT } from './config.ts'
 import { all, db, del, get, kvGet, kvSet, put, uid } from './db.ts'
 import { addClient, emit, push, waitPush } from './bus.ts'
-import { bad, baseUrl, HttpError, isHttps, route, type Ctx } from './http.ts'
+import { bad, baseUrl, HttpError, isHttps, route, saveBody, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { addMsg, audit, delMsg, getMsg, historyOf, listAudit, listMessages, patchMsg, patchSession, rotateSession, sessionFor, system, usage, usageDetail } from './chat.ts'
+import { addMsg, audit, delMsg, getMsg, historyOf, listAudit, listMessages, patchMsg, patchSession, rotateSession, sessionFor, syncWaiting, system, usage, usageDetail } from './chat.ts'
 import * as runner from './runner.ts'
 import { callTool, fmtSize, prCard, TOOLS, type ToolResult } from './tools.ts'
 import * as prs from './prs.ts'
@@ -17,6 +17,9 @@ import * as inbox from './inbox.ts'
 import * as mfa from './mfa.ts'
 import * as notify from './notify.ts'
 import * as releases from './releases.ts'
+import * as packages from './packages.ts'
+import * as egress from './egress.ts'
+import * as tunnel from './tunnel.ts'
 import * as autogit from './autogit.ts'
 import { cloneFailed } from './cloneNotice.ts'
 import * as build from './build.ts'
@@ -40,7 +43,9 @@ import type { Credential, DataSource, Deploy, Device, Employee, Issue, KbDoc, Me
 import * as memory from './memory.ts'
 import * as issues from './issues.ts'
 import { cleanPolicy } from './policy.ts'
-import { envOf, isProtected } from './env.ts'
+import { deployProtected, envOf, isProtected } from './env.ts'
+import { certType } from './signing.ts'
+import { randomName } from './names.ts'
 
 const now = () => new Date().toLocaleString('zh-CN', { hour12: false }).slice(0, 16)
 const put1 = <T extends { id: string }>(coll: Parameters<typeof put>[0], item: T): T => { put(coll, item); emit({ t: 'put', coll, item: pub(coll, item) }); return item }
@@ -79,6 +84,9 @@ function bootstrap(c: Ctx) {
   const sess = c.sess
   const setupDone = kvGet('setupDone', false)
   if (!o || !sess) return { auth: { needOwner: !o, loggedIn: false, setupDone }, instance: instanceInfo() }
+  // 记下主人是从哪个地址打开的：没配 OPERO_URL 时，员工给的分享链接用它（packages.publicBase）
+  const seen = baseUrl(c.req, cfg.publicUrl)
+  if (seen !== kvGet('seenBase', '')) kvSet('seenBase', seen)
   const sessions = all<Session>('sessions').filter((s) => !s.archived) // 归档的在员工资料「历史会话」里按需拉
   return {
     auth: { needOwner: false, loggedIn: true, setupDone },
@@ -97,6 +105,7 @@ function bootstrap(c: Ctx) {
     queue: all<queue.QItem>('queue'),
     issues: issues.list().slice(0, 300),
     releases: releases.list({ limit: 100 }),
+    packages: packages.list().map(packages.pub),
     domains: all<dns.Domain>('domains'),
     channels: all<inbox.Channel>('channels').map(inbox.pubCh),
     notifiers: all<notify.Notifier>('notifiers').map(notify.pub),
@@ -106,14 +115,31 @@ function bootstrap(c: Ctx) {
     settings: settings(),
   }
 }
-const instanceInfo = () => ({ version: cfg.version, web: webVersion(), isolated: !!cfg.aiUser, aiUser: cfg.aiUser })
+const instanceInfo = () => ({ version: cfg.version, web: webVersion(), notes: latestNotes(), isolated: !!cfg.aiUser, aiUser: cfg.aiUser })
 /** 网页包的版本（单独换了网页也要让开着的页面刷新）：看打包出来的 index.html 改没改，用它的修改时间 */
 function webVersion() {
   if (!cfg.web) return ''
   try { return String(Math.floor(fs.statSync(path.join(cfg.web, 'index.html')).mtimeMs)) } catch { return '' }
 }
 // 开着的网页隔一会 / 切回来时问一下：版本变了就刷新（不用登录，只有版本号）
-route('GET', '/api/version', () => ({ version: cfg.version, web: webVersion() }), { auth: 'none' })
+route('GET', '/api/version', () => ({ version: cfg.version, web: webVersion(), notes: latestNotes() }), { auth: 'none' })
+/** 新版本提示里的「更新了什么」：docs/变更记录.md 最上面那一节的标题和前 3 条（开源的，不怕看；没有这个文件就不给） */
+let notesCache: { at: number; v: { title: string; items: string[] } | null } = { at: 0, v: null }
+function latestNotes() {
+  if (Date.now() - notesCache.at < 60_000) return notesCache.v
+  let v: { title: string; items: string[] } | null = null
+  try {
+    const md = fs.readFileSync(path.join(ROOT, 'docs/变更记录.md'), 'utf8')
+    const sec = md.split(/\n## /)[1]
+    if (sec) {
+      const [head, ...rest] = sec.split('\n')
+      const items = rest.filter((l) => l.startsWith('- ')).slice(0, 3).map((l) => { const t = l.slice(2).replace(/\*\*|`/g, '').trim(); const head = t.split(/[：:]/)[0]; const x = head.length >= 4 && head.length < t.length ? head : t; return x.length > 48 ? `${x.slice(0, 46)}…` : x })
+      v = { title: head.trim(), items }
+    }
+  } catch { /* 没有就算了 */ }
+  notesCache = { at: Date.now(), v }
+  return v
+}
 
 route('GET', '/api/health', () => ({ ok: true, version: cfg.version }), { auth: 'none' })
 route('GET', '/api/bootstrap', (c) => bootstrap(c), { auth: 'none' })
@@ -266,108 +292,124 @@ const hostParam = (v: unknown) => {
   if (!agents.isAgent(sv)) throw bad('这台服务器没装 Agent')
   return h
 }
+const EXEC_KINDS: runner.ExecKind[] = ['claude', 'codex', 'qwen', 'codebuddy']
 async function executors(host = hosts.LOCAL) {
-  const [cc, cx] = await Promise.all([hosts.runAiOn(host, hosts.claudeBin(host), ['--version'], { timeoutMs: 15_000 }), hosts.runAiOn(host, hosts.codexBin(host), ['--version'], { timeoutMs: 15_000 })])
+  const vers = await Promise.all(EXEC_KINDS.map((k) => hosts.runAiOn(host, hosts.execBin(k, host), ['--version'], { timeoutMs: 15_000 })))
+  const ver = (i: number) => (vers[i].code === 0 ? vers[i].out.split('\n').filter(Boolean).pop() ?? '' : null)
   const c = runner.aiConf()
   const remote = !hosts.isLocal(host)
+  const as = (cmd: string) => `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'${cmd}'`
   return {
     host, aiUser: remote ? 'opero-ai' : cfg.aiUser, isolated: remote || !!cfg.aiUser,
-    claude: cc.code === 0 ? cc.out.split('\n')[0] : null,
-    codex: cx.code === 0 ? cx.out.split('\n').pop() : null,
+    claude: ver(0), codex: ver(1), qwen: ver(2), codebuddy: ver(3),
     claudeKey: !!(c.claudeCred && hasSecret(c.claudeCred)),
-    claudeAccounts: accountList('claude'), codexAccounts: accountList('codex'),
+    claudeAccounts: accountList('claude'), codexAccounts: accountList('codex'), qwenAccounts: accountList('qwen'), codebuddyAccounts: accountList('codebuddy'),
     claudeBaseUrl: c.claudeBaseUrl ?? '', claudeEgress: c.claudeEgress ?? '', codexEgress: c.codexEgress ?? '',
     codexKey: runner.codexAccounts().length > 0, codexBaseUrl: c.codexBaseUrl ?? '',
+    qwenBase: runner.QWEN_BASE, qwenModel: runner.QWEN_MODEL,
     install: {
-      claude: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'curl -fsSL https://claude.ai/install.sh | bash'`,
-      codex: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'npm install -g @openai/codex --prefix ~/.local'`,
-      login: `${cfg.aiUser ? `sudo -u ${cfg.aiUser} -H bash -lc ` : 'bash -lc '}'claude setup-token'`,
+      claude: as('curl -fsSL https://claude.ai/install.sh | bash'),
+      codex: as('npm install -g @openai/codex --prefix ~/.local'),
+      qwen: as('npm install -g @qwen-code/qwen-code --prefix ~/.local'),
+      codebuddy: as('npm install -g @tencent-ai/codebuddy-code --prefix ~/.local'),
+      login: as('claude setup-token'),
     },
   }
 }
-/** AI 执行器的账号（Claude / Codex 各一组）：默认哪个、订阅还是 API Key、走哪个接口地址、谁在用、到没到用量上限 */
-function accountList(kind: 'claude' | 'codex') {
-  const c = runner.aiConf()
+/** AI 执行器的账号（每种执行器一组）：默认哪个、订阅还是 API Key、走哪个接口地址、谁在用、到没到用量上限 */
+function accountList(kind: runner.ExecKind) {
   const lim = kvGet<Record<string, number>>('claudeLimited', {})
-  const ids = kind === 'claude' ? runner.claudeAccounts() : runner.codexAccounts()
-  const def = kind === 'claude' ? c.claudeCred : (c.codexCred && ids.includes(c.codexCred) ? c.codexCred : ids[0])
-  return ids.map((id) => {
+  const def = runner.defaultOf(kind)
+  return runner.accountsOf(kind).map((id) => {
     const cr = get<Credential>('credentials', id)
-    const base = String(cr?.meta?.baseUrl ?? '')
-    return { id, kind, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === def, baseUrl: base,
+    return { id, kind, name: cr?.name ?? id, user: cr?.user ?? '', updated: cr?.updated ?? '', isDefault: id === def,
+      baseUrl: String(cr?.meta?.baseUrl ?? ''), region: String(cr?.meta?.region ?? ''), model: String(cr?.meta?.model ?? ''),
       limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0,
-      employees: kind === 'claude' ? all<Employee>('employees').filter((e) => e.claudeAccount === id).map((e) => e.name) : [],
-      sub: kind === 'claude' ? runner.isOat(runner.claudeKey(id), id) : false }
+      employees: kind === 'claude' || kind === 'codex' ? all<Employee>('employees').filter((e) => (kind === 'claude' ? e.claudeAccount : e.codexAccount) === id).map((e) => e.name) : [],
+      plan: String(cr?.meta?.plan ?? ''),
+      sub: kind === 'claude' ? runner.isOat(runner.claudeKey(id), id) : kind === 'codex' ? runner.codexMode(id) === 'chatgpt' : false }
   })
 }
-/** 这个账号是哪个执行器的 */
-const kindOfAccount = (id: string): 'claude' | 'codex' | undefined => (runner.claudeAccounts().includes(id) ? 'claude' : runner.codexAccounts().includes(id) ? 'codex' : undefined)
-/** 加一个账号（贴进来的 API Key / 订阅令牌，或凭证里已经存的）：都是新加，原来的不动；还没有默认的就设成默认 */
-function addAiAccount(kind: 'claude' | 'codex', o: { value?: string; credId?: string; name?: string; baseUrl?: string; makeDefault?: boolean }): string {
+/** 这个账号是哪种执行器的 */
+const kindOfAccount = (id: string): runner.ExecKind | undefined => EXEC_KINDS.find((k) => runner.accountsOf(k).includes(id))
+/** 存一种执行器的账号列表和默认账号 */
+function saveAccounts(kind: runner.ExecKind, list: string[], def?: string) {
   const conf = runner.aiConf()
+  const d = def && list.includes(def) ? def : list[0]
+  if (kind === 'claude') kvSet('ai', { ...conf, claudeAccounts: list, claudeCred: d })
+  else if (kind === 'codex') kvSet('ai', { ...conf, codexAccounts: list, codexCred: d })
+  else kvSet('ai', { ...conf, accounts: { ...(conf.accounts ?? {}), [kind]: list }, defaults: { ...(conf.defaults ?? {}), [kind]: d } })
+}
+const ACCT_NAME: Record<runner.ExecKind, string> = { claude: 'Claude 的 API Key', codex: 'Codex 的 OpenAI API Key', qwen: 'Qwen Code 的百炼 API Key', codebuddy: 'CodeBuddy 的 API Key' }
+/** 加一个账号（贴进来的 API Key / 订阅令牌，或凭证里已经存的）：都是新加，原来的不动；还没有默认的就设成默认。
+ *  baseUrl：这个账号的接口地址；region：CodeBuddy 国内站 cn（默认）/ 国际站 intl；model：Qwen Code 默认用的模型 */
+function addAiAccount(kind: runner.ExecKind, o: { value?: string; credId?: string; name?: string; baseUrl?: string; region?: string; model?: string; makeDefault?: boolean }): string {
   const base = String(o.baseUrl ?? '').trim()
   if (base && !/^https?:\/\/\S+$/.test(base)) throw bad('接口地址要以 http:// 或 https:// 开头')
+  const extra = { ...(base ? { baseUrl: base } : {}), ...(o.region === 'intl' ? { region: 'intl' } : {}), ...(o.model ? { model: String(o.model).trim().slice(0, 80) } : {}) }
   let id: string
   if (o.credId) {
     const cr = get<Credential>('credentials', o.credId)
     if (!cr || !hasSecret(o.credId)) throw bad('这个凭证不在了或没有值')
     id = o.credId
-    if (base || o.name) put1('credentials', { ...cr, ...(o.name ? { name: o.name } : {}), meta: { ...(cr.meta ?? {}), ...(base ? { baseUrl: base } : {}) } })
+    put1('credentials', { ...cr, ...(o.name ? { name: o.name } : {}), meta: { ...(cr.meta ?? {}), ...extra } })
   } else {
     const v = String(o.value ?? '').trim()
+    // Codex 贴的是 auth.json（在别的电脑上用 ChatGPT 登录过 codex）：存成订阅账号
+    if (kind === 'codex' && v.startsWith('{')) {
+      try { return execs.saveCodexAuth(v, { name: o.name, makeDefault: o.makeDefault }).id } catch (e) { throw bad((e as Error).message) }
+    }
     if (!v || /\s/.test(v) || v.length < 20) throw bad('贴进来的不像 Key / 令牌：要一整串、中间没有空格')
     if (v.includes('#')) throw bad('这是浏览器给的一次性授权码，不是令牌：只能贴回发它的那次登录')
-    const list = kind === 'claude' ? runner.claudeAccounts() : runner.codexAccounts()
-    id = list.find((x) => getSecret(x)?.trim() === v) ?? uid('cr')
+    id = runner.accountsOf(kind).find((x) => getSecret(x)?.trim() === v) ?? uid('cr')
     setSecret(id, v)
-    const api = kind === 'codex' || !!base || /^sk-ant-api/i.test(v)
-    const name = o.name?.trim().slice(0, 60) || (kind === 'codex' ? 'Codex 的 OpenAI API Key' : api ? 'Claude 的 API Key' : 'Claude Code 的登录令牌')
+    const api = kind !== 'claude' || !!base || /^sk-ant-api/i.test(v)
+    const name = o.name?.trim().slice(0, 60) || (kind === 'claude' && !api ? 'Claude Code 的登录令牌' : ACCT_NAME[kind])
     put1('credentials', { id, name, group: 'AI', kind: 'Token', env: '生产', scope: api ? '调模型（按量计费）' : 'Claude 订阅（一年有效）', usedBy: [], updated: now(), aiAllowed: true,
-      meta: { ...(kind === 'claude' ? { authMode: api ? 'api' : 'oauth' } : {}), ...(base ? { baseUrl: base } : {}) } } satisfies Credential)
+      meta: { ...(kind === 'claude' ? { authMode: api ? 'api' : 'oauth' } : kind === 'codex' ? { authMode: 'api' } : {}), ...extra } } satisfies Credential)
   }
-  if (kind === 'claude') kvSet('ai', { ...conf, claudeAccounts: [...new Set([...(conf.claudeAccounts ?? []), ...(conf.claudeCred ? [conf.claudeCred] : []), id])], claudeCred: o.makeDefault || !conf.claudeCred ? id : conf.claudeCred })
-  else kvSet('ai', { ...conf, codexAccounts: [...new Set([...(conf.codexAccounts ?? []), ...(conf.codexCred ? [conf.codexCred] : []), id])], codexCred: o.makeDefault || !conf.codexCred ? id : conf.codexCred })
-  audit({ via: '—', action: 'ai.account.add', target: `${kind === 'claude' ? 'Claude' : 'Codex'} · ${get<Credential>('credentials', id)?.name ?? id}`, level: '危险', result: '成功', how: '本人' })
+  const list = [...new Set([...runner.accountsOf(kind), id])]
+  saveAccounts(kind, list, o.makeDefault ? id : runner.defaultOf(kind) ?? id)
+  audit({ via: '—', action: 'ai.account.add', target: `${runner.EXEC_NAMES[kind]} · ${get<Credential>('credentials', id)?.name ?? id}`, level: '危险', result: '成功', how: '本人' })
   return id
 }
 route('GET', '/api/ai', (c) => executors(hostParam(c.url.searchParams.get('host'))))
-route('GET', '/api/ai/accounts', (c) => accountList(/codex/i.test(c.url.searchParams.get('kind') ?? '') ? 'codex' : 'claude'))
-/** 加一个账号：贴 API Key / 订阅令牌（可带名字、接口地址），或用凭证里已经存的（credId）。订阅令牌想先真跑一次验证，用 /api/ai/login/token */
+route('GET', '/api/ai/accounts', (c) => accountList(runner.kindOf(c.url.searchParams.get('kind') ?? '')))
+/** 加一个账号：贴 API Key / 订阅令牌（可带名字、接口地址、CodeBuddy 的站点、Qwen 的模型），或用凭证里已经存的（credId）。Claude 订阅令牌想先真跑一次验证，用 /api/ai/login/token */
 route('POST', '/api/ai/accounts', async (c) => {
   const b = c.body ?? {}
-  const kind = /codex/i.test(String(b.executor ?? b.kind ?? '')) ? 'codex' : 'claude'
-  addAiAccount(kind, { value: b.value, credId: b.credId, name: b.name, baseUrl: b.baseUrl, makeDefault: !!b.makeDefault })
+  addAiAccount(runner.kindOf(String(b.executor ?? b.kind ?? '')), { value: b.value, credId: b.credId, name: b.name, baseUrl: b.baseUrl, region: b.region, model: b.model, makeDefault: !!b.makeDefault })
   return executors(hostParam(b.host))
 })
-// 账号：设成默认 / 改名 / 改接口地址 / 从 Opero 去掉（只是 Opero 不再用它，账号和令牌本身不受影响、别的项目照常用）
+// 账号：设成默认 / 改名 / 改接口地址、模型、站点 / 从 Opero 去掉（只是 Opero 不再用它，账号和令牌本身不受影响、别的项目照常用）
 route('PUT', '/api/ai/accounts/:id', (c) => {
-  const conf = runner.aiConf()
   const id = c.params.id
   const kind = kindOfAccount(id)
   if (!kind) throw new HttpError(404, '没有这个账号')
-  if (c.body?.isDefault) kvSet('ai', { ...conf, ...(kind === 'claude' ? { claudeCred: id } : { codexCred: id }) })
+  if (c.body?.isDefault) saveAccounts(kind, runner.accountsOf(kind), id)
   const cr = get<Credential>('credentials', id)
   const name = String(c.body?.name ?? '').trim().slice(0, 60)
-  if (cr && (name || c.body?.baseUrl !== undefined)) {
+  if (cr && (name || c.body?.baseUrl !== undefined || c.body?.model !== undefined || c.body?.region !== undefined)) {
     const base = String(c.body?.baseUrl ?? cr.meta?.baseUrl ?? '').trim()
     if (base && !/^https?:\/\/\S+$/.test(base)) throw bad('接口地址要以 http:// 或 https:// 开头')
-    put1('credentials', { ...cr, ...(name ? { name } : {}), meta: { ...(cr.meta ?? {}), baseUrl: base || undefined } })
+    const model = c.body?.model !== undefined ? String(c.body.model).trim().slice(0, 80) : String(cr.meta?.model ?? '')
+    const region = c.body?.region !== undefined ? (c.body.region === 'intl' ? 'intl' : '') : String(cr.meta?.region ?? '')
+    put1('credentials', { ...cr, ...(name ? { name } : {}), meta: { ...(cr.meta ?? {}), baseUrl: base || undefined, model: model || undefined, region: region || undefined } })
   }
   if (c.body?.clearLimit) { const lim = kvGet<Record<string, number>>('claudeLimited', {}); delete lim[id]; kvSet('claudeLimited', lim) }
   return { ok: true }
 })
 route('DELETE', '/api/ai/accounts/:id', (c) => {
-  const conf = runner.aiConf()
   const id = c.params.id
   const kind = kindOfAccount(id)
   if (!kind) throw new HttpError(404, '没有这个账号')
-  if (kind === 'claude') {
-    const rest = runner.claudeAccounts().filter((x) => x !== id)
-    kvSet('ai', { ...conf, claudeAccounts: rest, claudeCred: conf.claudeCred === id ? rest[0] : conf.claudeCred })
-    for (const e of all<Employee>('employees').filter((x) => x.claudeAccount === id)) put1('employees', { ...e, claudeAccount: undefined })
-  } else {
-    const rest = runner.codexAccounts().filter((x) => x !== id)
-    kvSet('ai', { ...conf, codexAccounts: rest, codexCred: conf.codexCred === id ? rest[0] : conf.codexCred })
+  const def = runner.defaultOf(kind)
+  saveAccounts(kind, runner.accountsOf(kind).filter((x) => x !== id), def === id ? undefined : def)
+  if (kind === 'claude') for (const e of all<Employee>('employees').filter((x) => x.claudeAccount === id)) put1('employees', { ...e, claudeAccount: undefined })
+  if (kind === 'codex') {
+    for (const e of all<Employee>('employees').filter((x) => x.codexAccount === id)) put1('employees', { ...e, codexAccount: undefined })
+    // ChatGPT 订阅账号在 Opero 这台留的 CODEX_HOME 一起删掉（别的服务器上的下次用不到，留着也无害）
+    if (runner.codexMode(id) === 'chatgpt') void hosts.runAiOn(hosts.LOCAL, 'bash', ['-c', 'rm -rf "$HOME/.opero/codex/$1"', '_', id], { timeoutMs: 20_000 })
   }
   const cr = get<Credential>('credentials', id)
   del1('credentials', id); delSecret(id)
@@ -400,11 +442,12 @@ route('PUT', '/api/ai', async (c) => {
 route('GET', '/api/ai/job', () => ({ job: execs.currentJob() }))
 route('POST', '/api/ai/install', (c) => {
   const host = hostParam(c.body?.host)
-  try { return { job: execs.startInstall(/codex/i.test(String(c.body?.executor ?? '')) ? 'codex' : 'claude', host) } } catch (e) { throw bad((e as Error).message) }
+  try { return { job: execs.startInstall(runner.kindOf(String(c.body?.executor ?? '')), host) } } catch (e) { throw bad((e as Error).message) }
 })
 route('POST', '/api/ai/login', (c) => {
   const host = hostParam(c.body?.host)
-  try { return { job: execs.startLogin(host) } } catch (e) { throw bad((e as Error).message) }
+  // Claude：订阅登录（setup-token）；Codex：用 ChatGPT 账号登录（设备码）
+  try { return { job: runner.kindOf(String(c.body?.executor ?? '')) === 'codex' ? execs.startCodexLogin(host) : execs.startLogin(host) } } catch (e) { throw bad((e as Error).message) }
 })
 route('POST', '/api/ai/login/token', (c) => {
   const host = hostParam(c.body?.host)
@@ -428,20 +471,19 @@ route('POST', '/api/ai/egress-test', async (c) => {
   return { ok, via: env.HTTPS_PROXY ? 'egress' : 'direct', status: m?.[1] ?? '', secs: m ? Number(m[2]) : 0, out: ok ? '' : r.out.slice(-300) }
 })
 route('POST', '/api/ai/test', async (c) => {
-  const codex = /codex/i.test(String(c.body?.executor ?? ''))
+  const kind = runner.kindOf(String(c.body?.executor ?? ''))
   const host = hostParam(c.body?.host)
-  const c2 = runner.aiConf()
-  const env: Record<string, string> = {}
-  const acct = codex ? undefined : runner.pickClaude()
-  const key = codex ? (c2.codexCred && getSecret(c2.codexCred)?.trim()) : runner.claudeKey(acct)
-  if (key) Object.assign(env, codex ? { OPENAI_API_KEY: key, CODEX_API_KEY: key } : { [!c2.claudeBaseUrl && runner.isOat(key, acct) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY']: key })
-  if (!codex && c2.claudeBaseUrl) env.ANTHROPIC_BASE_URL = c2.claudeBaseUrl
-  if (codex && c2.codexBaseUrl) env.OPENAI_BASE_URL = c2.codexBaseUrl
-  Object.assign(env, runner.egressEnv(codex ? 'codex' : 'claude', host))
-  const r = codex
-    ? await hosts.runAiOn(host, hosts.codexBin(host), ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
-    : await hosts.runAiOn(host, hosts.claudeBin(host), ['-p', '--max-turns', '1', '--output-format', 'text'], { env, input: 'Reply with exactly: OK', timeoutMs: 120_000 })
-  const out = key ? r.out.split(key).join('••••') : r.out
+  // 和员工干活时一样：默认账号、它的接口地址、网络出口
+  const { env, secrets, cred } = runner.aiEnv(kind, host)
+  const bin = hosts.execBin(kind, host)
+  const ask = 'Reply with exactly: OK'
+  const r = kind === 'codex'
+    ? await hosts.runAiOn(host, ...runner.codexCmd(bin, ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', '-'], env), { env, input: ask, timeoutMs: 120_000 })
+    : kind === 'qwen'
+      ? await hosts.runAiOn(host, bin, ['--auth-type', 'openai', '-o', 'text', '-m', env.OPENAI_MODEL ?? runner.QWEN_MODEL, '--max-session-turns', '1', '-p', ask], { env, timeoutMs: 120_000 })
+      : await hosts.runAiOn(host, bin, ['-p', '--max-turns', '1', '--output-format', 'text'], { env, input: ask, timeoutMs: 120_000 })
+  if (kind === 'codex') void runner.syncCodexAuth(host, cred).catch(() => {})
+  const out = secrets.reduce((o, k) => o.split(k).join('••••'), r.out)
   return { ok: r.code === 0 && /OK/.test(out), ms: r.ms, out: out.slice(-600) }
 })
 
@@ -460,13 +502,14 @@ function cleanEmp(b: any, old?: Employee): Employee {
     ...(old ?? {}),
     id: old?.id ?? (String(b.id ?? '').match(/^[\w-]{2,40}$/) ? String(b.id) : uid('e')),
     name, avatar: String(pick('avatar', '') || name.slice(0, 1)), color: pick('color', '#5B4FE9'), title: pick('title', ''), prompt: pick('prompt', ''), persona: pick('persona', ''),
-    executor: /codex/i.test(String(pick('executor', 'Claude Code'))) ? 'Codex' : 'Claude Code', host: empHost(b.host ?? old?.host), workspace: pick('workspace', ''), menus: pick('menus', []),
+    executor: runner.EXEC_NAMES[runner.kindOf(String(pick('executor', 'Claude Code')))], host: empHost(b.host ?? old?.host), workspace: pick('workspace', ''), menus: pick('menus', []),
     model: pick('model', 'Opus 5.5'), effort: pick('effort', 'high'), approval: pick('approval', 'auto'), notify: pick('notify', 'decide'), bg: pick('bg', 'plain'),
-    avatarImg: pick('avatarImg', undefined), repo: '', resumeId: old?.resumeId, contextUsed: old?.contextUsed ?? 0,
+    avatarImg: pick('avatarImg', undefined), role: String(pick('role', '') ?? '').trim().slice(0, 20) || undefined, repo: '', resumeId: old?.resumeId, contextUsed: old?.contextUsed ?? 0,
     gender: String(pick('gender', '') ?? '').slice(0, 10), memRepo: String(pick('memRepo', '') ?? '').trim() || undefined, memCred: String(pick('memCred', '') ?? '') || undefined,
     works: old?.works,
     canManage: !!pick('canManage', false),
     claudeAccount: (() => { const v = String(pick('claudeAccount', '') ?? ''); return v && runner.claudeAccounts().includes(v) ? v : undefined })(),
+    codexAccount: (() => { const v = String(pick('codexAccount', '') ?? ''); return v && runner.codexAccounts().includes(v) ? v : undefined })(),
     reads: (Array.isArray(b.reads) ? b.reads : old?.reads ?? []).map(String).filter((id: string) => get<Workspace>('workspaces', id)).slice(0, 8),
     budget: Math.max(0, Number(pick('budget', 0)) || 0) || undefined,
     dns: (Array.isArray(b.dns) ? b.dns : old?.dns ?? []).map(String).filter((id: string) => get('domains', id)),
@@ -481,7 +524,7 @@ function createEmployee(e: Employee, greet = true) {
   put1('employees', e)
   const s = sessionFor(e.id)
   if (greet) {
-    addMsg(s.id, { from: e.id, kind: 'text', text: `我是「${e.name}」${e.title ? `，${e.title}` : ''}。有事直接跟我说。` })
+    addMsg(s.id, { from: e.id, kind: 'text', text: `我是「${e.name}」${e.role ? `（${e.role}）` : ''}${e.title ? `，${e.title}` : ''}。有事直接跟我说。` })
     patchSession(s.id, { last: `我是「${e.name}」`, unread: 1 })
   }
   audit({ via: '—', action: 'employee.create', target: e.name, level: '写', result: '成功', how: '本人' })
@@ -572,16 +615,17 @@ route('POST', '/api/sessions/:id/handoff', async (c) => {
 })
 route('POST', '/api/employees/:id/switch', async (c) => {
   const e = empOf(c.params.id)
-  const to = /codex/i.test(String(c.body?.executor ?? '')) ? 'Codex' : 'Claude Code'
-  if (to === e.executor) throw bad(`已经是 ${to} 了`)
+  const k = runner.kindOf(String(c.body?.executor ?? ''))
+  const to = runner.EXEC_NAMES[k]
+  if (k === runner.kindOf(e.executor)) throw bad(`已经是 ${to} 了`)
   const host = runner.hostOf(e)
-  const bin = to === 'Codex' ? hosts.codexBin(host) : hosts.claudeBin(host)
+  const bin = hosts.execBin(k, host)
   const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
   if (v.code !== 0) throw bad(`这台还没装好 ${to}：先到「应用 → AI 执行器」装好、登录`)
   // 换执行器 = 开一段新的 work（新执行器、上下文清空），自动发一条交接：你是谁、负责什么、目录在哪、上一段在做什么。员工的目录和项目都在，读文档就能接上
   const draft = await handoffDraft(e, sessionFor(e.id).id)
   const ns = rotate({ ...e }, `换成 ${to}`)
-  const cur = put1('employees', { ...get<Employee>('employees', e.id)!, executor: to, model: to === 'Codex' ? '执行器默认' : 'Opus 5.5', claudeAccount: to === 'Codex' ? undefined : e.claudeAccount })
+  const cur = put1('employees', { ...get<Employee>('employees', e.id)!, executor: to, model: k === 'claude' ? 'Opus 5.5' : k === 'qwen' ? runner.QWEN_MODEL : '执行器默认', claudeAccount: k === 'claude' ? e.claudeAccount : undefined, codexAccount: k === 'codex' ? e.codexAccount : undefined })
   const w = cur.workspace ? get<Workspace>('workspaces', cur.workspace) : undefined
   const msg = [
     `（Opero 交接）你接手「${cur.name}」这个员工的工作：以前用 ${e.executor} 干，现在换成你（${to}）。`,
@@ -623,7 +667,9 @@ route('POST', '/api/setup/employees', (c) => {
     if (!p) continue
     // 按角色先勾好：这几类凭证现在有的直接给，以后新加的也自动给（员工那边能改）
     const creds = all<Credential>('credentials').filter((x) => x.aiAllowed && (p.credGroups ?? []).includes(x.group)).map((x) => x.id)
-    made.push(createEmployee(cleanEmp({ ...p, id: k, executor, model: /codex/i.test(executor) ? '执行器默认' : model, creds })))
+    // 预设的名字（管家、运维…）当职位，名字起个人名
+    const name = randomName(undefined, [...all<Employee>('employees').map((e) => e.name), ...made.map((e) => e.name)])
+    made.push(createEmployee(cleanEmp({ ...p, id: k, role: p.name, name, avatar: name.slice(0, 1), executor, model: runner.kindOf(executor) === 'claude' ? model : runner.kindOf(executor) === 'qwen' ? runner.QWEN_MODEL : '执行器默认', creds })))
   }
   return made
 })
@@ -666,8 +712,12 @@ route('POST', '/api/sessions/:id/messages', (c) => {
   const text = String(c.body?.text ?? '').trim()
   const files = attsOf(emp, c.body?.files)
   if (!text && !files.length) throw bad('说点什么')
+  return deliver(s, emp, text, files, c.body?.mode === 'queue' ? 'queue' : 'auto')
+})
+
+/** 发给员工：在干活就插话 / 排队，闲着就直接派活（发消息、转发共用） */
+function deliver(s: Session, emp: Employee, text: string, files: queue.QAtt[], mode: 'queue' | 'auto') {
   const working = runner.isWorking(emp.id)
-  const mode = c.body?.mode === 'queue' ? 'queue' : 'auto'
   // 员工只是在收尾（提交推送）：不进排队，照常显示，收尾完它马上接着看
   if (working && mode !== 'queue' && !runner.canInterject(emp.id) && runner.sendNext(emp.id, text || queue.defaultText(files), queue.toAttachments(emp, files))) {
     queue.post(s.id, text, files)
@@ -679,6 +729,44 @@ route('POST', '/api/sessions/:id/messages', (c) => {
   queue.post(s.id, text, files)
   runner.send(emp.id, text || queue.defaultText(files), queue.toAttachments(emp, files))
   return { sent: true, interjected: working }
+}
+
+/** 聊天里一条文件 / 图片消息对应的磁盘文件（员工发的在 data/files，主人传的在员工的 uploads/） */
+function fileOfMsg(m: Message): { path: string; name: string } | undefined {
+  const u = m.file?.url
+  if (!u) return
+  const q = new URL(u, 'http://x/')
+  let r = q.pathname.match(/^\/api\/files\/(\w+)$/)
+  if (r) return { path: path.join(cfg.data, 'files', r[1]), name: q.searchParams.get('name') || m.file!.name }
+  r = q.pathname.match(/^\/api\/uploads\/([^/]+)\/([^/]+)$/)
+  const e = r && get<Employee>('employees', decodeURIComponent(r[1]))
+  const f = r && decodeURIComponent(r[2])
+  if (e && f && !f.startsWith('.')) return { path: path.join(runner.empHome(e), 'uploads', f), name: f.replace(/^[^-]+-/, '') }
+}
+
+// 转发一条消息给别的员工：文字照转；图片 / 文件把文件本身复制过去（对方能直接看、直接用），不是只转个文件名
+route('POST', '/api/sessions/:id/forward', (c) => {
+  const s = sess(c.params.id)
+  const emp = get<Employee>('employees', s.employee)
+  if (!emp) throw new HttpError(404, '没有这个员工')
+  const found = getMsg(String(c.body?.msg ?? ''))
+  if (!found) throw new HttpError(404, '这条消息没了')
+  const m = found.msg
+  const fromEmp = get<Employee>('employees', get<Session>('sessions', found.sid)?.employee ?? '')
+  const head = `转自「${fromEmp?.name ?? '聊天'}」`
+  let files: queue.QAtt[] = []
+  if (m.kind === 'file') {
+    const src = fileOfMsg(m)
+    if (!src || !fs.existsSync(src.path)) throw bad('文件已经没了，转不了')
+    const name = path.basename(src.name).replace(/[^\w.\-一-龥]+/g, '_').slice(0, 80) || 'file'
+    const id = `${uid('u')}-${name}`
+    fs.mkdirSync(path.dirname(queue.uploadPath(emp, id)), { recursive: true })
+    fs.copyFileSync(src.path, queue.uploadPath(emp, id))
+    files = attsOf(emp, [{ id, w: m.file?.w, h: m.file?.h }])
+  }
+  const body = m.kind === 'file' ? '' : (m.text ?? (m.card ? String(m.card.data.title ?? '') : ''))
+  const text = m.kind === 'file' ? `${head}的${m.file?.image ? '图片' : `文件「${m.file?.name}」`}` : `${head}：\n${body}`
+  return deliver(s, emp, text, files, 'auto')
 })
 
 // 页面上「交给员工」：没有会话就建，这句话照常发（在忙就排队）；返回会话，网页跳过去
@@ -726,7 +814,9 @@ route('POST', '/api/sessions/:id/queue/run', (c) => {
   return { ok: queue.drain(s.employee) }
 })
 
+// ?dl=1：一律当附件下载（图片默认在页面里直接显示）
 function sendFileOut(c: Ctx, p: string, name?: string) {
+  const dl = c.url.searchParams.get('dl') === '1'
   let st: fs.Stats
   try { st = fs.statSync(p) } catch { throw new HttpError(404, '文件没了') }
   const ext = path.extname(name ?? p).toLowerCase()
@@ -734,7 +824,7 @@ function sendFileOut(c: Ctx, p: string, name?: string) {
   const type = types[ext] ?? 'application/octet-stream'
   c.res.writeHead(200, {
     'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'private, max-age=86400', 'X-Content-Type-Options': 'nosniff',
-    'Content-Disposition': `${type.startsWith('image/') ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name ?? path.basename(p))}`,
+    'Content-Disposition': `${type.startsWith('image/') && !dl ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name ?? path.basename(p))}`,
   })
   fs.createReadStream(p).pipe(c.res)
 }
@@ -771,15 +861,27 @@ route('POST', '/api/messages/:id/action', async (c) => {
   const found = getMsg(c.params.id)
   const card = found?.msg.card
   if (!found || !card) throw new HttpError(404, '没有这张卡片')
-  if (card.state !== 'open') throw bad('已经处理过了')
-  const act = card.actions.find((a) => a.id === c.body?.action)
+  // 发布卡片发完就是 done（不能再改进度），但「让员工修 / 重新发布 / 回滚」正是发完以后才有的：这几个按钮不看 state
+  const relBtn = card.type === 'release' && !!card.data.rel && String(c.body?.action ?? '').startsWith('rel:')
+  if (card.state !== 'open' && !relBtn) throw bad('已经处理过了')
+  // 「以后再说」所有等你的卡片都能点（以前发的卡片上没有这个按钮，也认）
+  const needYou = !!(card.data.needYou || card.data.credReq || card.type === 'confirm' || card.type === 'ask' || card.type === 'issue')
+  const act = card.actions.find((a) => a.id === c.body?.action) ?? (c.body?.action === 'later' && needYou ? { id: 'later', label: '以后再说' } : undefined)
   if (!act) throw bad('没有这个按钮')
   const verified = !!c.sess && Date.now() - c.sess.verified < auth.VERIFY_MS
   if (act.style === 'danger') needVerify(c)
   const s = get<Session>('sessions', found.sid)
   const answer = c.body?.answer !== undefined ? String(c.body.answer) : undefined
   let result: string
-  if (runner.isPending(c.params.id)) {
+  if (act.id === 'later') {
+    // 「以后再说」：卡片收起、红点消掉；员工在等的（确认 / 提问）直接回它，没在等的发一句让它别等
+    const title = String(card.data.title ?? '')
+    if (runner.isPending(c.params.id)) runner.answerCard(c.params.id, { action: 'later' })
+    else if (s) runner.send(s.employee, `主人先不处理「${title}」（点了「以后再说」）：别等它；不需要它的部分先做，做不了就停下说清楚卡在哪；以后真的需要再提，不要马上再发一次。`)
+    result = '你点了「以后再说」：员工已经知道，先不等它'
+    patchMsg(c.params.id, { card: { ...card, state: 'done', result } })
+    return { ok: true, result }
+  } else if (runner.isPending(c.params.id)) {
     runner.answerCard(c.params.id, { action: act.id, answer, verified })
     result = card.type === 'ask' ? `你选了：${answer ?? ''}` : act.id === 'allow' ? `你同意了${verified && act.style === 'danger' ? ' · 已验证本人' : ''}` : '你没同意，员工已经知道了'
   } else if (card.data.pr && act.id === 'refresh') {
@@ -791,6 +893,18 @@ route('POST', '/api/messages/:id/action', async (c) => {
   } else if (card.type === 'issue' && card.data.issueId) {
     try { issues.act(String(card.data.issueId), act.id, { by: '主人' }) } catch (e) { throw bad((e as Error).message) }
     result = act.id === 'fix' ? '已交给员工去修' : act.id === 'known' ? '标成已知' : '7 天内不再提醒'
+  } else if (card.type === 'release' && card.data.rel) {
+    // 发布卡片：让员工修 / 重新发布 / 回滚（生产要验证本人）。卡片本身照旧跟着发布进度更新，不标成点过
+    const r = get<Release>('releases', String(card.data.rel))
+    if (!r) throw bad('这次发布的记录已经没了')
+    const w = get<Workspace>('workspaces', r.ws)
+    const d = w?.deploys?.find((x) => x.id === r.target)
+    if (act.id !== 'rel:fix' && d && deployProtected(d, (id) => get<Server>('servers', id))) needVerify(c)
+    let res: string
+    try { res = releases.cardAct(r, act.id, '主人') } catch (e) { throw bad((e as Error).message) }
+    // 交给员工修了：按钮去掉、卡片上写一句，免得点两次发两遍
+    if (act.id === 'rel:fix') patchMsg(c.params.id, { card: { ...card, actions: card.actions.filter((a) => a.id !== 'rel:fix'), data: { ...card.data, autoFix: true } } })
+    return { ok: true, result: res }
   } else if (card.type === 'run') {
     // 一轮的小结：撤销（反着提交一次再推送）/ 发布到某个环境（生产要验证本人）
     const w = get<Workspace>('workspaces', String(card.data.ws))
@@ -802,7 +916,7 @@ route('POST', '/api/messages/:id/action', async (c) => {
     } else {
       const d = (w.deploys ?? []).find((x) => `release:${x.id}` === act.id)
       if (!d) throw bad('这个发布环境已经没了')
-      if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c) // 发到生产：验证本人
+      if (deployProtected(d, (id) => get<Server>('servers', id))) needVerify(c) // 发到生产：验证本人
       try { releases.start(w, d.id, { by: '主人', note: String(card.data.title ?? '') || undefined }) } catch (e) { throw bad((e as Error).message) }
       result = `已开始发布到${d.name}，进度在「发布」里看`
     }
@@ -813,7 +927,7 @@ route('POST', '/api/messages/:id/action', async (c) => {
     if (s) runner.send(s.employee, `我在卡片「${String(card.data.title ?? '')}」上点了「${act.label}」${answer ? `：${answer}` : ''}`)
   }
   patchMsg(c.params.id, { card: { ...card, state: 'done', result } })
-  if (s) patchSession(s.id, { clear: ['waiting'] })
+  if (s) syncWaiting(s.id)
   return { ok: true, result }
 })
 
@@ -979,7 +1093,7 @@ function answerCredRequests(cred: Credential) {
     if (!e) continue
     if (cred.aiAllowed && !e.creds?.includes(cred.id)) put1('employees', { ...e, creds: [...(e.creds ?? []), cred.id] })
     patchMsg(r.id, { card: { ...m.card, state: 'done', result: `已添加「${cred.name}」并给 ${e.name} 开了` } })
-    patchSession(r.sid, { clear: ['waiting'] })
+    syncWaiting(r.sid)
     runner.send(e.id, `主人加好了凭证「${cred.name}」（${cred.group} · ${cred.kind}${cred.test ? `，测试${cred.test.ok ? '通过' : `没通过：${cred.test.msg}`}` : ''}），已经给你开了，接着做。`)
   }
 }
@@ -1189,16 +1303,17 @@ route('POST', '/api/workspaces', async (c) => {
 /** 给项目建一个员工：跑在项目那台、工作目录就是项目、记忆用项目 docs/；仓库凭证、部署要用的服务器凭证、签名证书都给它 */
 function projectEmployee(w: Workspace): Employee {
   const p = PRESETS.dev
+  // 职位 = 项目名（同一个项目第二个起加编号），名字随机起一个人名
   const same = all<Employee>('employees').filter((e) => e.workspace === w.id).length
-  let name = same ? `${w.name} ${same + 1}` : w.name
-  while (all<Employee>('employees').some((e) => e.name === name)) name += '′'
+  const role = (same ? `${w.name} ${same + 1}` : w.name).slice(0, 20)
+  const name = randomName(undefined, all<Employee>('employees').map((e) => e.name))
   const deploySrv = (w.deploys ?? []).flatMap((d) => d.servers ?? [])
   const creds = [w.credential, ...deploySrv.map((id) => get<Server>('servers', id)?.credential), ...all<Credential>('credentials').filter((c) => c.group === '签名证书').map((c) => c.id)]
     .filter((x): x is string => !!x && !!get('credentials', x))
   // 执行器跟着最近建的员工（多半装好的是哪个就用哪个）
   const last = all<Employee>('employees').slice(-1)[0]
   return createEmployee(cleanEmp({
-    name, avatar: name.slice(0, 1), color: p.color, title: `${w.name} 项目的开发`, prompt: `你负责「${w.name}」这个项目（${w.repo}）：按主人说的改代码、查问题、发布。先读项目的 README / CLAUDE.md / docs/交接.md 了解规矩；改完自查（看 diff），提交说明写清楚；做完在 docs/交接.md 最上面加一条。`,
+    name, role, avatar: name.slice(0, 1), color: p.color, title: `${w.name} 项目的开发`, prompt: `你负责「${w.name}」这个项目（${w.repo}）：按主人说的改代码、查问题、发布。先读项目的 README / CLAUDE.md / docs/交接.md 了解规矩；改完自查（看 diff），提交说明写清楚；做完在 docs/交接.md 最上面加一条。`,
     menus: p.menus, effort: 'high', approval: 'auto', executor: last?.executor ?? 'Claude Code', model: last?.model ?? 'Opus 5.5',
     host: w.server ?? 'local', workspace: w.id, creds: [...new Set(creds)],
   }))
@@ -1246,7 +1361,11 @@ route('PUT', '/api/workspaces/:id', (c) => {
   // 删了某个编译组件：还在用它的发布目标要先改
   const orphan = (deploys ?? []).find((d) => d.build && d.build !== 'none' && !builds.some((x) => x.id === d.build))
   if (orphan) throw bad(`发布目标「${orphan.name}」发的是被删掉的编译组件：先给它换一个组件（或改成不编译）`)
-  return put1('workspaces', { ...w, ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(b.preview !== undefined ? { preview: String(b.preview) } : {}),
+  // 改名：只是显示和员工叫它用的名字，目录、仓库都不动
+  const name = b.name !== undefined ? String(b.name).trim().slice(0, 40) : w.name
+  if (!name) throw bad('项目要有名字')
+  if (name !== w.name && all<Workspace>('workspaces').some((x) => x.id !== w.id && x.name === name)) throw bad('已经有同名的项目')
+  return put1('workspaces', { ...w, name, ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(b.preview !== undefined ? { preview: String(b.preview) } : {}),
     ...(typeof b.autoSync === 'boolean' ? { autoSync: b.autoSync } : {}), ...(b.budget !== undefined ? { budget: Math.max(0, Number(b.budget) || 0) || undefined } : {}),
     builds: builds.length ? builds : undefined, deploys })
 })
@@ -1337,22 +1456,27 @@ function cleanDeploys(list: any[], old: Deploy[] = [], builds: build.BuildComp[]
     const prev = old.find((o) => o.id === d.id)
     const name = String(d.name ?? '').trim().slice(0, 40)
     if (!name) throw bad('发布环境要有名字')
+    const env = d.env === undefined ? prev?.env : String(d.env ?? '').trim().slice(0, 20) || undefined
     const servers = (Array.isArray(d.servers) ? d.servers : []).map(String).filter((id: string) => get<Server>('servers', id)).slice(0, 20)
-    if (!servers.length) throw bad(`发布环境「${name}」要选至少一台服务器`)
+    // 存进安装包的：不发服务器，记下端和渠道
+    const pkg = d.package && packages.isPlatform(d.package.platform) ? { platform: d.package.platform, channel: packages.isChannel(d.package.channel) ? d.package.channel : 'test' as const } : undefined
+    if (!servers.length && !pkg) throw bad(`发布环境「${name}」要选至少一台服务器（或者选「存进安装包」）`)
     const dir = String(d.dir ?? '').trim().replace(/\/+$/, '')
     if (dir && (!/^\/[\w./@+-]+$/.test(dir) || dir.includes('..'))) throw bad('部署目录要是绝对路径')
     const command = String(d.command ?? '').trim().slice(0, 4000)
     const sign = d.sign ? String(d.sign) : undefined
     if (sign && get<Credential>('credentials', sign)?.group !== '签名证书') throw bad(`发布环境「${name}」的签名证书不对`)
+    if (sign && certType(sign) !== 'android') throw bad(`发布环境「${name}」：发布时只能用安卓签名证书签 apk / aab（苹果、Windows 的证书要在 Mac / Windows 上用）`)
     const health = String(d.health ?? '').trim()
     if (health && !/^https?:\/\/\S+$/.test(health)) throw bad('检查地址要以 http:// 或 https:// 开头')
     // 发哪个编译组件：'none' = 不编译；有好几个组件时要选
     const bid = String(d.build ?? '').trim()
     if (bid && bid !== 'none' && !builds.some((x) => x.id === bid)) throw bad(`发布环境「${name}」选的编译组件不在了`)
     if (!bid && builds.length > 1) throw bad(`发布环境「${name}」要选发哪个编译组件`)
+    if (pkg && (bid === 'none' || (!bid && !builds.length))) throw bad(`发布环境「${name}」存进安装包：要先有编译组件（编出 apk / ipa / msix 这些的）`)
     return {
-      id: prev?.id ?? uid('dp'), name, servers, build: bid || undefined, dir: dir || undefined, script: String(d.script ?? '').trim().replace(/[^\w./-]/g, '') || undefined, command: command || undefined, sign, health: health || undefined,
-      keep: Math.max(1, Math.min(Number(d.keep) || 5, 30)), ai: ['auto', 'ask', 'off'].includes(d.ai) ? d.ai : servers.some((id: string) => isProtected(get<Server>('servers', id)!)) ? 'ask' : 'auto', autoRollback: d.autoRollback !== false,
+      id: prev?.id ?? uid('dp'), name, env, servers: pkg ? [] : servers, package: pkg, build: bid || undefined, dir: dir || undefined, script: String(d.script ?? '').trim().replace(/[^\w./-]/g, '') || undefined, command: command || undefined, sign, health: health || undefined,
+      keep: Math.max(1, Math.min(Number(d.keep) || 5, 30)), ai: ['auto', 'ask', 'off'].includes(d.ai) ? d.ai : deployProtected({ env, servers }, (id) => get<Server>('servers', id)) ? 'ask' : 'auto', autoRollback: d.autoRollback !== false,
       last: prev?.last, lastOk: prev?.lastOk,
     }
   })
@@ -1383,7 +1507,7 @@ route('POST', '/api/workspaces/:id/deploys/:did/run', (c) => {
   const w = get<Workspace>('workspaces', c.params.id)
   const d = w?.deploys?.find((x) => x.id === c.params.did)
   if (!w || !d) throw new HttpError(404, '没有这个发布环境')
-  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c) // 发到生产（受保护的服务器）：验证本人
+  if (deployProtected(d, (id) => get<Server>('servers', id))) needVerify(c) // 发到生产（标成生产的环境、受保护的服务器）：验证本人
   try { return releases.start(w, d.id, { by: '主人', note: c.body?.note ? String(c.body.note) : undefined }) } catch (e) { throw bad((e as Error).message) }
 })
 
@@ -1396,7 +1520,7 @@ route('POST', '/api/releases/:id/rollback', (c) => {
   const d = w?.deploys?.find((x) => x.id === r!.target)
   if (!r || !w || !d) throw new HttpError(404, '这次发布或它的目标不在了')
   if (r.status !== 'success') throw bad('只能回滚到发成功的版本')
-  if (releases.serversOf(d).some((id) => { const sv = get<Server>('servers', id); return sv && isProtected(sv) })) needVerify(c) // 发到生产（受保护的服务器）：验证本人
+  if (deployProtected(d, (id) => get<Server>('servers', id))) needVerify(c) // 发到生产（标成生产的环境、受保护的服务器）：验证本人
   try { return releases.start(w, d.id, { by: '主人', rollbackOf: r, note: `回滚到 ${r.version}` }) } catch (e) { throw bad((e as Error).message) }
 })
 // 发布产物在服务器之间搬（Agent 调）
@@ -1713,6 +1837,59 @@ route('POST', '/api/agent/register', (c) => {
 route('POST', '/api/agents/:id/accept', (c) => { try { return agents.pub(agents.decide(c.params.id, true)) } catch (e) { throw bad((e as Error).message) } })
 route('POST', '/api/agents/:id/reject', (c) => { try { return agents.pub(agents.decide(c.params.id, false)) } catch (e) { throw bad((e as Error).message) } })
 // Opero 换地址（迁移）：让所有在线的 Agent 改连新地址（Opero 的指纹不变，Agent 就无痕接上）
+// ---------- 网络出口（egress.ts）：Opero 自己往外连的地址按域名经哪台 Agent 出去 ----------
+const egressView = () => ({ rules: egress.rules(), failures: egress.failures(), min: tunnel.ANY_MIN })
+route('GET', '/api/egress', () => egressView())
+/** 加 / 改一条（同一个域名就是改）：先测，测通了才存；force = 不通也存 */
+route('POST', '/api/egress', async (c) => {
+  const t = egress.parseTarget(String(c.body?.host ?? ''))
+  if (typeof t === 'string') throw bad(t)
+  const via = String(c.body?.via ?? '')
+  if (!via) throw bad('选经哪台出去')
+  const lan = c.body?.lan === true
+  if (lan) needVerify(c) // 许连内网：放宽安全，要本人
+  const bad1 = egress.viaProblem(via)
+  if (bad1) throw bad(bad1)
+  const port = Number(c.body?.port) || t.port || 443
+  const r = via === 'direct' ? undefined : await egress.test(t.host, port, via, lan)
+  if (r?.via && !r.via.ok && c.body?.force !== true) return { saved: false, test: r }
+  const rule = egress.upsert({ host: t.host, via, lan, note: String(c.body?.note ?? ''), by: c.ip === 'mcp' ? String(c.body?.by ?? '员工') : '主人' }, r?.via ? { ...r.via, at: Date.now(), port } : undefined)
+  audit({ via: c.ip === 'mcp' ? String(c.body?.by ?? '员工') : '—', action: 'egress.set', target: `${rule.host} → ${via === 'direct' ? '直连' : get<Server>('servers', via)?.name ?? via}${lan ? '（允许内网）' : ''}`, level: lan ? '危险' : '写', result: '成功', how: c.ip === 'mcp' ? 'MCP' : '本人' })
+  return { saved: true, rule, test: r, ...egressView() }
+})
+route('PUT', '/api/egress/:id', (c) => {
+  const old = egress.rules().find((x) => x.id === c.params.id)
+  if (!old) throw new HttpError(404, '没有这条规则')
+  const p: Parameters<typeof egress.patch>[1] = {}
+  if (c.body?.host !== undefined) { const t = egress.parseTarget(String(c.body.host)); if (typeof t === 'string') throw bad(t); if (egress.rules().some((x) => x.host === t.host && x.id !== old.id)) throw bad(`${t.host} 已经有一条了`); p.host = t.host }
+  if (c.body?.via !== undefined) { const bad1 = egress.viaProblem(String(c.body.via)); if (bad1) throw bad(bad1); p.via = String(c.body.via) }
+  if (c.body?.lan !== undefined) { if (c.body.lan === true && !old.lan) needVerify(c); p.lan = c.body.lan === true }
+  if (c.body?.note !== undefined) p.note = String(c.body.note).trim().slice(0, 60) || undefined
+  const r = egress.patch(old.id, p)
+  audit({ via: c.ip === 'mcp' ? String(c.body?.by ?? '员工') : '—', action: 'egress.set', target: `${r!.host} → ${r!.via === 'direct' ? '直连' : get<Server>('servers', r!.via)?.name ?? r!.via}${r!.lan ? '（允许内网）' : ''}`, level: p.lan ? '危险' : '写', result: '成功', how: c.ip === 'mcp' ? 'MCP' : '本人' })
+  return { rule: r, ...egressView() }
+})
+route('DELETE', '/api/egress/:id', (c) => {
+  const old = egress.rules().find((x) => x.id === c.params.id)
+  if (old) {
+    egress.remove(old.id)
+    audit({ via: c.ip === 'mcp' ? String(c.body?.by ?? '员工') : '—', action: 'egress.delete', target: old.host, level: '写', result: '成功', how: c.ip === 'mcp' ? 'MCP' : '本人' })
+  }
+  return egressView()
+})
+/** 测一下：直连和经出口各连一次 TCP（不发内容）。id 给了就把结果记到那条规则上 */
+route('POST', '/api/egress/test', async (c) => {
+  const t = egress.parseTarget(String(c.body?.host ?? ''))
+  if (typeof t === 'string') throw bad(t)
+  const port = Number(c.body?.port) || t.port || 443
+  const rule = c.body?.id ? egress.rules().find((x) => x.id === c.body.id) : undefined
+  const via = String(c.body?.via ?? rule?.via ?? '') || undefined
+  const r = await egress.test(t.host, port, via, c.body?.lan === true || rule?.lan)
+  if (rule && r.via) egress.patch(rule.id, { test: { ...r.via, at: Date.now(), port } })
+  return { host: t.host, port, ...r }
+})
+route('DELETE', '/api/egress/failures/:host', (c) => { egress.ignoreFail(decodeURIComponent(c.params.host)); return egressView() })
+
 route('POST', '/api/agents/move', (c) => {
   needVerify(c)
   const url = String(c.body?.url ?? '').trim().replace(/\/+$/, '')
@@ -1758,7 +1935,7 @@ async function settle(id: string) {
 }
 route('GET', '/api/mcp/tools', (c) => {
   const e = get<Employee>('employees', c.run!.emp)
-  return { tools: TOOLS.filter((t) => t.name !== 'approve' || !/codex/i.test(e?.executor ?? '')) }
+  return { tools: TOOLS.filter((t) => t.name !== 'approve' || runner.kindOf(e?.executor) === 'claude') }
 }, { auth: 'mcp' })
 route('POST', '/api/mcp/call', (c) => {
   const id = uid('j')
@@ -1779,6 +1956,8 @@ export function expireStaleCards() {
     if (m.card) db.prepare('UPDATE messages SET data = ? WHERE id = ?').run(JSON.stringify({ ...m, card: { ...m.card, state: 'done', result: '已失效（Opero 重启过），让员工再发一次' } }), r.id)
   }
   for (const s of all<Session>('sessions')) if (s.working || s.waiting) { const { working: _w, waiting: _x, ...rest } = s; put('sessions', rest) }
+  // 还没处理、也不会失效的（要凭证、线上问题）：红点照旧挂着
+  for (const s of all<Session>('sessions')) syncWaiting(s.id)
 }
 
 /** Opero 重启（升级、给自己发版、服务器重启）时正在干活的员工：进程跟着没了，那一轮停在一半。
@@ -1802,6 +1981,21 @@ export function interruptedRuns(): { sid: string; emp: string }[] {
 export function migrateMenus() {
   for (const e of all<Employee>('employees')) if (e.menus?.includes('知识库')) put('employees', { ...e, menus: e.menus.filter((m) => m !== '知识库') })
 }
+/** 以前员工的名字兼职位（「opero开源-android」「运维」）：一次性把名字挪到职位标签，名字换成随机的人名（按性别、不重名）；
+ *  没传图的字头像跟着换成新名字的第一个字。只做一次（kv rolesMigrated）。员工互相找人时职位也认，旧名字照样能用 */
+export function migrateRoles() {
+  if (kvGet('rolesMigrated', false)) return
+  const emps = all<Employee>('employees')
+  const taken: string[] = []
+  for (const e of emps) {
+    if (e.role) { taken.push(e.name); continue }
+    const name = randomName(e.gender, [...taken, ...emps.map((x) => x.name)])
+    taken.push(name)
+    const letterAvatar = !e.avatarImg && (!e.avatar || e.avatar === Array.from(e.name)[0])
+    put('employees', { ...e, role: e.name.slice(0, 20), name, ...(letterAvatar ? { avatar: Array.from(name)[0] } : {}) })
+  }
+  kvSet('rolesMigrated', true)
+}
 /** 以前一个项目只有一份编译设置（buildCfg）：变成编号 main 的编译组件，流水线记录照留 */
 export function migrateBuilds() {
   const NAME: Record<string, string> = { node: 'Node', go: 'Go', android: '安卓', spring: 'Java', custom: '主程序' }
@@ -1816,3 +2010,64 @@ export function migrateEmployeeCreds() {
   const ids = all<Credential>('credentials').filter((c) => c.aiAllowed).map((c) => c.id)
   for (const e of all<Employee>('employees')) if (!Array.isArray(e.creds)) put('employees', { ...e, creds: ids, credGroups: e.credGroups ?? PRESETS[e.id]?.credGroups ?? [] })
 }
+
+// ---------- 安装包（每个项目按「端 × 渠道」一格，每格只留最新；packages.ts） ----------
+route('GET', '/api/workspaces/:id/packages', (c) => packages.list(c.params.id).map(packages.pub))
+/** 主人在网页上传（拖进来）：请求体就是文件，边收边写；?name=文件名&platform=&channel=&version=&build=&note=&signed=1 */
+route('POST', '/api/workspaces/:id/packages', async (c) => {
+  const w = get<Workspace>('workspaces', c.params.id)
+  if (!w) throw new HttpError(404, '没有这个项目')
+  const q = c.url.searchParams
+  const name = path.basename(String(q.get('name') ?? '')).slice(0, 160)
+  if (!name) throw bad('要带上文件名')
+  const platform = q.get('platform') || packages.guessPlatform(name)
+  if (!packages.isPlatform(platform)) throw bad('看不出是哪个端的包：选一下端（安卓 / iPhone / Mac / Windows / Linux）')
+  const channel = q.get('channel') || 'test'
+  if (!packages.isChannel(channel)) throw bad('渠道只能是 test（测试）或 prod（正式）')
+  const dir = path.join(cfg.data, 'tmp')
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const tmp = path.join(dir, `up-${uid()}`)
+  await saveBody(c.req, tmp, 2 * 1024 * 1024 * 1024)
+  try {
+    return packages.pub(packages.store(w, platform, channel, tmp, { name, version: q.get('version') || undefined, build: q.get('build') || undefined, note: q.get('note') || undefined, signed: q.get('signed') === '1' ? true : q.get('signed') === '0' ? false : undefined, by: '主人' }))
+  } catch (e) { fs.rmSync(tmp, { force: true }); throw bad((e as Error).message) }
+}, { stream: true })
+route('DELETE', '/api/packages/:id', (c) => { packages.remove(decodeURIComponent(c.params.id), '主人'); return { ok: true } })
+/** 分享链接：{days: 7}（0 = 关掉）。拿到的人不用登录就能下（扫码装安卓包） */
+route('POST', '/api/packages/:id/share', (c) => {
+  try { return packages.pub(packages.share(decodeURIComponent(c.params.id), Math.max(0, Math.round(Number(c.body?.days ?? 7))), '主人')) } catch (e) { throw bad((e as Error).message) }
+})
+/** 把包发出去（下载）：登录的主人 / 分享链接共用 */
+function sendPackage(c: Ctx, x: packages.AppPackage) {
+  const f = packages.fileOf(x)
+  if (!fs.existsSync(f)) throw new HttpError(404, '包的文件不在了')
+  const type = x.platform === 'android' && x.file.toLowerCase().endsWith('.apk') ? 'application/vnd.android.package-archive' : 'application/octet-stream'
+  c.res.writeHead(200, { 'Content-Type': type, 'Content-Length': String(x.size), 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(x.file)}`, 'Cache-Control': 'no-store' })
+  fs.createReadStream(f).pipe(c.res)
+}
+route('GET', '/api/packages/:id/file', (c) => {
+  const x = get<packages.AppPackage>('packages', decodeURIComponent(c.params.id))
+  if (!x) throw new HttpError(404, '这一格还没有包')
+  sendPackage(c, x)
+})
+// 分享出去的下载页（不用登录）：手机打开能看到名字、版本、大小，点一下下载；口令不对或过期了就说清楚
+const htmlEsc = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`)
+route('GET', '/dl/:token', (c) => {
+  const x = packages.byShare(c.params.token)
+  const w = x && get<Workspace>('workspaces', x.ws)
+  const body = !x || !w
+    ? '<h1>链接失效了</h1><p>分享链接过期了，或者包已经被删掉。找发给你的人要一个新的。</p>'
+    : `<h1>${htmlEsc(w.name)}</h1><p class="s">${htmlEsc(packages.pub(x).slot)}${x.version ? ` · ${htmlEsc(x.version)}` : ''} · ${(x.size / 1048576).toFixed(1)} MB</p>`
+      + `<a class="b" href="${htmlEsc(c.params.token)}/file">下载 ${htmlEsc(x.file)}</a>`
+      + `${x.note ? `<p>${htmlEsc(x.note)}</p>` : ''}`
+      + `${x.platform === 'android' ? '<p class="s">安卓：下载后点开安装；第一次会提示「允许安装未知来源的应用」，允许就行。</p>' : x.platform === 'ios' ? '<p class="s">iPhone / iPad 的 .ipa 不能直接装：要用 TestFlight、企业签名或者 Xcode / Apple Configurator 装到登记过的设备上。</p>' : ''}`
+      + `<p class="s">SHA256 ${x.sha256.slice(0, 16)}… · 链接 ${new Date(x.share!.until).toLocaleDateString('zh-CN')} 前有效</p>`
+  c.res.writeHead(x ? 200 : 404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex' })
+  c.res.end(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>下载安装包</title><style>body{font:16px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:32px 20px;background:#F4F5F8;color:#14161F}main{max-width:440px;margin:0 auto;background:#fff;border-radius:16px;padding:24px;box-shadow:0 4px 20px rgb(0 0 0/.06)}h1{font-size:20px;margin:0 0 4px}.s{color:#7A8091;font-size:13px}.b{display:block;text-align:center;background:#5B4FE9;color:#fff;text-decoration:none;padding:12px;border-radius:12px;margin:18px 0;font-weight:600;word-break:break-all}</style></head><body><main>${body}</main></body></html>`)
+}, { auth: 'none' })
+route('GET', '/dl/:token/file', (c) => {
+  const x = packages.byShare(c.params.token)
+  if (!x) throw new HttpError(404, '链接失效了')
+  audit({ via: '分享链接', action: 'package.download', target: x.file, level: '读', result: '成功', how: c.ip })
+  sendPackage(c, x)
+}, { auth: 'none' })

@@ -6,8 +6,9 @@ import { Avatar } from './Avatar'
 import { Row, Section, Sheet } from './ui'
 import { IconBack, IconFingerprint, IconPlus, IconSearch } from './icons'
 import { LIVE } from '../mode'
-import { createPasskey, getPasskey, passkeySupported } from '../webauthn'
+import { createPasskey, getPasskey, markPkHere, markPkMissed, passkeyError, passkeySupported, pkHere, pkMissed } from '../webauthn'
 import { api } from '../live'
+import { EmpName } from './EmpName'
 
 export function SearchOverlay({ onClose, onOpenChat, onOpen }: {
   onClose: () => void
@@ -42,7 +43,7 @@ export function SearchOverlay({ onClose, onOpenChat, onOpen }: {
         {empty && <p className="hint center">没找到「{q}」</p>}
         {res && res.employees.length > 0 && (
           <Section title="员工">
-            {res.employees.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={36} />} title={e.name} sub={e.title} onClick={() => onOpenChat(e.id)} />)}
+            {res.employees.map((e) => <Row key={e.id} icon={<Avatar id={e.id} size={36} />} title={<EmpName e={e} />} sub={e.title} onClick={() => onOpenChat(e.id)} />)}
           </Section>
         )}
         {res && res.messages.length > 0 && (
@@ -78,7 +79,7 @@ export function NewChatSheet({ onClose, onPick, onNewEmployee }: { onClose: () =
     <Sheet title="找员工聊" onClose={onClose}>
       <div className="sheet-list">
         {employees.map((e) => (
-          <Row key={e.id} icon={<Avatar id={e.id} size={40} />} title={e.name} sub={e.title} onClick={() => onPick(e.id)} />
+          <Row key={e.id} icon={<Avatar id={e.id} size={40} />} title={<EmpName e={e} />} sub={e.title} onClick={() => onPick(e.id)} />
         ))}
         <Row icon={<span className="ws-icon"><IconPlus /></span>} title="新员工" sub="填表建，或者跟「系统管家」说" onClick={onNewEmployee} />
       </div>
@@ -145,15 +146,41 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
   const supported = passkeySupported()
   const [pk, setPk] = useState(false)
   const [offer, setOffer] = useState(false)
+  // 指纹没成功的原因（显示在框里，不是一闪而过的提示）
+  const [pkErr, setPkErr] = useState('')
+  // 挑战码打开就先要好：点按钮时直接叫指纹（先去后台要再叫，有的浏览器认为不是你点的，直接拒绝）
+  const [opts, setOpts] = useState<{ o: unknown; at: number } | null>(null)
   useEffect(() => {
     if (!supported) return
-    api<{ passkeys: { rpId: string }[] }>('GET', '/api/auth/passkeys').then((r) => setPk(r.passkeys.some((x) => x.rpId === location.hostname))).catch(() => {})
+    api<{ passkeys: { rpId: string }[] }>('GET', '/api/auth/passkeys').then((r) => {
+      const has = r.passkeys.some((x) => x.rpId === location.hostname)
+      setPk(has)
+      // 这个地址加过，但这台浏览器用失败过、也没在这台加过：默认用密码（「用指纹」还在下面）
+      if (has && pkMissed() && !pkHere()) setUsePwd(true)
+      if (has) api('POST', '/api/auth/passkey/options', {}).then((o) => setOpts({ o, at: Date.now() })).catch(() => {})
+    }).catch(() => {})
   }, [supported])
   const close = () => set({ verify: null })
   const done = () => { const cur = getState().verify; set({ verify: null }); cur?.onOk() }
   const withPasskey = async () => {
     setBusy(true)
-    try { const o = await api('POST', '/api/auth/passkey/options', {}); await api('POST', '/api/auth/passkey/verify', await getPasskey(o)); done() } catch (e) { toast((e as Error).message); setBusy(false) }
+    setPkErr('')
+    try {
+      const o = opts && Date.now() - opts.at < 4 * 60_000 ? opts.o : await api('POST', '/api/auth/passkey/options', {})
+      setOpts(null)
+      let cred
+      try { cred = await getPasskey(o) } catch (e) {
+        markPkMissed()
+        setPkErr(passkeyError(e))
+        setUsePwd(true)
+        setBusy(false)
+        api('POST', '/api/auth/passkey/options', {}).then((x) => setOpts({ o: x, at: Date.now() })).catch(() => {})
+        return
+      }
+      await api('POST', '/api/auth/passkey/verify', cred)
+      markPkHere()
+      done()
+    } catch (e) { setPkErr((e as Error).message); setBusy(false) }
   }
   const go = async () => {
     if (!pwd) return
@@ -162,7 +189,7 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
       await api('POST', '/api/auth/verify', byCode ? { code: pwd } : { password: pwd })
       setBusy(false)
       // 这台还没加指纹：问一句要不要加（加了下次点一下就行）；说过「以后再说」就不问
-      if (supported && !pk && !localStorage.getItem(SKIP_KEY)) setOffer(true)
+      if (supported && !pkHere() && !localStorage.getItem(SKIP_KEY)) setOffer(true)
       else done()
     } catch (e) {
       toast((e as Error).message)
@@ -174,8 +201,12 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
     try {
       const o = await api('POST', '/api/auth/passkey/register-options', {})
       await api('POST', '/api/auth/passkey/register', { credential: await createPasskey(o), name: deviceName() })
+      markPkHere()
       toast('已加上：下次点一下指纹就行')
-    } catch (e) { toast((e as Error).message) }
+    } catch (e) {
+      if ((e as DOMException)?.name === 'InvalidStateError') markPkHere()
+      toast(passkeyError(e, true))
+    }
     done()
   }
   const lock = <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
@@ -197,6 +228,7 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
         <span className="verify-ico">{showPk ? <IconFingerprint /> : lock}</span>
         <b>验证本人</b>
         <p className="verify-what">{title}{desc && <span>{desc}</span>}</p>
+        {pkErr && <p className="verify-err">{pkErr}</p>}
         {showPk ? (
           <>
             <button className="btn primary lg block" disabled={busy} onClick={withPasskey}><IconFingerprint /> {busy ? '验证中…' : '用指纹 / 面容确认'}</button>
@@ -212,9 +244,9 @@ function PasswordVerify({ title, desc }: { title: string; desc?: string }) {
             </div>
             <div className="verify-links">
               <button className="link" onClick={() => { setByCode(!byCode); setPwd('') }}>{byCode ? '改用密码' : '改用两步验证码'}</button>
-              {pk && <button className="link" onClick={() => setUsePwd(false)}>用指纹</button>}
+              {pk && <button className="link" onClick={() => { setPkErr(''); setUsePwd(false) }}>用指纹</button>}
             </div>
-            {supported && !pk && <p className="verify-tip">输完密码可以把这台设备的指纹加上，下次点一下就行</p>}
+            {supported && !pkHere() && <p className="verify-tip">输完密码可以把这台设备的指纹加上，下次点一下就行</p>}
           </>
         )}
       </div>

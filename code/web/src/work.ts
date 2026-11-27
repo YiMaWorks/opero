@@ -4,11 +4,27 @@ import type { Approval, Effort } from './types'
 /** 各执行器能选的模型。没列出的执行器只给「执行器默认」（用它自己配置里的模型）。 */
 const MODELS: Record<string, string[]> = {
   'Claude Code': ['Opus 5.5', 'Sonnet 5.5', 'Haiku 5.5', 'Fable 5.1'],
+  'Qwen Code': ['qwen3-coder-plus', 'qwen3-coder-flash', 'qwen3-max', '执行器默认'],
 }
+/** Opero 能驱动的 AI 执行器：名字、谁家的、一句话 */
+export const EXECUTORS = [
+  { value: 'Claude Code', kind: 'claude', vendor: 'Anthropic', desc: '最稳，推荐' },
+  { value: 'Codex', kind: 'codex', vendor: 'OpenAI', desc: 'OpenAI API Key' },
+  { value: 'Qwen Code', kind: 'qwen', vendor: '阿里 · 通义', desc: '百炼 API Key，国内直连' },
+  { value: 'CodeBuddy Code', kind: 'codebuddy', vendor: '腾讯', desc: 'CodeBuddy API Key，国内直连' },
+] as const
+export type ExecName = (typeof EXECUTORS)[number]['value']
+export type ExecKind = (typeof EXECUTORS)[number]['kind']
+/** 执行器名字（可能是老写法）→ 哪一种 */
+export const execKind = (executor?: string): ExecKind => { const s = String(executor ?? ''); return /codex/i.test(s) ? 'codex' : /qwen/i.test(s) ? 'qwen' : /codebuddy/i.test(s) ? 'codebuddy' : 'claude' }
+export const execName = (executor?: string): ExecName => EXECUTORS.find((x) => x.kind === execKind(executor))!.value
 /** 真的一套：后台从 Anthropic / OpenAI 读到的完整列表（GET /api/ai/models），读到了就用它 */
 let liveModels: { claude: string[]; codex: string[] } | null = null
 export const setLiveModels = (m: { claude: string[]; codex: string[] }) => { liveModels = m }
-export const modelsFor = (executor: string) => (liveModels ? (/codex/i.test(executor) ? liveModels.codex : liveModels.claude) : null) ?? MODELS[executor] ?? ['执行器默认']
+export const modelsFor = (executor: string) => {
+  const k = execKind(executor)
+  return (liveModels && (k === 'claude' || k === 'codex') ? liveModels[k] : null) ?? MODELS[execName(executor)] ?? ['执行器默认']
+}
 
 export const EFFORTS: { value: Effort; label: string; desc: string }[] = [
   { value: 'low', label: '低', desc: '最快，简单问答' },

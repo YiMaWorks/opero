@@ -16,8 +16,8 @@ android {
         applicationId = "cn.yimakeji.opero"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.4.0"
+        versionCode = 7
+        versionName = "0.4.2"
         // 登录页里默认填的地址（一人一套，用户改成自己的）
         buildConfigField("String", "DEFAULT_SERVER", "\"\"") // 官网（opero.yimakeji.cn / yimaworks.com）只是介绍和试用，不预填；用户填自己服务器上的 Opero
     }

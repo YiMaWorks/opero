@@ -10,3 +10,8 @@ export function envOf(v: unknown, def: string): string {
 
 /** 员工在上面改东西要不要先出确认卡片 */
 export const isProtected = (x: { env: string; protect?: boolean }) => x.protect ?? PROD_RE.test(x.env)
+
+/** 发布环境算不算生产：自己标了像生产的环境（Deploy.env），或者发到的服务器里有受保护的。只会多保护、不会少：
+ *  服务器是生产的，环境标成「开发」也照样当生产（发布要验证本人、员工发前问你） */
+export const deployProtected = (d: { env?: string; servers?: string[] }, server: (id: string) => { env: string; protect?: boolean } | undefined) =>
+  (!!d.env && PROD_RE.test(d.env)) || (d.servers ?? []).some((id) => { const s = server(id); return !!s && isProtected(s) })

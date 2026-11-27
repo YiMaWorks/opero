@@ -21,6 +21,8 @@ import type { Deploy, Server, Workspace } from './types.ts'
 import { hostRes } from './resources.ts'
 import * as pipes from './pipelines.ts'
 import { resourceBlock } from './policy.ts'
+import { failLog } from './faillog.ts'
+export { failLog }
 
 export type BuildKind = 'node' | 'go' | 'android' | 'spring' | 'custom'
 export interface BuildCfg {
@@ -576,7 +578,7 @@ async function runYunxiao(w: Workspace, b: BuildComp, dir: string, step: Step) {
       const jobs = (d?.stages ?? []).flatMap((s: any) => s.stageInfo?.jobs ?? [])
       const bad = jobs.find((j: any) => /FAIL/i.test(String(j.status)))
       let log = ''
-      if (bad?.id) { try { const l = await yx(token, 'GET', `/oapi/v1/flow/organizations/${org}/pipelines/${id}/runs/${run}/job/${bad.id}/log`); log = String(l?.content ?? '').split('\n').filter((x) => /error|fail|错误|失败|exception/i.test(x)).slice(-15).join('\n') } catch { /* 拿不到日志 */ } }
+      if (bad?.id) { try { const l = await yx(token, 'GET', `/oapi/v1/flow/organizations/${org}/pipelines/${id}/runs/${run}/job/${bad.id}/log`); log = failLog(String(l?.content ?? '')) } catch { /* 拿不到日志 */ } }
       throw new Error(`云效编译失败（第 ${run} 次）：https://flow.aliyun.com/pipelines/${id}/builds/${run}?orgId=${org}${log ? `\n${log.replaceAll(token, '***')}` : ''}`)
     }
     if (Date.now() - t0 > 90 * 60_000) throw new Error('云效编译超过 90 分钟，不等了')
@@ -643,7 +645,7 @@ async function runLocal(w: Workspace, b: BuildComp, rid: string, sha: string, di
   step(`在 ${sv.name} 上编`)
   const r = await execOnEnv(sv, script(b, codeOf(w, b)), { OPERO_RELEASE: rid }, 60 * 60_000, src)
   fs.writeFileSync(path.join(dir, 'BUILD.log'), r.out.slice(-200_000))
-  if (r.code !== 0) throw new Error(`编译失败（退出码 ${r.code}）：${r.out.slice(-600)}`)
+  if (r.code !== 0) throw new Error(`编译失败（退出码 ${r.code}）：\n${failLog(r.out) || r.out.slice(-600)}`)
   const tgz = path.posix.join(base, 'out.tgz')
   const pk = await execOnEnv(sv, `tar czf ${q(tgz)} -C ${q(path.posix.join(src, 'out'))} .`, {}, 10 * 60_000)
   if (pk.code !== 0) throw new Error(`打包产物失败：${pk.out.slice(-200)}`)
@@ -662,7 +664,7 @@ async function runLocal(w: Workspace, b: BuildComp, rid: string, sha: string, di
 
 // 编译那台传回来的产物：key → 哪台能传、放哪（api.ts 的 /api/agent/blob/:key 用 releases.blobAllowed 查，这里登记）
 export const pendingBlobs = new Map<string, { from: string; to: string; file: string; exp: number }>()
-function expectBlob(key: string, from: string, file: string) { pendingBlobs.set(key, { from, to: '', file, exp: Date.now() + 2 * 3600_000 }) }
+export function expectBlob(key: string, from: string, file: string) { pendingBlobs.set(key, { from, to: '', file, exp: Date.now() + 2 * 3600_000 }) }
 
 const PIPE: Record<string, string> = { yunxiao: '云效', github: 'GitHub Actions', gitlab: 'GitLab CI', jenkins: 'Jenkins' }
 /** 给人看的「在哪编」：自动（本地 / 云效）、总是本地、总是云效… */

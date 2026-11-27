@@ -45,5 +45,16 @@
  "搜索员工、聊天记录": "Mitarbeiter und Chats suchen",
  "{0} 个置顶聊天": "{0} angeheftete Chats",
  "还没有会话：点右上角 ＋ 找个员工聊": "Noch keine Chats: oben rechts auf ＋ tippen und mit einem Mitarbeiter chatten",
- "没找到": "Nichts gefunden"
+ "没找到": "Nichts gefunden",
+ "已发布": "Veröffentlicht",
+ "已用 {0}": "Bisher {0}",
+ "失败原因已经发给员工，它会接着修": "Der Fehler ging an den Mitarbeiter, der ihn weiter behebt",
+ "线上已经是 {0}": "Live ist jetzt {0}",
+ "保存失败": "Speichern fehlgeschlagen",
+ "已存到相册": "In der Galerie gespeichert",
+ "已存到「下载」": "In „Downloads“ gespeichert",
+ "看大图": "Groß anzeigen",
+ "存到相册": "In Galerie speichern",
+ "点一下下载": "Zum Herunterladen tippen",
+ "长按拖动排序": "Gedrückt halten und ziehen zum Sortieren"
 }

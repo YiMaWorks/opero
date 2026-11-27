@@ -137,7 +137,7 @@ fun CardView(card: Card, onAction: OnCardAction) {
 }
 
 @Composable
-private fun ActionButton(a: CardAction, onClick: () -> Unit) {
+internal fun ActionButton(a: CardAction, onClick: () -> Unit) {
     val c = Opero.colors
     val shape = RoundedCornerShape(8.dp)
     when (a.style) {

@@ -3,12 +3,14 @@
 // 渠道的密钥（机器人令牌、Webhook 地址、SMTP 密码）都在保险箱里（notifier.cred 指向凭证）。
 import crypto from 'node:crypto'
 import nodemailer from 'nodemailer'
+import type SMTPTransport from 'nodemailer/lib/smtp-transport/index.js'
 import { cfg } from './config.ts'
 import { all, get, put } from './db.ts'
 import { emit, pushHooks, type PushItem } from './bus.ts'
 import { audit } from './chat.ts'
 import { getSecret } from './vault.ts'
 import type { Credential } from './types.ts'
+import * as egress from './egress.ts'
 
 export type NotifierKind = 'email' | 'telegram' | 'slack' | 'wecom' | 'dingtalk' | 'feishu' | 'webhook'
 export interface Notifier {
@@ -123,10 +125,13 @@ export async function send(n: Notifier, m: Msg): Promise<void> {
     case 'email': {
       if (!n.smtpHost || !n.to) throw new Error('邮件渠道要填 SMTP 服务器和收件人')
       const port = n.smtpPort || 465
-      const t = nodemailer.createTransport({ host: n.smtpHost, port, secure: port === 465, auth: { user: n.smtpUser || c.user || '', pass: secret }, connectionTimeout: 15_000 })
+      const t = nodemailer.createTransport({ host: n.smtpHost, port, secure: port === 465, auth: { user: n.smtpUser || c.user || '', pass: secret }, connectionTimeout: 15_000, proxy: egress.proxyFor(n.smtpHost) } as SMTPTransport.Options) // proxy：nodemailer 认 http 代理（类型里没写）
       try {
         await t.sendMail({ from: n.smtpUser || c.user, to: n.to, subject: head, text: `${m.body}${m.link ? `\n\n${m.link}` : ''}` })
-      } catch (e) { throw Object.assign(new Error((e as Error).message), { retry: /ETIMEDOUT|ECONNRESET|ECONNREFUSED|421|451/.test((e as Error).message) }) }
+      } catch (e) {
+        if (egress.netErr(e)) egress.noteFail(n.smtpHost, port, `提醒渠道「${n.name}」`, e)
+        throw Object.assign(new Error(egress.hint(n.smtpHost, e)), { retry: /ETIMEDOUT|ECONNRESET|ECONNREFUSED|421|451/.test((e as Error).message) })
+      }
       return
     }
   }

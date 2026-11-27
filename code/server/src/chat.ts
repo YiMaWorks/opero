@@ -65,6 +65,18 @@ export function patchMsg(id: string, patch: Partial<Message>) {
   const msg = { ...cur.msg, ...patch }
   db.prepare('UPDATE messages SET data = ? WHERE id = ?').run(JSON.stringify(msg), id)
   emit({ t: 'msg', sid: cur.sid, msg })
+  // 等你处理的卡片处理掉 / 失效了：红点跟着重算
+  if (cur.msg.card?.data?.needYou && cur.msg.card.state !== msg.card?.state) syncWaiting(cur.sid)
+}
+
+/** 「要你决定」（会话列表的红点、聊天顶上的提示条）不是记一次就完：看这个会话里还有没有没处理的「等你」卡片（data.needYou），
+ *  有就挂着、没有就清掉。卡片处理了、点了「以后再说」、员工那一轮结束失效了、Opero 重启了，都会重算——红点一定有办法消掉 */
+export function syncWaiting(sid: string) {
+  const s = get<Session>('sessions', sid)
+  if (!s) return
+  const open = listMessages(sid, 400).some((m) => m.card?.state === 'open' && m.card.data?.needYou)
+  if (open && s.waiting !== '要你决定') patchSession(sid, { waiting: '要你决定' })
+  else if (!open && s.waiting) patchSession(sid, { clear: ['waiting'] })
 }
 
 export function delMsg(id: string) {
@@ -82,6 +94,8 @@ export function listMessages(sid: string, limit = 200): Message[] {
 /** 员工说了话：存消息、更新会话预览和未读；按员工的提醒设置决定推不推到手机 */
 export function empSays(empId: string, m: Omit<Message, 'id' | 'at' | 'from'>, preview: string, decide = false) {
   const s = sessionFor(empId)
+  // 要你决定的卡片打上 needYou：红点和聊天顶上的提示条都按它算（syncWaiting）
+  if (decide && m.card) m = { ...m, card: { ...m.card, data: { ...m.card.data, needYou: true } } }
   const msg = addMsg(s.id, { ...m, from: empId })
   patchSession(s.id, { last: preview.slice(0, 80), unread: (get<Session>('sessions', s.id)?.unread ?? 0) + 1, ...(decide ? { waiting: '要你决定' } : {}) })
   const emp = get<Employee>('employees', empId)

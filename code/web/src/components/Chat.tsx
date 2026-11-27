@@ -15,6 +15,9 @@ import { Empty, Row, Sheet } from './ui'
 import { canDictate, dictate, nativeHaptic } from '../native'
 import { resolve as langOf, loadPref } from '../i18n'
 import { IconBack, IconBell, IconBellOff, IconChevron, IconFlow, IconImage, IconMenu, IconMic, IconMore, IconPin, IconPlus, IconRefresh, IconSearch, IconSend, IconSliders } from './icons'
+import { EmpName } from './EmpName'
+import { ImageViewer, canCopyImage, canShare, copyImage, downloadFile, shareFile } from './FileView'
+import { GripVertical } from 'lucide-react'
 
 interface Props {
   session: Session
@@ -61,13 +64,33 @@ function setCtxOff(k: string) {
 type Pend = { key: string; name: string; image: boolean; preview?: string; busy: boolean; err?: string; att?: QAtt }
 const pendDrafts = new Map<string, Pend[]>()
 
+/** 发布卡片往下挪：发布要好几分钟，员工发起以后接着说完话、这一轮结束了它才发完，按发起的时间排会夹在中间。
+ *  显示时把它挪到后面员工 / 系统的消息之后——在发的一直挪到最下面；发完的只挪过发完之前的消息；碰到你说的话就停（你说的话后面的事照时间排）。 */
+function floatReleases(list: Message[]): Message[] {
+  const out = [...list]
+  for (let i = 0; i < out.length; i++) {
+    const m = out[i]
+    if (m.card?.type !== 'release' || !m.card.data.rel) continue
+    const until = m.card.data.status === 'running' ? Infinity : Number(m.card.data.ended) || Infinity
+    let j = i
+    while (j + 1 < out.length && out[j + 1].from !== 'me' && !(out[j + 1].card?.type === 'release') && (out[j + 1].ts ?? 0) <= until) j++
+    if (j > i) { out.splice(i, 1); out.splice(j, 0, m); i-- } // 挪过去以后，原来位置上换成了下一条，再看一遍
+  }
+  return out
+}
+
+/** 等你处理的卡片（红点就是它们）：后台打了 needYou 的，或者以前发的确认 / 提问 / 问题 / 要凭证卡片 */
+export const isPendingCard = (m: Message) => !!m.card && m.card.state === 'open' && !!(m.card.data.needYou || m.card.data.credReq || m.card.type === 'confirm' || m.card.type === 'ask' || m.card.type === 'issue')
+/** 不处理也能让它走的那个按钮：以后再说 / 不行（确认）/ 忽略 7 天（问题）；以前的卡片没有就用「以后再说」（后台也认） */
+export const dismissOf = (c: NonNullable<Message['card']>) => c.actions.find((a) => a.id === 'later') ?? c.actions.find((a) => a.id === 'deny') ?? c.actions.find((a) => a.id === 'ignore') ?? { id: 'later', label: '以后再说', style: 'ghost' as const }
+
 export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile, onSearch, onSettings, onMore }: Props) {
   const emp = useStore((s) => s.employees.find((e) => e.id === session.employee))
   const raw = useStore((s) => s.messages[session.id] ?? EMPTY)
   // 「正在输入」气泡（这一轮开始时建的）永远放在最下面；空的系统行不显示
   const messages = useMemo(() => {
     const shown = raw.filter((m) => !((m.kind === 'system' || m.kind === 'status') && !m.spinning && !(m.text ?? '').trim()))
-    return [...shown.filter((m) => !(m.kind === 'status' && m.spinning)), ...shown.filter((m) => m.kind === 'status' && m.spinning)]
+    return [...floatReleases(shown.filter((m) => !(m.kind === 'status' && m.spinning))), ...shown.filter((m) => m.kind === 'status' && m.spinning)]
   }, [raw])
   // 一轮的小结（run 卡片）跟在员工上一条消息下面当小字，不单独占一条：key = 那条消息的 id
   const feet = useMemo(() => {
@@ -76,7 +99,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
       if (m.card?.type !== 'run') return
       for (let j = i - 1; j >= 0; j--) {
         const p = messages[j]
-        if (p.kind === 'status' || p.kind === 'system') continue
+        if (p.kind === 'status' || p.kind === 'system' || p.card?.type === 'release') continue
         if (p.from === m.from && p.card?.type !== 'run' && !at.has(p.id)) at.set(p.id, m)
         break
       }
@@ -84,6 +107,16 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
     return at
   }, [messages])
   const attached = useMemo(() => new Set([...feet.values()].map((m) => m.id)), [feet])
+  // 等你处理的：顶上一条提示（是什么、去看、以后再说），红点和它一起消
+  const waitCards = useMemo(() => raw.filter(isPendingCard), [raw])
+  const [flash, setFlash] = useState('')
+  const jump = (id: string) => {
+    const el = listRef.current?.querySelector(`[data-mid="${id}"]`)
+    if (!el) return
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    setFlash(id)
+    window.setTimeout(() => setFlash((x) => (x === id ? '' : x)), 1800)
+  }
   const aiDown = useStore((s) => s.settings.aiDown)
   const fallback = useStore((s) => s.settings.fallback)
   const listRef = useRef<HTMLDivElement>(null)
@@ -105,6 +138,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   // 长按 / 右键消息：复制、引用、转给别的员工、删除
   const [msgMenu, setMsgMenu] = useState<null | { m: Message; x: number; y: number }>(null)
   const [forward, setForward] = useState<Message | null>(null)
+  // 正在全屏看的图片（消息 id）
+  const [viewing, setViewing] = useState<string | null>(null)
   const server = useStore((s) => s.servers.find((x) => x.name === emp?.host || x.id === emp?.host))
   const ws = useStore((s) => s.workspaces.find((w) => w.id === emp?.workspace))
   /** 底部菜单「改动记录」显示成项目名：点开就是这个项目（提交、分支、编译和发布） */
@@ -200,6 +235,13 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
     setPend([])
     if (r.queued) toast('已排队：这一轮做完按顺序发')
   }
+  // 常用语点一下直接发（不动输入框里正在写的；员工在干活就和普通发一样插话 / 排队）
+  const sendPhrase = async (p: string) => {
+    toBottom()
+    if (!LIVE) { sendMessage(session.id, p); return }
+    const r = await call<{ queued?: { id: string } }>('POST', `/api/sessions/${session.id}/messages`, { text: p, files: [], mode: 'auto' })
+    if (r?.queued) toast('已排队：这一轮做完按顺序发')
+  }
   const addPending = async (blob: Blob, name: string, image: boolean, preview?: string, w?: number, h?: number) => {
     const key = Math.random().toString(36).slice(2)
     setPend((p) => [...p, { key, name, image, preview, busy: true }])
@@ -264,9 +306,9 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         <span onClick={onProfile} className="click"><Avatar id={emp.id} size={mobile ? 36 : 44} dot={session.working ? 'ok' : undefined} /></span>
         <div className="chat-title" onClick={() => (mobile ? setSheet('work') : onProfile())}>
           <span className="chat-title-top">
-            <b>{emp.name}</b>
+            <b><EmpName e={emp} /></b>
             {session.working && <span className="run-pill"><i />在干活</span>}
-            {!session.working && session.waiting && <span className="run-pill wait"><i />{session.waiting}</span>}
+            {(session.waiting || waitCards.length > 0) && <button type="button" className="run-pill wait" title="点这里跳到要你决定的那张卡片" onClick={() => waitCards[0] && jump(waitCards[0].id)}><i />{session.waiting || '要你决定'}</button>}
           </span>
           {mobile
             ? (
@@ -299,13 +341,29 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
             : <>{emp.executor} 暂时连不上，员工先歇着；面板和底部菜单照常能用，恢复后会接着做。</>}
         </div>
       )}
+      {waitCards.length > 0 && (() => {
+        const c = waitCards[0].card!
+        const d = dismissOf(c)
+        return (
+          <div className="need-bar">
+            <i className="need-dot" />
+            <span className="need-main">
+              <b>{waitCards.length > 1 ? `${waitCards.length} 件事等你决定` : '等你决定'}</b>
+              <span className="need-what" data-no-i18n="">{String(c.data.title ?? '')}</span>
+              <small>{`处理完，或者点「${d.label}」（员工先不等它），红点就消`}</small>
+            </span>
+            <button className="btn primary sm" onClick={() => jump(waitCards[0].id)}>去看</button>
+            <button className="btn ghost sm" onClick={() => onCardAction(c, d)}>{d.label}</button>
+          </div>
+        )
+      })()}
       <div className={'msgs msgs-bg-' + (emp.bg ?? 'plain')} ref={listRef}
         onScroll={(e) => { const el = e.currentTarget; stuck.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; if (stuck.current) setUnseen(0) }}>
         {messages.length === 0 && <p className="hint center">还没有消息，跟「{emp.name}」说点什么吧。</p>}
         {messages.map((m, i) => attached.has(m.id) ? null : (
-          <MessageView key={m.id} m={m} foot={feet.get(m.id)} owner={emp.id} showTime={!!m.at && m.at !== messages[i - 1]?.at && m.kind !== 'status'}
+          <MessageView key={m.id} m={m} flash={flash === m.id} foot={feet.get(m.id)} owner={emp.id} showTime={!!m.at && m.at !== messages[i - 1]?.at && m.kind !== 'status'}
             onCardAction={onCardAction} onMenu={(x, y) => { nativeHaptic(); setMsgMenu({ m, x, y }) }}
-            onCopy={() => { navigator.clipboard?.writeText(msgText(m)); toast('已复制') }} onForward={() => setForward(m)}
+            onCopy={() => { navigator.clipboard?.writeText(msgText(m)); toast('已复制') }} onForward={() => setForward(m)} onOpen={() => setViewing(m.id)}
             working={session.working} onStop={() => stopWorking(session.id)} />
         ))}
         <div className="msgs-end" />
@@ -317,6 +375,9 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
             onClick={(e) => e.stopPropagation()}>
             {(msgMenu.m.text || msgMenu.m.card) && <button onClick={() => { navigator.clipboard?.writeText(msgText(msgMenu.m)); toast('已复制'); setMsgMenu(null) }}>复制</button>}
             <button onClick={() => { setText((t) => `「${msgText(msgMenu.m).slice(0, 80)}」\n${t}`); setVoice(false); setMsgMenu(null) }}>引用</button>
+            {msgMenu.m.kind === 'file' && msgMenu.m.file && <button onClick={() => { downloadFile(msgMenu.m.file!); setMsgMenu(null) }}>下载</button>}
+            {msgMenu.m.file?.image && canCopyImage && <button onClick={() => { copyImage(msgMenu.m.file!); setMsgMenu(null) }}>复制图片</button>}
+            {msgMenu.m.kind === 'file' && msgMenu.m.file && canShare && <button onClick={() => { shareFile(msgMenu.m.file!); setMsgMenu(null) }}>分享到别的 App</button>}
             <button onClick={() => { setForward(msgMenu.m); setMsgMenu(null) }}>转给别的员工</button>
             <button onClick={() => { removeMsg(session.id, msgMenu.m.id); setMsgMenu(null) }}>删除</button>
             {mobile && <button className="ctx-cancel" onClick={() => setMsgMenu(null)}>取消</button>}
@@ -330,14 +391,16 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <Row key={x.id} icon={<Avatar id={x.id} size={36} />} title={x.name} sub={x.title} onClick={async () => {
                 if (LIVE) {
                   // 真的一套：发到那个员工的会话里，它会接着处理（在干活就插话 / 排队）
+                  //   图片 / 文件把文件本身转过去（后台复制一份给它），不是只转个名字
                   const to = await call<{ id: string }>('POST', `/api/sessions/for/${x.id}`)
                   if (!to) return
-                  if (await call('POST', `/api/sessions/${to.id}/messages`, { text: `转自「${emp.name}」：\n${msgText(forward)}`, files: [] })) toast(`已转给「${x.name}」`)
+                  if (await call('POST', `/api/sessions/${to.id}/forward`, { msg: forward.id })) toast(`已转给「${x.name}」`)
                   setForward(null)
                   return
                 }
                 const sid = sessionFor(x.id)
-                append(sid, { from: 'me', kind: 'text', text: `转自「${emp.name}」：\n${msgText(forward)}` })
+                if (forward.kind === 'file' && forward.file) append(sid, { from: 'me', kind: 'file', file: forward.file })
+                else append(sid, { from: 'me', kind: 'text', text: `转自「${emp.name}」：\n${msgText(forward)}` })
                 patchSession(sid, { last: `[转发] ${msgText(forward).slice(0, 30)}`, time: now() })
                 toast(`已转给「${x.name}」`)
                 setForward(null)
@@ -345,6 +408,11 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
             ))}
           </div>
         </Sheet>
+      )}
+
+      {viewing && (
+        <ImageViewer list={messages.filter((x) => x.kind === 'file' && x.file?.image && x.file.url)} start={viewing}
+          onClose={() => setViewing(null)} onForward={(m) => { setViewing(null); setForward(m) }} />
       )}
 
       {((emp.contextUsed ?? 0) >= 80 || (LIVE && messages.length >= 300)) && !session.working && !ctxOff(ctxKey(emp.id, emp.works?.[0]?.no)) && (
@@ -408,7 +476,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               <div className="m-quick">
                 {emp.menus.map((m) => <button key={m} type="button" className="m-menu-chip" onClick={() => onMenu(m)}>{menuLabel(m)}</button>)}
                 {emp.menus.length > 0 && LIVE && phrases.length > 0 && <i className="m-quick-sep" />}
-                {LIVE && phrases.length > 0 && <PhraseChips phrases={phrases} editing={editPh} setEditing={setEditPh} text={text} onPick={(p) => setText((t) => (t ? `${t}\n${p}` : p))} />}
+                {LIVE && phrases.length > 0 && <PhraseChips phrases={phrases} editing={editPh} setEditing={setEditPh} text={text} onPick={sendPhrase} />}
               </div>
             )}
             <div className="composer m">
@@ -452,7 +520,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         ) : (
           <>
             <div className="composer-ctl">
-              {LIVE && <PhraseChips phrases={phrases} editing={editPh} setEditing={setEditPh} text={text} onPick={(p) => setText((t) => (t ? `${t}\n${p}` : p))} />}
+              {LIVE && <PhraseChips phrases={phrases} editing={editPh} setEditing={setEditPh} text={text} onPick={sendPhrase} />}
               {emp.menus.length > 0 && (
                 <>
                   <span className="grow" />
@@ -516,11 +584,9 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         <Sheet title="常用语" onClose={() => setSheet(null)}>
           <div className="sheet-list">
             {phrases.length === 0 && <Empty>还没有：在输入框里写好，点下面「存成常用语」</Empty>}
-            {phrases.map((p) => (
-              <Row key={p} title={<span data-no-i18n="">{p}</span>} onClick={() => { setText((t) => (t ? `${t}\n${p}` : p)); setSheet(null) }}
-                right={<button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); setSettings({ phrases: phrases.filter((x) => x !== p) }) }}>删</button>} />
-            ))}
+            <PhraseList phrases={phrases} onSend={(p) => { setSheet(null); sendPhrase(p) }} />
           </div>
+          {phrases.length > 1 && <p className="hint pad">点一下直接发；按住左边的把手上下拖，调顺序</p>}
           <div className="pad row-actions">
             <button className="btn primary sm" disabled={!text.trim() || phrases.includes(text.trim())} onClick={() => { setSettings({ phrases: [...phrases, text.trim()].slice(-30) }); toast('已存成常用语') }}>把输入框里的存成常用语</button>
           </div>
@@ -530,21 +596,68 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   )
 }
 
-/** 常用语：直接摆出来（每个最多显示 6 个字，悬停看全文），点一下填进输入框；「编辑」时每个带 ×，还能把输入框里的存成一条 */
+/** 拖动排序（鼠标、手指都行）：按住一项拖到别的项上就换位置，松手存。行 / 标签上放 data-ri={序号}，按住的地方放 bind(i) */
+function useReorder(list: string[], commit: (l: string[]) => void) {
+  // 拖的过程放 ref（指针移动很快，不能等重新渲染），界面跟着 state 走
+  const ref = useRef<{ at: number; order: string[]; moved: boolean } | null>(null)
+  const [, redraw] = useState(0)
+  const set = (d: typeof ref.current) => { ref.current = d; redraw((x) => x + 1) }
+  const bind = (i: number) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.button !== 0) return
+      e.currentTarget.setPointerCapture?.(e.pointerId)
+      set({ at: i, order: list.slice(), moved: false })
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      const d = ref.current
+      if (!d) return
+      const el = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('[data-ri]')
+      const to = el ? Number(el.dataset.ri) : d.at
+      if (to === d.at || Number.isNaN(to)) return
+      const o = d.order.slice()
+      const [x] = o.splice(d.at, 1)
+      o.splice(to, 0, x)
+      set({ at: to, order: o, moved: true })
+    },
+    onPointerUp: () => { const d = ref.current; if (d?.moved) commit(d.order); set(null) },
+    onPointerCancel: () => set(null),
+  })
+  const d = ref.current
+  return { items: d?.order ?? list, dragging: d ? d.order[d.at] : null, bind }
+}
+
+/** 常用语：直接摆出来（每个最多显示 6 个字，悬停看全文），点一下直接发；「编辑」时能拖动排序、每个带 ×，还能把输入框里的存成一条 */
 function PhraseChips({ phrases, editing, setEditing, text, onPick }: { phrases: string[]; editing: boolean; setEditing: (v: boolean) => void; text: string; onPick: (p: string) => void }) {
   const short = (p: string) => { const a = Array.from(p.replace(/\s+/g, ' ').trim()); return a.length > 6 ? `${a.slice(0, 6).join('')}…` : a.join('') }
   const t = text.trim()
+  const { items, dragging, bind } = useReorder(phrases, (l) => setSettings({ phrases: l }))
   return (
     <span className="phrase-chips">
-      {phrases.map((p) => (
-        <span key={p} className={'phrase-chip' + (editing ? ' edit' : '')}>
-          <button type="button" title={p} onClick={() => (editing ? undefined : onPick(p))} data-no-i18n="">{short(p)}</button>
-          {editing && <button type="button" className="phrase-x" aria-label="删掉" onClick={() => setSettings({ phrases: phrases.filter((x) => x !== p) })}>×</button>}
+      {items.map((p, i) => (
+        <span key={p} data-ri={i} className={'phrase-chip' + (editing ? ' edit' : '') + (dragging === p ? ' dragging' : '')} {...(editing ? bind(i) : {})}>
+          <button type="button" title={editing ? `拖动调顺序：${p}` : `点一下直接发：${p}`} onClick={() => (editing ? undefined : onPick(p))} data-no-i18n="">{short(p)}</button>
+          {editing && <button type="button" className="phrase-x" aria-label="删掉" onPointerDown={(e) => e.stopPropagation()} onClick={() => setSettings({ phrases: phrases.filter((x) => x !== p) })}>×</button>}
         </span>
       ))}
       {editing && <button type="button" className="phrase-chip add" disabled={!t || phrases.includes(t)} title={t ? '把输入框里的话存成常用语' : '先在输入框里写好'} onClick={() => { setSettings({ phrases: [...phrases, t].slice(-30) }); toast('已存成常用语') }}>+ 存输入框里的</button>}
-      <button type="button" className="ctx-chip" onClick={() => setEditing(!editing)}>{editing ? '完成' : phrases.length ? '编辑' : '+ 常用语'}</button>
+      <button type="button" className="ctx-chip" title={editing ? undefined : '拖动排序、删掉、加新的'} onClick={() => setEditing(!editing)}>{editing ? '完成' : phrases.length ? '编辑' : '+ 常用语'}</button>
     </span>
+  )
+}
+
+/** 常用语面板（手机「+ → 常用语」）：点一下直接发；左边把手拖动排序；右边删 */
+function PhraseList({ phrases, onSend }: { phrases: string[]; onSend: (p: string) => void }) {
+  const { items, dragging, bind } = useReorder(phrases, (l) => setSettings({ phrases: l }))
+  return (
+    <>
+      {items.map((p, i) => (
+        <div key={p} data-ri={i} className={'ph-row' + (dragging === p ? ' dragging' : '')}>
+          <span className="ph-grip" aria-label="拖动调顺序" {...bind(i)}><GripVertical size={16} /></span>
+          <button type="button" className="ph-text" onClick={() => onSend(p)} data-no-i18n="">{p}</button>
+          <button type="button" className="btn ghost sm" onClick={() => setSettings({ phrases: phrases.filter((x) => x !== p) })}>删</button>
+        </div>
+      ))}
+    </>
   )
 }
 
@@ -563,11 +676,12 @@ function Since() {
 }
 
 // 像微信：每条消息左边（对方）/ 右边（我）带头像，气泡带小尖角；时间不一样时中间插一条时间
-function MessageView({ m, foot, owner, showTime, onCardAction, onMenu, onCopy, onForward, working, onStop }: {
-  m: Message; foot?: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void; onCopy: () => void; onForward: () => void
+function MessageView({ m, flash, foot, owner, showTime, onCardAction, onMenu, onCopy, onForward, onOpen, working, onStop }: {
+  m: Message; flash?: boolean; foot?: Message; owner: string; showTime: boolean; onCardAction: Props['onCardAction']; onMenu: (x: number, y: number) => void; onCopy: () => void; onForward: () => void; onOpen: () => void
   working?: string; onStop?: () => void
 }) {
   const press = useRef<number | null>(null)
+  const held = useRef(false)
   const time = showTime ? <div className="time-sep">{m.at}</div> : null
   if (m.kind === 'system') return <>{time}<div className="sys-line"><span>{m.text}</span></div></>
   if (m.kind === 'status') {
@@ -596,23 +710,25 @@ function MessageView({ m, foot, owner, showTime, onCardAction, onMenu, onCopy, o
   // 长按 0.5 秒（手机）/ 右键（电脑）出菜单
   const hold = {
     onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); onMenu(e.clientX, e.clientY) },
-    onTouchStart: (e: React.TouchEvent) => { const t = e.touches[0]; press.current = window.setTimeout(() => onMenu(t.clientX, t.clientY), 500) },
-    onTouchEnd: () => { if (press.current) clearTimeout(press.current) },
+    onTouchStart: (e: React.TouchEvent) => { const t = e.touches[0]; held.current = false; press.current = window.setTimeout(() => { held.current = true; onMenu(t.clientX, t.clientY) }, 500) },
+    // 长按出了菜单：松手那一下不再当「点」（不然图片会顺手打开大图）
+    onTouchEnd: (e: React.TouchEvent) => { if (press.current) clearTimeout(press.current); if (held.current) { e.preventDefault(); held.current = false } },
     onTouchMove: () => { if (press.current) clearTimeout(press.current) },
   }
   const body = me
-    ? (m.kind === 'file' && m.file ? <FileBubble f={m.file} /> : <div className="bubble me" data-no-i18n={LIVE ? '' : undefined} {...hold}>{m.text}</div>)
+    ? (m.kind === 'file' && m.file ? <div {...hold}><FileBubble f={m.file} onOpen={onOpen} /></div> : <div className="bubble me" data-no-i18n={LIVE ? '' : undefined} {...hold}>{m.text}</div>)
     : (
       <>
         {m.kind === 'text' && <div className="bubble" data-no-i18n={LIVE && m.from !== 'system' ? '' : undefined} {...hold}><Markdown text={m.text ?? ''} /></div>}
-        {m.kind === 'file' && m.file && <div {...hold}><FileBubble f={m.file} /></div>}
+        {m.kind === 'file' && m.file && <div {...hold}><FileBubble f={m.file} onOpen={onOpen} /></div>}
         {m.kind === 'card' && m.card && <div className="msg-card" {...hold}><CardView card={m.card} onAction={onCardAction} /></div>}
+        {m.kind === 'card' && m.card && isPendingCard(m) && <span className="need-hint">{`等你处理：处理完，或者点「${dismissOf(m.card).label}」，卡片收起、红点就消`}{!m.card.actions.some((a) => a.id === dismissOf(m.card!).id) && <button type="button" className="need-hint-btn" onClick={() => onCardAction(m.card!, dismissOf(m.card!))}>{dismissOf(m.card).label}</button>}</span>}
       </>
     )
   return (
     <>
       {time}
-      <div className={'msg-row' + (me ? ' me' : '') + (m.kind === 'card' ? ' wide' : '')}>
+      <div data-mid={m.id} className={'msg-row' + (me ? ' me' : '') + (m.kind === 'card' ? ' wide' : '') + (flash ? ' flash' : '')}>
         <span className="msg-av"><Avatar id={me ? 'me' : m.from} size={38} /></span>
         <div className="msg-col">
           {!me && m.from !== owner && <span className="bubble-who">{empName(m.from)}</span>}
@@ -622,12 +738,14 @@ function MessageView({ m, foot, owner, showTime, onCardAction, onMenu, onCopy, o
             <div className="msg-under">
               <RunFoot card={foot.card} onAction={onCardAction} />
               <span className="msg-acts">
+              {m.kind === 'file' && m.file && <button type="button" title="下载到本机" onClick={() => downloadFile(m.file!)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><path d="M5 20h14" /></svg>下载</button>}
               {(m.text || m.card) && <button type="button" title="复制" onClick={onCopy}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>复制</button>}
                 <button type="button" title="转发给别的员工" onClick={onForward}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l6 6-6 6" /><path d="M21 11H9a6 6 0 0 0-6 6v2" /></svg>转发</button>
               </span>
             </div>
           ) : (m.text || m.card || m.file) && (
             <span className="msg-acts">
+              {m.kind === 'file' && m.file && <button type="button" title="下载到本机" onClick={() => downloadFile(m.file!)}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v11" /><path d="M7 10l5 5 5-5" /><path d="M5 20h14" /></svg>下载</button>}
               {(m.text || m.card) && <button type="button" title="复制" onClick={onCopy}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>复制</button>}
               <button type="button" title="转发给别的员工" onClick={onForward}><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l6 6-6 6" /><path d="M21 11H9a6 6 0 0 0-6 6v2" /></svg>转发</button>
             </span>
@@ -652,13 +770,14 @@ function ServerLoad({ cpu, mem, online, compact }: { cpu: number; mem: number; o
   )
 }
 
-function FileBubble({ f }: { f: NonNullable<Message['file']> }) {
-  if (f.image && f.url) return <img className="img-real" src={f.url} alt={f.name} style={f.w && f.h ? { aspectRatio: `${f.w} / ${f.h}` } : undefined} />
+// 图片点一下全屏看（里面能下载 / 复制 / 分享 / 转发）；文件点一下下载。长按 / 右键还有菜单
+function FileBubble({ f, onOpen }: { f: NonNullable<Message['file']>; onOpen: () => void }) {
+  if (f.image && f.url) return <img className="img-real" src={f.url} alt={f.name} title="点开看大图" onClick={onOpen} style={f.w && f.h ? { aspectRatio: `${f.w} / ${f.h}` } : undefined} />
   if (f.image) return <div className="img-bubble"><IconImage /><span>{f.name}</span></div>
   return (
-    <div className="card file-card">
+    <button type="button" className="card file-card" title="下载到本机" onClick={() => downloadFile(f)}>
       <span className="file-ext">{f.ext}</span>
-      <div><b>{f.name}</b><span className="sub">{f.size} · 点开预览</span></div>
-    </div>
+      <div><b>{f.name}</b><span className="sub">{f.size} · 点一下下载</span></div>
+    </button>
   )
 }

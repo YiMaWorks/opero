@@ -245,11 +245,14 @@ function startProxy() {
   srv.listen(PROXY_PORT, '127.0.0.1', () => { proxyUp = true })
 }
 
-async function tconn(id: string, host: string, port: number) {
+// any：Opero 自己往外连（主人设的网络出口规则）——任意域名、端口；lan：规则上勾了「允许内网」才连内网地址
+async function tconn(id: string, host: string, port: number, o: { any?: boolean; lan?: boolean } = {}) {
   try {
-    if (port !== 443 || !allowedHost(host)) throw new Error(`出口只连 AI 的接口（${host}:${port} 不在名单里）`)
+    if (!o.any && (port !== 443 || !allowedHost(host))) throw new Error(`出口只连 AI 的接口（${host}:${port} 不在名单里）`)
+    if (!host || !(port >= 1 && port <= 65535)) throw new Error(`地址不对：${host}:${port}`)
     const addrs = await dns.lookup(host, { all: true })
-    if (!addrs.length || addrs.some((a) => privateIp(a.address))) throw new Error(`${host} 解析到了内网地址，拒绝`)
+    if (!addrs.length) throw new Error(`${host} 解析不出地址`)
+    if (!o.lan && addrs.some((a) => privateIp(a.address))) throw new Error(`${host} 解析到了内网地址，拒绝（要连内网，在出口规则上勾「允许内网」）`)
     const sock = net.connect({ host: addrs[0].address, port })
     tsocks.set(id, { sock, client: false, ready: false })
     sock.on('connect', () => { const t = tsocks.get(id); if (t) t.ready = true; emitOut(id, 'topen') })
@@ -342,7 +345,7 @@ function handle(t: any) {
       return
     }
     case 'kill': { const p = procs.get(String(t.id)); if (p) kill(p); return }
-    case 'tconn': tconn(String(t.id), String(t.host ?? ''), Number(t.port ?? 0)); return
+    case 'tconn': tconn(String(t.id), String(t.host ?? ''), Number(t.port ?? 0), { any: t.any === true, lan: t.lan === true }); return
     case 'tok': {
       const x = tsocks.get(String(t.id))
       if (x && x.client) { x.ready = true; x.sock.write('HTTP/1.1 200 Connection Established\r\n\r\n') }
@@ -367,6 +370,10 @@ function handle(t: any) {
       } catch (e: any) { log('放文件失败：', e.message) }
       return
     }
+    default:
+      // 不认识的活（Opero 比这个 Agent 新）：回一句并结束，别让 Opero 干等到超时
+      if (t.id) { emitOut(String(t.id), 'err', `这个 Agent（${VERSION}）不认识「${String(t.t)}」：在 Opero 的服务器详情里点「升级 Agent」\n`); emitOut(String(t.id), 'exit', undefined, 1) }
+      return
   }
 }
 
@@ -403,10 +410,10 @@ function version(bin: string): Promise<string | null> {
     p.on('error', () => { clearTimeout(t); resolve(null) })
   })
 }
-let execs: { claude: string | null; codex: string | null } | null = null
+let execs: { claude: string | null; codex: string | null; qwen: string | null; codebuddy: string | null } | null = null
 let execsAt = 0
 async function beat() {
-  if (!execs || Date.now() - execsAt > 5 * 60_000) { execs = { claude: await version('claude'), codex: await version('codex') }; execsAt = Date.now() }
+  if (!execs || Date.now() - execsAt > 5 * 60_000) { execs = { claude: await version('claude'), codex: await version('codex'), qwen: await version('qwen'), codebuddy: await version('codebuddy') }; execsAt = Date.now() }
   await api('POST', '/api/agent/health', { cpu: cpuPct(), mem: memPct(), disk: diskPct(), os: osName(), version: VERSION, hostname: os.hostname(), sys: sysInfo(), executors: execs, proxy: proxyUp ? { port: PROXY_PORT, token: PROXY_TOKEN } : null })
 }
 

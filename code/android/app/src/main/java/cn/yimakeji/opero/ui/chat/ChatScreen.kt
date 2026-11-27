@@ -36,14 +36,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -60,7 +57,6 @@ import cn.yimakeji.opero.push.VisibleRoute
 import cn.yimakeji.opero.ui.Routes
 import cn.yimakeji.opero.ui.common.Avatar
 import cn.yimakeji.opero.ui.common.LocalHost
-import cn.yimakeji.opero.ui.common.RemoteImage
 import cn.yimakeji.opero.ui.common.copy
 import cn.yimakeji.opero.ui.sessions.EmployeePicker
 import cn.yimakeji.opero.ui.sessions.SheetRow
@@ -97,7 +93,7 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
     var sending by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<Message?>(null) }
     var forward by remember { mutableStateOf<Message?>(null) }
-    var bigImage by remember { mutableStateOf<FileInfo?>(null) }
+    var viewer by remember { mutableStateOf<String?>(null) } // 看大图：从哪条消息开始
     var editQ by remember { mutableStateOf<QueueItem?>(null) }
     var ctxTick by remember { mutableIntStateOf(0) }
 
@@ -123,7 +119,7 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
     val raw = Live.messages[sid] ?: emptyList()
     val shown = remember(raw) {
         val keep = raw.filter { !((it.kind == "system" || it.kind == "status") && !it.spinning && it.text.isNullOrBlank()) }
-        keep.filter { !(it.kind == "status" && it.spinning) } + keep.filter { it.kind == "status" && it.spinning }
+        floatReleases(keep.filter { !(it.kind == "status" && it.spinning) }) + keep.filter { it.kind == "status" && it.spinning }
     }
     val feet = remember(shown) {
         val at = HashMap<String, Message>()
@@ -131,7 +127,7 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
             if (m.card?.type != "run") return@forEachIndexed
             for (j in i - 1 downTo 0) {
                 val p = shown[j]
-                if (p.kind == "status" || p.kind == "system") continue
+                if (p.kind == "status" || p.kind == "system" || p.card?.let { isReleaseCard(it) } == true) continue // 发布卡片挪过位置，小结不挂它
                 if (p.from == m.from && p.card?.type != "run" && !at.containsKey(p.id)) at[p.id] = m
                 break
             }
@@ -187,7 +183,10 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
         }
         suspend fun go(): Boolean {
             return try {
-                Api.owner("POST", "/api/messages/${m.id}/action", JSONObject().put("action", a.id).apply { if (answer != null) put("answer", answer) })
+                val r = Api.owner("POST", "/api/messages/${m.id}/action", JSONObject().put("action", a.id).apply { if (answer != null) put("answer", answer) })
+                // 不改卡片状态的按钮（发布卡片的修 / 重发 / 回滚、合并请求的刷新）：结果提示一句
+                val result = r.optString("result")
+                if (result.isNotBlank() && (a.id.startsWith("rel:") || a.id == "refresh")) Live.toast(t(result))
                 true
             } catch (e: ApiError) {
                 if (e.code == "VERIFY") false else { Live.toast(e.message ?: t("出错了")); true }
@@ -199,13 +198,17 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
         scope.launch { if (!go()) host.verify(title, why) { ok -> if (ok) scope.launch { go() } } }
     }
 
-    fun openFile(f: FileInfo) {
-        val url = f.url ?: return
+    /** 取到文件再做事（下载 / 分享 / 打开）：下载地址带 dl=1（docs/api/README.md「文件和图片地址」） */
+    fun withBytes(f: FileInfo, then: (ByteArray) -> Unit) {
+        val url = f.url ?: run { Live.toast(t("这个文件还没传好")); return }
         Live.toast(t("正在下载…"))
         scope.launch {
-            try { host.openFile(f.name, Api.bytes(url), mimeOf(f.name)) } catch (e: ApiError) { Live.toast(e.message ?: t("下载失败")) }
+            try { then(Api.bytes(url + (if ('?' in url) "&" else "?") + "dl=1")) } catch (e: ApiError) { Live.toast(e.message ?: t("下载失败")) }
         }
     }
+    fun saveFile(f: FileInfo) = withBytes(f) { host.saveFile(f.name, it, mimeOf(f.name)) }
+    fun shareFile(f: FileInfo) = withBytes(f) { host.shareFile(f.name, it, mimeOf(f.name)) }
+    fun openFile(f: FileInfo) = withBytes(f) { host.openFile(f.name, it, mimeOf(f.name)) }
 
     Column(Modifier.fillMaxSize().background(c.bg)) {
         Header(sid, onBack, onOpenRoute)
@@ -221,7 +224,7 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
                         m, owner = emp.id, showTime = m.at != prevAt[m.id], foot = feet[m.id], working = session.working,
                         onCardAction = { mm, card, a, ans -> act(mm, card, a, ans) },
                         onMenu = { menuFor = m }, onStop = { Live.stop(sid) },
-                        onImage = { bigImage = it }, onFile = { openFile(it) },
+                        onImage = { viewer = m.id }, onFile = { saveFile(it) },
                     )
                 }
                 if (visible.isEmpty()) item("hello") {
@@ -290,6 +293,12 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
     menuFor?.let { m ->
         ModalBottomSheet(onDismissRequest = { menuFor = null }, containerColor = c.panel) {
             if (m.text != null || m.card != null) SheetRow(t("复制")) { copy(ctx, m.plain); Live.toast(t("已复制")); menuFor = null }
+            m.file?.takeIf { it.url != null }?.let { f ->
+                if (f.image) SheetRow(t("看大图")) { viewer = m.id; menuFor = null }
+                else SheetRow(t("打开")) { openFile(f); menuFor = null }
+                SheetRow(if (f.image) t("存到相册") else t("下载")) { saveFile(f); menuFor = null }
+                SheetRow(t("分享")) { shareFile(f); menuFor = null }
+            }
             SheetRow(t("引用")) { text = "「${m.plain.take(80)}」\n$text"; menuFor = null }
             SheetRow(t("转给别的员工")) { forward = m; menuFor = null }
             SheetRow(t("删除"), color = c.danger) { Live.deleteMessage(sid, m.id); menuFor = null }
@@ -299,7 +308,7 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
     forward?.let { m ->
         EmployeePicker(t("转给谁"), exclude = emp.id, onDismiss = { forward = null }) { to ->
             forward = null
-            scope.launch { if (Live.forward(to, emp.name, m.plain)) Live.toast(t("已转给「{0}」", Live.empName(to))) }
+            scope.launch { if (Live.forward(to, m.id)) Live.toast(t("已转给「{0}」", Live.empName(to))) }
         }
     }
     editQ?.let { q ->
@@ -312,12 +321,15 @@ fun ChatScreen(requested: String, onBack: () -> Unit, onOpenRoute: (String) -> U
             dismissButton = { TextButton(onClick = { editQ = null }) { Text(t("取消")) } },
         )
     }
-    bigImage?.let { f ->
-        Dialog(onDismissRequest = { bigImage = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(Modifier.fillMaxSize().background(Color.Black).clickable { bigImage = null }, contentAlignment = Alignment.Center) {
-                RemoteImage(f.url ?: "", Modifier.fillMaxWidth(), max = 2048, scale = ContentScale.Fit) { Text(t("加载中…"), color = Color.White) }
-            }
-        }
+    viewer?.let { start ->
+        // 这个会话里所有的图片（按时间），左右滑翻
+        val images = shown.filter { it.kind == "file" && it.file?.image == true && it.file?.url != null }
+        ImageViewer(
+            images, start, onClose = { viewer = null },
+            onSave = { m -> m.file?.let { saveFile(it) } },
+            onShare = { m -> m.file?.let { shareFile(it) } },
+            onForward = { m -> viewer = null; forward = m }, // 先关大图，选员工的面板才不会被挡住
+        )
     }
 }
 
@@ -368,4 +380,24 @@ private fun mimeOf(name: String) = when (name.substringAfterLast('.', "").lowerc
     "pdf" -> "application/pdf"; "txt", "log", "md" -> "text/plain"; "json" -> "application/json"; "csv" -> "text/csv"
     "zip" -> "application/zip"; "png" -> "image/png"; "jpg", "jpeg" -> "image/jpeg"; "gif" -> "image/gif"; "webp" -> "image/webp"
     "html", "htm" -> "text/html"; else -> "*/*"
+}
+
+/**
+ * 发布卡片往后挪（docs/规范/表单与卡片.md「发布卡片」的显示顺序，网页 Chat.tsx 的 floatReleases）：
+ * 发布要好几分钟，按发起时间排会夹在员工这一轮的话中间。越过它后面员工 / 系统的消息，遇到我说的话或另一张发布卡片停；
+ * 在发的挪到最下面，发完的只越过 ts ≤ ended 的消息。
+ */
+internal fun floatReleases(list: List<Message>): List<Message> {
+    val out = list.toMutableList()
+    var i = 0
+    while (i < out.size) {
+        val m = out[i]
+        val card = m.card
+        if (card == null || !isReleaseCard(card)) { i++; continue }
+        val until = if (card.data.optString("status") == "running") Long.MAX_VALUE else card.data.optLong("ended").takeIf { it > 0 } ?: Long.MAX_VALUE
+        var j = i
+        while (j + 1 < out.size && out[j + 1].from != "me" && out[j + 1].card?.type != "release" && out[j + 1].ts <= until) j++
+        if (j > i) { out.removeAt(i); out.add(j, m) } else i++ // 挪过去以后原来的位置换成了下一条，再看一遍
+    }
+    return out
 }

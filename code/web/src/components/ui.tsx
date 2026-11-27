@@ -1,9 +1,10 @@
 // 通用小组件：所有页面都用这一套，保证样式统一。
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Pencil } from 'lucide-react'
 import { IconBack, IconChevron, IconClose } from './icons'
 
 export function PageHeader({ title, sub, onBack, onClose, right }: {
-  title: string; sub?: string; onBack?: () => void; onClose?: () => void; right?: ReactNode
+  title: ReactNode; sub?: string; onBack?: () => void; onClose?: () => void; right?: ReactNode
 }) {
   return (
     <header className="page-head">
@@ -147,4 +148,32 @@ export function Drawer({ title, onClose, children, footer }: { title: string; on
 
 export function StatusDot({ tone }: { tone: 'ok' | 'warn' | 'danger' | 'mute' }) {
   return <i className={'sdot s-' + tone} />
+}
+
+/** 点一下就地改的文字（名字、标题这类）：显示时后面一支淡淡的笔；点了变输入框，回车 / 点别处保存，Esc 不改。
+ *  onSave 返回 false（比如后台说重名）就退回原来的。在可点的行里用也不会触发整行的点击 */
+export function InlineText({ value, onSave, placeholder, max = 40, className }: { value: string; onSave: (v: string) => Promise<unknown> | unknown; placeholder?: string; max?: number; className?: string }) {
+  const [edit, setEdit] = useState(false)
+  const [v, setV] = useState(value)
+  useEffect(() => { if (!edit) setV(value) }, [value, edit])
+  const done = async (save: boolean) => {
+    setEdit(false)
+    const t = v.trim()
+    if (!save || !t || t === value) { setV(value); return }
+    const r = await onSave(t)
+    if (r === false || r === null) setV(value)
+  }
+  if (edit) {
+    return (
+      <input className={'inline-edit ' + (className ?? '')} autoFocus value={v} maxLength={max} placeholder={placeholder} onFocus={(e) => e.currentTarget.select()}
+        onClick={(e) => e.stopPropagation()} onChange={(e) => setV(e.target.value)} onBlur={() => done(true)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); void done(true) } else if (e.key === 'Escape') { e.preventDefault(); void done(false) } }} />
+    )
+  }
+  return (
+    <span className={'inline-text ' + (className ?? '')} role="button" tabIndex={0} title="点一下改"
+      onClick={(e) => { e.stopPropagation(); setEdit(true) }} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); setEdit(true) } }}>
+      <span className="inline-text-v">{value || placeholder}</span><Pencil className="inline-pen" size={13} strokeWidth={2} />
+    </span>
+  )
 }

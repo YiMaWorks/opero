@@ -14,12 +14,12 @@ import { DiffPage, PlaceholderPage, QueryResultPage } from './panels'
 import { LIVE } from '../mode'
 import {
   ComingSoonPage, LiveServersPage, ExecutorsPage, LiveAppsPage, LiveDataPage, LiveEmployeePage, LiveKnowledgePage,
-  LiveQueryPage, LiveSecurityPage, LiveServerAddPage, LiveServerPage, LiveTriggerEditPage, LiveTriggersPage, LiveWorkspaceAddPage, LiveWorkspacePage, LiveWorkspacesPage,
+  LiveQueryPage, LiveSecurityPage, LiveServerAddPage, LiveServerPage, LiveTriggerEditPage, LiveTriggersPage, LiveWorkspaceAddPage, LiveWorkspacePage,
 } from './live'
 import { LiveCredentialEditPage, LiveCredentialsPage } from './creds'
 import { LiveHistoryPage, LiveIssuePage, LiveIssuesPage, LiveMemoryPage } from './live2'
 import { DomainPage, DomainsPage } from './live3'
-import { LiveReleasePage, LiveReleasesPage } from './release'
+import { LiveReleasePage, ProjectsPage } from './release'
 import { LiveChannelsPage, LiveInboxPage } from './live4'
 
 /** 真的一套里还没做的页面 */
@@ -43,7 +43,8 @@ function livePage(route: Route, p: { params: Record<string, any>; nav: Nav }) {
     case 'triggers': return <LiveTriggersPage {...p} />
     case 'triggerEdit': return <LiveTriggerEditPage {...p} />
     case 'knowledge': return <LiveKnowledgePage {...p} />
-    case 'workspaces': return <LiveWorkspacesPage {...p} />
+    // 项目和发布合在一起：「项目」页就是发布总览；旧的「发布」入口（带 ws 的进那个项目）转过来
+    case 'workspaces': return <ProjectsPage {...p} />
     case 'workspace': return <LiveWorkspacePage {...p} />
     case 'workspaceAdd': return <LiveWorkspaceAddPage {...p} />
     case 'employee': case 'profile': return <LiveEmployeePage {...p} />
@@ -54,7 +55,7 @@ function livePage(route: Route, p: { params: Record<string, any>; nav: Nav }) {
     case 'issue': return <LiveIssuePage {...p} />
     case 'memory': return <LiveMemoryPage {...p} />
     case 'history': return <LiveHistoryPage {...p} />
-    case 'releases': return <LiveReleasesPage {...p} />
+    case 'releases': return p.params.ws ? <LiveWorkspacePage {...p} params={{ ...p.params, id: p.params.ws }} /> : <ProjectsPage {...p} />
     case 'release': return <LiveReleasePage {...p} />
     case 'domains': return <DomainsPage {...p} />
     case 'channels': return <LiveChannelsPage {...p} />

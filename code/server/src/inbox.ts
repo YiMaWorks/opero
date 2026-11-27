@@ -10,6 +10,7 @@ import { emit, push } from './bus.ts'
 import { getSecret } from './vault.ts'
 import * as runner from './runner.ts'
 import type { Credential } from './types.ts'
+import * as egress from './egress.ts'
 
 export interface Channel {
   id: string
@@ -94,12 +95,20 @@ function add(i: InboxItem, quiet: boolean) {
 }
 
 // ---------- 邮箱（IMAP） ----------
+/** 连 IMAP：连不上记进「最近连不上的」，报错带上去哪换出口 */
+async function imapConnect(client: ImapFlow, c: Channel) {
+  try { await client.connect() } catch (e) {
+    const err = (e as { _err?: unknown })._err ?? e
+    if (egress.netErr(err)) egress.noteFail(c.imapHost!, c.imapPort || 993, `收件箱「${c.name}」`, err)
+    throw new Error(egress.hint(c.imapHost!, err))
+  }
+}
 async function pollEmail(c: Channel) {
   const pass = getSecret(c.cred)
   const cred = get<Credential>('credentials', c.cred)
   if (!pass || !c.imapHost) throw new Error('邮箱的服务器或密码没配好')
-  const client = new ImapFlow({ host: c.imapHost, port: c.imapPort || 993, secure: (c.imapPort || 993) === 993, auth: { user: c.user || cred?.user || '', pass }, logger: false, socketTimeout: 60_000 })
-  await client.connect()
+  const client = new ImapFlow({ host: c.imapHost, port: c.imapPort || 993, secure: (c.imapPort || 993) === 993, auth: { user: c.user || cred?.user || '', pass }, logger: false, socketTimeout: 60_000, proxy: egress.proxyFor(c.imapHost) })
+  await imapConnect(client, c)
   try {
     const box = await client.mailboxOpen('INBOX', { readOnly: true })
     const validity = String(box.uidValidity)
@@ -130,8 +139,8 @@ export async function emailBody(i: InboxItem): Promise<string> {
   const pass = c && getSecret(c.cred)
   if (!c || !pass || !i.uidNum) throw new Error('取不到原邮件')
   const cred = get<Credential>('credentials', c.cred)
-  const client = new ImapFlow({ host: c.imapHost!, port: c.imapPort || 993, secure: (c.imapPort || 993) === 993, auth: { user: c.user || cred?.user || '', pass }, logger: false })
-  await client.connect()
+  const client = new ImapFlow({ host: c.imapHost!, port: c.imapPort || 993, secure: (c.imapPort || 993) === 993, auth: { user: c.user || cred?.user || '', pass }, logger: false, proxy: egress.proxyFor(c.imapHost!) })
+  await imapConnect(client, c)
   try {
     await client.mailboxOpen('INBOX', { readOnly: true })
     const m = await client.fetchOne(String(i.uidNum), { source: { start: 0, maxLength: 5_000_000 } }, { uid: true })

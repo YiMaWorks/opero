@@ -8,6 +8,7 @@ import { IconPlus, IconSearch, TabIcon } from './icons'
 import { LIVE_CONFIG } from '../pages/live'
 import { DEMO_CONFIG } from '../pages/apps'
 import { LIVE } from '../mode'
+import { AppIcon } from './AppIcon'
 
 interface Props {
   tab: Exclude<Tab, 'chat'>
@@ -60,11 +61,10 @@ export function SideNav({ tab, active, onPick }: Props) {
     body = (
       <>
         {item({ page: 'workspaces' }, '全部项目', <TabIcon tab="workspace" />, <em>{s.workspaces.length}</em>)}
-        {LIVE && item({ page: 'releases' }, '发布', letter('发'), s.liveReleases.some((r) => r.status === 'running') ? <em className="hot">发布中</em> : undefined)}
-        {item({ page: 'issues' }, '问题清单', letter('问'), open ? <em className="hot">{open}</em> : undefined)}
+        {item({ page: 'issues' }, '问题清单', <AppIcon page="issues" size={21} plain />, open ? <em className="hot" title="没处理的线上问题：点进去每个点「修复 / 已知 / 忽略 7 天」，数字就减">{open}</em> : undefined)}
         <div className="side-sep" />
         {s.workspaces.filter((w) => match(w.name + w.repo)).map((w) =>
-          item({ page: 'workspace', params: { id: w.id } }, w.name, letter(w.name.slice(0, 1).toUpperCase()), undefined, `${w.branch} · ${w.last}`))}
+          item({ page: 'workspace', params: { id: w.id } }, w.name, letter(w.name.slice(0, 1).toUpperCase()), LIVE && s.liveReleases.some((r) => r.ws === w.id && r.status === 'running') ? <em className="hot">发布中</em> : undefined, `${w.branch} · ${w.last}`))}
       </>
     )
   } else if (tab === 'apps') {
@@ -76,6 +76,9 @@ export function SideNav({ tab, active, onPick }: Props) {
       ['data', '数据', '数', `${s.dataSources.length}`],
       ['triggers', '触发器', '触', `${s.triggers.filter((t) => t.enabled).length}`],
       ['knowledge', '知识库', '知', `${s.kb.length}`],
+      ['domains', '域名', '域', ''],
+      ['inbox', '收件箱', '收', ''],
+      ['channels', '消息渠道', '渠', ''],
       ['audit', '操作记录', '记', ''],
     ] : [
       ['servers', '服务器和电脑', '服', `${s.servers.length}`],
@@ -94,9 +97,9 @@ export function SideNav({ tab, active, onPick }: Props) {
       <>
         {item({ page: 'apps' }, '全部应用', <TabIcon tab="apps" />)}
         <div className="side-sep" />
-        {list.filter(([, n]) => match(n)).map(([page, name, l, n]) => item({ page }, name, letter(l), n ? <em>{n}</em> : undefined))}
+        {list.filter(([, n]) => match(n)).map(([page, name, l, n]) => item({ page }, name, <AppIcon page={String(page)} size={21} plain fallback={l} />, n ? <em>{n}</em> : undefined))}
         <div className="side-sep" />
-        {(LIVE ? LIVE_CONFIG : DEMO_CONFIG).filter((a) => match(a.name)).map((a) => item({ page: a.page }, a.name, letter(a.name === 'AI 执行器' ? 'AI' : a.name.slice(0, 1)), undefined, a.desc))}
+        {(LIVE ? LIVE_CONFIG : DEMO_CONFIG).filter((a) => match(a.name)).map((a) => item({ page: a.page }, a.name, <AppIcon page={a.page} size={21} plain fallback={a.name.slice(0, 1)} />, undefined, a.desc))}
       </>
     )
   } else {

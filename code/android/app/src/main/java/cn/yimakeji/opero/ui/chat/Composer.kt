@@ -137,7 +137,7 @@ object Pending {
 
 /**
  * 聊天底部（网页 Chat.tsx 的手机版 footer）：
- *   员工的底部菜单 + 常用语（一排小标签，能左右滑）→ 附件一排 → 输入框 + 按钮。
+ *   员工的底部菜单 + 常用语（一排小标签，能左右滑；常用语点了直接发，编辑时长按拖动排序，见 Phrases.kt）→ 附件一排 → 输入框 + 按钮。
  *   按钮：有字 / 有附件 → （在干活且不是 Codex：排队）+ 说话 + 发送；没字：在干活 → 停止，闲着 → 说话 + 附件。
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -200,12 +200,7 @@ fun Composer(
         ) {
             for (m in emp.menus) Chip(t(Routes.menuLabel(m, emp)), strong = true) { onOpenRoute(Routes.menu(m, emp)) }
             if (emp.menus.isNotEmpty() && phrases.isNotEmpty()) Box(Modifier.width(1.dp).height(16.dp).background(c.line))
-            for (p in phrases) {
-                val short = p.replace(Regex("\\s+"), " ").trim().let { if (it.codePointCount(0, it.length) > 6) it.take(6) + "…" else it }
-                Chip(if (editPh) "$short ×" else short) {
-                    if (editPh) Live.setPhrases(phrases.filter { it != p }) else onText(if (text.isBlank()) p else "$text\n$p")
-                }
-            }
+            PhraseChips(session.id, phrases, editPh, gap = 6.dp)
             if (editPh) Chip(t("+ 存输入框里的"), strong = true) {
                 val v = text.trim()
                 if (v.isNotEmpty() && v !in phrases) { Live.setPhrases((phrases + v).takeLast(30)); Live.toast(t("已存成常用语")) }

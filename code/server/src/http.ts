@@ -1,4 +1,5 @@
 // 很小的路由：不用框架。route(方法, '/api/x/:id', 处理函数, 选项)；处理函数返回的对象当 JSON 回。
+import fs from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 export class HttpError extends Error {
@@ -28,13 +29,14 @@ export interface Ctx {
 
 export type Auth = 'none' | 'owner' | 'device' | 'mcp' | 'agent'
 type Handler = (c: Ctx) => unknown
-interface Route { method: string; re: RegExp; keys: string[]; h: Handler; auth: Auth; raw?: boolean; max?: number }
+interface Route { method: string; re: RegExp; keys: string[]; h: Handler; auth: Auth; raw?: boolean; max?: number; stream?: boolean }
 const routes: Route[] = []
 
-export function route(method: string, pattern: string, h: Handler, opts: { auth?: Auth; raw?: boolean; max?: number } = {}) {
+/** stream：不读请求体，处理函数自己从 c.req 里流式读（大文件上传，比如安装包） */
+export function route(method: string, pattern: string, h: Handler, opts: { auth?: Auth; raw?: boolean; max?: number; stream?: boolean } = {}) {
   const keys: string[] = []
   const re = new RegExp('^' + pattern.replace(/\/:(\w+)/g, (_, k) => { keys.push(k); return '/([^/]+)' }) + '/?$')
-  routes.push({ method, re, keys, h, auth: opts.auth ?? 'owner', raw: opts.raw, max: opts.max })
+  routes.push({ method, re, keys, h, auth: opts.auth ?? 'owner', raw: opts.raw, max: opts.max, stream: opts.stream })
 }
 
 export function match(method: string, path: string) {
@@ -86,4 +88,18 @@ export function isHttps(req: IncomingMessage) { return req.headers['x-forwarded-
 export function baseUrl(req: IncomingMessage, fixed: string) {
   if (fixed) return fixed
   return `${isHttps(req) ? 'https' : 'http'}://${req.headers['x-forwarded-host'] ?? req.headers.host ?? 'localhost'}`
+}
+
+/** 把请求体流式写进文件（最多 max 字节，超了报 413、删掉写了一半的） */
+export function saveBody(req: IncomingMessage, file: string, max: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let n = 0
+    const out = fs.createWriteStream(file, { mode: 0o600 })
+    const fail = (e: Error) => { req.unpipe(out); out.destroy(); fs.rm(file, { force: true }, () => {}); reject(e) }
+    req.on('data', (c: Buffer) => { n += c.length; if (n > max) { fail(new HttpError(413, '太大了')); req.destroy() } })
+    req.on('error', fail)
+    out.on('error', fail)
+    out.on('finish', () => resolve(n))
+    req.pipe(out)
+  })
 }

@@ -45,5 +45,16 @@
  "搜索员工、聊天记录": "Search employees and chats",
  "{0} 个置顶聊天": "{0} pinned chats",
  "还没有会话：点右上角 ＋ 找个员工聊": "No chats yet: tap ＋ at the top right to chat with an employee",
- "没找到": "Nothing found"
+ "没找到": "Nothing found",
+ "已发布": "Released",
+ "已用 {0}": "{0} so far",
+ "失败原因已经发给员工，它会接着修": "The failure was sent to the employee, who will keep fixing it",
+ "线上已经是 {0}": "Live now: {0}",
+ "保存失败": "Couldn't save",
+ "已存到相册": "Saved to Photos",
+ "已存到「下载」": "Saved to Downloads",
+ "看大图": "View full size",
+ "存到相册": "Save to Photos",
+ "点一下下载": "Tap to download",
+ "长按拖动排序": "Long-press and drag to reorder"
 }

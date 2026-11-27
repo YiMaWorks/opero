@@ -11,9 +11,13 @@ import { Avatar } from '../components/Avatar'
 import { editImage, fileToDataUrl, pickImages } from '../components/ImageEditor'
 import { Empty, Field, PageHeader, Row, Section, Segmented, Sheet, Stat, Tag, Toggle } from '../components/ui'
 import { WorkSheet } from '../components/WorkSheet'
+import { EditableAvatar, presetData, randomName, randomPreset } from '../components/AvatarPicker'
+import { Shuffle } from 'lucide-react'
+import { ExecPicker } from '../components/ExecutorSetup'
 import { APPROVALS, EFFORTS, approvalLabel, effortLabel, modelsFor } from '../work'
 import { IconPlus } from '../components/icons'
 import { headNav, type PageProps } from './nav'
+import { EmpName } from '../components/EmpName'
 
 export function EmployeesPage({ nav }: PageProps) {
   const employees = useStore((s) => s.employees)
@@ -49,7 +53,7 @@ export function EmployeesPage({ nav }: PageProps) {
             const working = sessions.find((s) => s.employee === e.id)?.working
             return (
               <Row key={e.id} icon={<Avatar id={e.id} size={44} />} chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
-                title={e.name}
+                title={<EmpName e={e} />}
                 sub={working ? <span className="ok">● {working}</span> : `${e.title} · ${e.executor} · ${e.host}`} />
             )
           })}
@@ -186,7 +190,6 @@ export function EmployeePage({ params, nav }: PageProps) {
 
 const PERSONAS = ['冷静、话少、先给结论', '热情、细致、多解释几句', '严谨、凡事先确认', '幽默、轻松']
 const COLORS = ['#10B981', '#EC4899', '#0EA5E9', '#F97316', '#6366F1', '#475569', '#8B5CF6', '#5B4FE9', '#EF4444', '#14B8A6']
-const EXECUTORS = (LIVE ? ['Claude Code', 'Codex'] : ['Claude Code', 'Codex', 'OpenCode', 'Qwen Code']) as readonly ('Claude Code' | 'Codex' | 'OpenCode' | 'Qwen Code')[]
 
 export function EmployeeEditPage({ params, nav }: PageProps) {
   const existing = useStore((s) => s.employees.find((x) => x.id === params.id))
@@ -202,6 +205,14 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
   })
   const up = (p: Partial<Employee>) => setE((x) => ({ ...x, ...p }))
   const [adv, setAdv] = useState(false)
+  const allEmps = useStore((s) => s.employees)
+  // 新建：先随机起个名字、挑一张同性别的默认头像（都能换）；选了性别就按性别重新挑
+  const reroll = async (gender = e.gender, what: 'both' | 'name' | 'avatar' = 'both') => {
+    const g = gender || (Math.random() < 0.5 ? '女' : '男')
+    if (what !== 'avatar') up({ name: randomName(g, allEmps.map((x) => x.name)) })
+    if (what !== 'name') { try { up({ avatarImg: await presetData(randomPreset(g)) }) } catch { /* 读不到默认头像就用字 */ } }
+  }
+  useEffect(() => { if (!existing) void reroll() }, []) // eslint-disable-line react-hooks/exhaustive-deps
   // 预设角色（后台 presets.ts）：新建时点一个就填好
   const [presets, setPresets] = useState<(Pick<Employee, 'name' | 'avatar' | 'color' | 'title' | 'prompt' | 'menus' | 'persona' | 'effort' | 'approval' | 'credGroups'> & { key: string })[]>([])
   useEffect(() => { if (LIVE && !existing) call<{ presets: typeof presets }>('GET', '/api/presets').then((r) => r && setPresets(r.presets)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -218,17 +229,31 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
         right={<button className="btn primary sm" onClick={save}>保存</button>} />
       <div className="page-body form">
         <div className="hero">
-          <span className="avatar" style={{ width: 56, height: 56, background: e.color, fontSize: 26 }}>{e.avatar || e.name.slice(0, 1) || '?'}</span>
-          <div className="swatches">
-            {COLORS.map((c) => <button key={c} className={'swatch' + (c === e.color ? ' on' : '')} style={{ background: c }} onClick={() => up({ color: c })} aria-label={c} />)}
-          </div>
+          {existing ? <EditableAvatar id={existing.id} size={64} /> : (
+            <span className="avatar" style={{ width: 64, height: 64, ['--c' as string]: e.color, fontSize: 28 }}>{e.avatarImg ? <img src={e.avatarImg} alt="" /> : e.avatar || e.name.slice(0, 1) || '?'}</span>
+          )}
+          {!existing && (
+            <div className="row-actions">
+              <button type="button" className="btn default sm" onClick={() => reroll(e.gender, 'avatar')}><Shuffle size={14} /> 换一个头像</button>
+              <button type="button" className="btn ghost sm" onClick={async () => { const [f] = await pickImages({ aspect: 1, round: true, maxSize: 256, title: '新员工的头像', allowOriginal: false }); if (f) up({ avatarImg: await fileToDataUrl(f) }) }}>上传图片</button>
+              {e.avatarImg && <button type="button" className="btn ghost sm" onClick={() => up({ avatarImg: undefined })}>用字</button>}
+            </div>
+          )}
+          {existing && <span className="sub">点头像换：默认头像、上传图片（会先裁剪）、字或表情</span>}
         </div>
         {LIVE && !existing && presets.length > 0 && (
           <Field label="照着哪个角色建（点一个，名字、职责、提示词、菜单都填好）">
-            <div className="chips">{presets.map((p) => <button key={p.key} type="button" className={'chip' + (e.prompt === p.prompt ? ' on' : '')} onClick={() => up({ name: p.name, avatar: p.avatar, color: p.color, title: p.title, prompt: p.prompt, menus: p.menus, persona: p.persona, effort: p.effort, approval: p.approval, credGroups: p.credGroups })}>{p.name}</button>)}</div>
+            <div className="chips">{presets.map((p) => <button key={p.key} type="button" className={'chip' + (e.prompt === p.prompt ? ' on' : '')} onClick={() => up({ role: p.name, avatar: p.avatar, color: p.color, title: p.title, prompt: p.prompt, menus: p.menus, persona: p.persona, effort: p.effort, approval: p.approval, credGroups: p.credGroups })}>{p.name}</button>)}</div>
           </Field>
         )}
-        <Field label="名字"><input value={e.name} onChange={(v) => up({ name: v.target.value })} placeholder="比如：crm 运营" /></Field>
+        <Field label="名字">
+          <div className="name-row">
+            <input value={e.name} onChange={(v) => up({ name: v.target.value })} placeholder="比如：crm 运营" />
+            <button type="button" className="btn default sm" title="随机换一个名字" onClick={() => reroll(e.gender, 'name')}><Shuffle size={14} /> 换一个</button>
+          </div>
+        </Field>
+        <Field label="职位" hint="显示在名字后面的小标签，比如「安卓开发」「运维」「日志值班」；别的员工按职位也能找到它"><input value={e.role ?? ''} maxLength={20} onChange={(v) => up({ role: v.target.value })} placeholder="比如：安卓开发" /></Field>
+        <Field label="性别（可选）" hint={existing ? undefined : '选了会按性别重新起名字、挑头像'}><Segmented value={e.gender ?? ''} onChange={(v) => { up({ gender: v }); if (!existing && v) void reroll(v) }} options={[{ value: '', label: '不设' }, { value: '女', label: '女' }, { value: '男', label: '男' }]} /></Field>
         <Field label="职责一句话（可选）" hint="不填用提示词的第一句"><input value={e.title} onChange={(v) => up({ title: v.target.value })} placeholder="会显示在聊天顶栏" /></Field>
         <Field label="职责（提示词）" hint={LIVE ? '每次派活都带上（系统提示词），写清它负责什么、做事的规矩' : '写进它 git 的 CLAUDE.md「我的角色」，以后派活不用长篇大论'}>
           <textarea rows={5} value={e.prompt} onChange={(v) => up({ prompt: v.target.value })} placeholder="你负责 …；做事的规矩是 …" />
@@ -242,8 +267,7 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
         {LIVE && <button type="button" className="btn ghost sm" onClick={() => setAdv(!adv)}>{adv ? '收起高级设置' : '高级设置（执行器、模型、服务器、菜单、预算…，一般不用动）'}</button>}
         {(!LIVE || adv) && (<>
         <Field label="执行器">
-          <Segmented value={e.executor as (typeof EXECUTORS)[number]} options={EXECUTORS.map((x) => ({ value: x, label: x }))}
-            onChange={(v) => up({ executor: v, model: modelsFor(v).includes(e.model) ? e.model : modelsFor(v)[0] })} />
+          <ExecPicker value={e.executor} onChange={(v) => up({ executor: v, model: modelsFor(v).includes(e.model) ? e.model : modelsFor(v)[0] })} />
         </Field>
         <Field label="模型">
           <select value={e.model} onChange={(v) => up({ model: v.target.value })}>
@@ -283,7 +307,6 @@ export function EmployeeEditPage({ params, nav }: PageProps) {
           <span className="field-hint">点了直接开面板，不经过 AI。想要新的菜单？在「我 → 定制和二开」里找「后台开发」做，或看 docs/规范/底部菜单.md。</span>
         </div>
         {!existing && !LIVE && <p className="field-hint">建好后会自动给它建一个记忆仓库 <span className="mono">emp-名字</span>（放在你带进来的代码仓库账号下），规矩、交接都存在里面，换 work、换服务器都不丢。</p>}
-        <Field label="性别（可选）"><Segmented value={e.gender ?? ''} onChange={(v) => up({ gender: v })} options={[{ value: '', label: '不设' }, { value: '女', label: '女' }, { value: '男', label: '男' }]} /></Field>
         <Field label="性格 / 说话风格" hint={LIVE ? '写进它记忆仓库的「我的人设」，每次干活都按这个说话' : undefined}>
           <div className="chips">
             <button type="button" className={'chip' + (!e.persona ? ' on' : '')} onClick={() => up({ persona: '' })}>不设</button>
@@ -368,8 +391,6 @@ export function MemoryPage({ params, nav }: PageProps) {
 const setHostOf = (id: string, host: string) => set((s) => ({ employees: s.employees.map((x) => (x.id === id ? { ...x, host } : x)) }))
 
 // ---------- 聊天设置：像微信给每个联系人设（头像、名字、背景、提醒、置顶），按员工记住 ----------
-const EMOJIS = ['🤖', '🛠️', '📮', '🚀', '🐞', '📊', '🧑‍💻', '🦉', '⚙️', '🌙']
-const AV_COLORS = ['#10B981', '#EC4899', '#0EA5E9', '#F97316', '#6366F1', '#475569', '#8B5CF6', '#5B4FE9', '#EF4444', '#14B8A6']
 export const BGS: { value: ChatBg; label: string }[] = [
   { value: 'plain', label: '默认' }, { value: 'soft', label: '浅紫' }, { value: 'grid', label: '网格' }, { value: 'dusk', label: '暮色' }, { value: 'mint', label: '薄荷' },
 ]
@@ -378,22 +399,6 @@ export const NOTIFIES: { value: Notify; label: string; desc: string }[] = [
   { value: 'all', label: '每条都提醒', desc: '有新消息就红点 + 推送（适合你正盯着的员工）' },
   { value: 'none', label: '不提醒', desc: '免打扰：不推送、不冒红点；要你决定的事照样会在「要你确认」里等着' },
 ]
-
-/** 头像上的字：打字时只改输入框（能删空、中文输入法拼音不被截断），离开或回车才存；空着就恢复原样 */
-function AvatarText({ e }: { e: Employee }) {
-  const cur = e.avatarImg ? '' : e.avatar
-  const [v, setV] = useState(cur)
-  useEffect(() => setV(cur), [cur])
-  const save = () => {
-    const t = Array.from(v.trim()).slice(0, 2).join('')
-    if (!t) { setV(cur); return }
-    if (t === e.avatar && !e.avatarImg) { setV(t); return }
-    setLook(e.id, { avatar: t, avatarImg: undefined })
-    toast('头像已换')
-  }
-  return <input className="avatar-text" value={v} placeholder="字" onChange={(x) => setV(x.target.value)} onBlur={save}
-    onKeyDown={(x) => { if (x.key === 'Enter' && !x.nativeEvent.isComposing) (x.target as HTMLInputElement).blur() }} />
-}
 
 /** 选图后缩成 128×128 再存，避免本机存储撑爆 */
 export function ChatSettingsPage({ params, nav }: PageProps) {
@@ -407,46 +412,12 @@ export function ChatSettingsPage({ params, nav }: PageProps) {
       <PageHeader title="聊天设置" sub={e.name} {...headNav(nav)} />
       <div className="page-body">
         <div className="hero">
-          <button className="hero-avatar" onClick={async () => {
-            const [f] = await pickImages({ aspect: 1, round: true, maxSize: 256, title: `${e.name} 的头像`, allowOriginal: false })
-            if (f) { setLook(e.id, { avatarImg: await fileToDataUrl(f) }); toast('头像已换') }
-          }} title="换头像"><Avatar id={e.id} size={72} /></button>
+          <EditableAvatar id={e.id} size={72} />
           <div className="hero-main">
             <input className="name-input" value={name} onChange={(v) => setName(v.target.value)} onBlur={() => name.trim() && name !== e.name && (setLook(e.id, { name: name.trim() }), toast('名字已改'))} />
-            <span className="sub">点头像换图片，点名字改名字；这些都只影响你看到的样子</span>
+            <span className="sub">点头像换（默认头像、上传图片、字或表情），点名字改名字</span>
           </div>
         </div>
-
-        <Section title="头像">
-          <div className="pad form">
-            <div className="field">
-              <span className="field-label">用字或表情</span>
-              <div className="chips">
-                <AvatarText e={e} />
-                {EMOJIS.map((x) => <button key={x} className={'chip emoji' + (!e.avatarImg && e.avatar === x ? ' on' : '')} onClick={() => setLook(e.id, { avatar: x, avatarImg: undefined })}>{x}</button>)}
-              </div>
-            </div>
-            <div className="field">
-              <span className="field-label">底色</span>
-              <div className="swatches">
-                {AV_COLORS.map((c) => <button key={c} className={'swatch' + (c === e.color ? ' on' : '')} style={{ background: c }} onClick={() => setLook(e.id, { color: c })} aria-label={c} />)}
-              </div>
-            </div>
-            <div className="field">
-              <span className="field-label">或者用一张图</span>
-              <div className="chips">
-                <label className="btn default sm">选图片<input type="file" accept="image/*" hidden onChange={async (v) => {
-                  const f = v.target.files?.[0]
-                  v.target.value = ''
-                  if (!f) return
-                  const r = await editImage(f, { aspect: 1, round: true, maxSize: 256, title: `${e.name} 的头像`, allowOriginal: false })
-                  if (r) { setLook(e.id, { avatarImg: await fileToDataUrl(r) }); toast('头像已换') }
-                }} /></label>
-                {e.avatarImg && <button className="btn ghost sm" onClick={() => setLook(e.id, { avatarImg: undefined })}>不用图片</button>}
-              </div>
-            </div>
-          </div>
-        </Section>
 
         <Section title="聊天背景">
           <div className="pad bg-pick">

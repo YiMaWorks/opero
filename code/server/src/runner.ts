@@ -12,7 +12,7 @@ import { cfg, MCP_SCRIPT } from './config.ts'
 import { get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit, push } from './bus.ts'
 import { addMsg, delMsg, empSays, getMsg, monthCost, monthCostOf, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
-import { getSecret, scrub } from './vault.ts'
+import { getSecret, scrub, setSecret } from './vault.ts'
 import type { Card, CardAction, Credential, Employee, Server, Session, Workspace } from './types.ts'
 import * as hosts from './hosts.ts'
 import * as agents from './agents.ts'
@@ -32,6 +32,8 @@ interface Live {
   runId: string
   token: string
   kind: 'claude' | 'codex'
+  /** 具体是哪种执行器（kind 是驱动方式） */
+  exec: ExecKind
   host: string
   proc: ChildProcess
   stdinOpen: boolean
@@ -45,7 +47,12 @@ interface Live {
   said: number // 这一轮说了几段话
   lastResult: string
   stopped: boolean
+  /** 这一轮花的（美元，执行器的估算）：最新的累计值 − costBase，不是把每次的累计值加起来 */
   cost: number
+  /** 这一轮开始时执行器已经带着的花费（续上会话时恢复的），第一次拿到结果时定 */
+  costBase?: number
+  /** 这一轮是续哪个会话（--resume 的会话号） */
+  resumedFrom?: string
   tokens: number
   ok: boolean
   stderr: string
@@ -80,11 +87,22 @@ export const workingList = () => [...live.keys()]
 // ---------- AI 执行器的账号（在「AI 执行器」页配，值在保险箱） ----------
 /** claudeEgress / codexEgress：网络出口，空 = 从干活那台直连，'local' = 经 Opero 这台，其它 = 经那台 Agent（tunnel.ts） */
 /** AI 执行器的账号：Claude / Codex 都可以存好几个（订阅令牌、API Key，各自能带自己的接口地址 = 凭证 meta.baseUrl）；xxxCred 是默认那个；xxxBaseUrl 是没单独设地址的账号共用的 */
-export interface AiConf { claudeCred?: string; claudeAccounts?: string[]; claudeBaseUrl?: string; codexCred?: string; codexAccounts?: string[]; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string }
+export interface AiConf { claudeCred?: string; claudeAccounts?: string[]; claudeBaseUrl?: string; codexCred?: string; codexAccounts?: string[]; codexBaseUrl?: string; claudeEgress?: string; codexEgress?: string
+  /** 其它执行器（Qwen Code、CodeBuddy Code…）的账号列表和默认账号 */
+  accounts?: Partial<Record<ExecKind, string[]>>; defaults?: Partial<Record<ExecKind, string>> }
+/** 执行器种类。驱动方式两种：Codex（codex exec）；其它都是 Claude Code 式的 stream-json（Qwen Code、CodeBuddy Code 的事件和 Claude Code 一样） */
+export type ExecKind = 'claude' | 'codex' | 'qwen' | 'codebuddy'
+export const EXEC_NAMES: Record<ExecKind, string> = { claude: 'Claude Code', codex: 'Codex', qwen: 'Qwen Code', codebuddy: 'CodeBuddy Code' }
+export const kindOf = (executor?: string): ExecKind => { const s = String(executor ?? ''); return /codex/i.test(s) ? 'codex' : /qwen/i.test(s) ? 'qwen' : /codebuddy/i.test(s) ? 'codebuddy' : 'claude' }
+export const driverOf = (k: ExecKind): 'claude' | 'codex' => (k === 'codex' ? 'codex' : 'claude')
+/** Qwen Code 默认走阿里云百炼的 OpenAI 兼容接口（按量计费的 API Key；Coding Plan 不许接自动化） */
+export const QWEN_BASE = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+export const QWEN_MODEL = 'qwen3-coder-plus'
 export const aiConf = () => kvGet<AiConf>('ai', {})
 
 /** 执行器的网络出口：让它的 HTTPS 请求走干活那台本机的代理，经 Opero 隧道从选的出口出去（出口就是干活那台时直连） */
-export function egressEnv(kind: 'claude' | 'codex', host: string): Record<string, string> {
+export function egressEnv(kind: ExecKind, host: string): Record<string, string> {
+  if (kind !== 'claude' && kind !== 'codex') return {} // 国产执行器连国内的接口，不用出口
   const c = aiConf()
   const egress = (kind === 'claude' ? c.claudeEgress : c.codexEgress) || ''
   if (!egress || egress === host) return {}
@@ -128,25 +146,106 @@ export function codexAccounts(): string[] {
   return [...new Set([...(c.codexAccounts ?? []), ...(c.codexCred ? [c.codexCred] : [])])].filter((id) => !!getSecret(id))
 }
 /** 这个账号的接口地址：账号自己设的 → 共用的 → 官方（空） */
-export function baseOf(kind: 'claude' | 'codex', id?: string): string {
+export function baseOf(kind: ExecKind, id?: string): string {
   const own = id ? String(get<Credential>('credentials', id)?.meta?.baseUrl ?? '').trim() : ''
   const c = aiConf()
-  return own || (kind === 'claude' ? c.claudeBaseUrl : c.codexBaseUrl) || ''
+  return own || (kind === 'claude' ? c.claudeBaseUrl : kind === 'codex' ? c.codexBaseUrl : '') || ''
+}
+/** 某种执行器的账号（凭证 id）：Claude / Codex 用原来的列表，其它用 accounts[种类] */
+export function accountsOf(k: ExecKind): string[] {
+  if (k === 'claude') return claudeAccounts()
+  if (k === 'codex') return codexAccounts()
+  const c = aiConf()
+  return [...new Set([...(c.accounts?.[k] ?? []), ...(c.defaults?.[k] ? [c.defaults[k]!] : [])])].filter((id) => !!getSecret(id))
+}
+/** 默认账号：设过且还在就用它，不然第一个 */
+export function defaultOf(k: ExecKind): string | undefined {
+  const list = accountsOf(k)
+  const c = aiConf()
+  const d = k === 'claude' ? c.claudeCred : k === 'codex' ? c.codexCred : c.defaults?.[k]
+  return d && list.includes(d) ? d : list[0]
+}
+/** Qwen Code 用哪个模型：员工选了就用；没选用账号上记的；都没有用 qwen3-coder-plus */
+export function qwenModel(emp?: Employee, cred?: string): string {
+  if (emp?.model && emp.model !== '执行器默认') return emp.model
+  return String(get<Credential>('credentials', cred ?? '')?.meta?.model ?? '') || QWEN_MODEL
 }
 /** 用量到上限的账号：到这个时间之前先换别的用 */
 const limitedUntil = () => kvGet<Record<string, number>>('claudeLimited', {})
 export function markLimited(id: string, ms = 60 * 60_000) { kvSet('claudeLimited', { ...limitedUntil(), [id]: Date.now() + ms }) }
-/** 这一轮用哪个账号：员工指定的 → 默认的 → 其它的；到上限的往后排（都到上限就还按原顺序） */
-export function pickClaude(emp?: Employee): string | undefined {
-  const all = claudeAccounts()
+/** 这一轮用哪个账号：员工指定的 → 默认的 → 其它的；到上限的往后排（都到上限就还按原顺序）。Claude、Codex 都这样 */
+export function pickAccount(kind: 'claude' | 'codex', emp?: Employee): string | undefined {
+  const all = accountsOf(kind)
   if (!all.length) return undefined
-  const c = aiConf()
-  const order = [...new Set([emp?.claudeAccount, c.claudeCred, ...all].filter((x): x is string => !!x && all.includes(x)))]
+  const mine = kind === 'claude' ? emp?.claudeAccount : emp?.codexAccount
+  const order = [...new Set([mine, defaultOf(kind), ...all].filter((x): x is string => !!x && all.includes(x)))]
   const lim = limitedUntil()
   return order.find((id) => !(lim[id] > Date.now())) ?? order[0]
 }
+export const pickClaude = (emp?: Employee) => pickAccount('claude', emp)
 
-function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL, emp?: Employee): { env: Record<string, string>; secrets: string[]; cred?: string } {
+// ---------- Codex 的 ChatGPT 订阅账号 ----------
+// 订阅账号存的是 Codex 的 auth.json（ChatGPT 登录的令牌，Codex 用的时候自己续期）。每个账号在干活那台上一个自己的 CODEX_HOME：
+// AI 用户的 ~/.opero/codex/<账号>/（auth.json 0600；sessions 链到 ~/.codex/sessions，换账号也能接着原来的会话）。
+// 保险箱里的是「最新的一份」：起进程前，那台上的版本号（.opero-gen）和保险箱的不一样就写一份进去；跑完把 Codex 续期过的读回来存好（syncCodexAuth）。
+/** 这个 Codex 账号是 ChatGPT 订阅（auth.json）还是 API Key */
+export function codexMode(id?: string): 'chatgpt' | 'api' {
+  if (!id) return 'api'
+  const m = get<Credential>('credentials', id)?.meta?.authMode
+  if (m === 'chatgpt') return 'chatgpt'
+  if (m === 'api') return 'api'
+  return /^\s*\{/.test(getSecret(id) ?? '') ? 'chatgpt' : 'api'
+}
+/** auth.json 里能看出来的：邮箱、套餐（plus / pro / business…）、令牌（打码用） */
+export function codexAuthInfo(json: string): { email: string; plan: string; tokens: string[]; ok: boolean } {
+  try {
+    const j = JSON.parse(json)
+    const t = j?.tokens ?? {}
+    const tokens = [t.access_token, t.refresh_token, t.id_token, j?.OPENAI_API_KEY].filter((x): x is string => typeof x === 'string' && x.length > 8)
+    let email = '', plan = ''
+    const idt = String(t.id_token ?? '')
+    if (idt.split('.').length === 3) {
+      try {
+        const p = JSON.parse(Buffer.from(idt.split('.')[1], 'base64url').toString('utf8'))
+        email = String(p.email ?? '')
+        plan = String(p['https://api.openai.com/auth']?.chatgpt_plan_type ?? '')
+      } catch { /* 解不开就算了 */ }
+    }
+    return { email, plan, tokens, ok: !!t.refresh_token || !!t.access_token }
+  } catch { return { email: '', plan: '', tokens: [], ok: false } }
+}
+/** 起 Codex 之前在那台上准备好这个账号的 CODEX_HOME（bash -c 的脚本，$0 = codex，后面是它的参数） */
+const CODEX_PREP = [
+  'set -e',
+  'b="$HOME/.opero/codex"; d="$b/$OPERO_CODEX_ACCT"',
+  'mkdir -p "$d" "$HOME/.codex/sessions"; chmod 700 "$HOME/.opero" "$b" "$d" 2>/dev/null || true',
+  'if [ -n "$OPERO_CODEX_AUTH" ] && { [ ! -s "$d/auth.json" ] || [ "$OPERO_CODEX_GEN" != "$(cat "$d/.opero-gen" 2>/dev/null)" ]; }; then',
+  '  (umask 077; printf %s "$OPERO_CODEX_AUTH" > "$d/auth.json.tmp" && mv -f "$d/auth.json.tmp" "$d/auth.json"; printf %s "$OPERO_CODEX_GEN" > "$d/.opero-gen")',
+  'fi',
+  '[ -e "$d/sessions" ] || ln -s "$HOME/.codex/sessions" "$d/sessions" 2>/dev/null || true',
+  'unset OPERO_CODEX_AUTH OPERO_CODEX_GEN; export CODEX_HOME="$d"',
+  'exec "$0" "$@"',
+].join('\n')
+/** 要用订阅账号时把 codex 包一层（先准备 CODEX_HOME 再 exec，进程号不变）；API Key 账号原样 */
+export function codexCmd(bin: string, args: string[], env: Record<string, string>): [string, string[]] {
+  return env.OPERO_CODEX_ACCT ? ['bash', ['-c', CODEX_PREP, bin, ...args]] : [bin, args]
+}
+/** 跑完把那台上 Codex 续期过的 auth.json 读回来：和保险箱里的不一样就存回去、版本号 +1（别的服务器下次起进程时会拿到新的） */
+export async function syncCodexAuth(host: string, id?: string) {
+  if (!id || codexMode(id) !== 'chatgpt') return
+  const r = await hosts.runAiOn(host, 'bash', ['-c', 'cat "$HOME/.opero/codex/$1/auth.json" 2>/dev/null', '_', id], { timeoutMs: 20_000 })
+  const now = r.out.trim()
+  if (r.code !== 0 || !now || now === (getSecret(id) ?? '').trim() || !codexAuthInfo(now).ok) return
+  const cr = get<Credential>('credentials', id)
+  if (!cr) return
+  const gen = String(Number(cr.meta?.gen ?? 0) + 1)
+  setSecret(id, now)
+  put('credentials', { ...cr, meta: { ...(cr.meta ?? {}), gen } })
+  // 这台已经是最新的了：把版本号也对上，下次不用再写
+  await hosts.runAiOn(host, 'bash', ['-c', 'printf %s "$2" > "$HOME/.opero/codex/$1/.opero-gen"', '_', id, gen], { timeoutMs: 20_000 })
+}
+
+export function aiEnv(kind: ExecKind, host: string = hosts.LOCAL, emp?: Employee): { env: Record<string, string>; secrets: string[]; cred?: string } {
   const c = aiConf()
   const env: Record<string, string> = {}
   const secrets: string[] = []
@@ -158,13 +257,33 @@ function aiEnv(kind: 'claude' | 'codex', host: string = hosts.LOCAL, emp?: Emplo
     if (k) { secrets.push(k); env[isOat(k, cred) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
     if (base) env.ANTHROPIC_BASE_URL = base
     Object.assign(env, { MCP_TIMEOUT: '60000', MCP_TOOL_TIMEOUT: '1900000', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000' })
-  } else {
-    const all = codexAccounts()
-    cred = c.codexCred && all.includes(c.codexCred) ? c.codexCred : all[0]
+  } else if (kind === 'qwen') {
+    // Qwen Code：OpenAI 兼容接口（默认百炼），模型员工没选就用账号上记的 / qwen3-coder-plus
+    cred = defaultOf('qwen')
     const k = cred ? getSecret(cred)?.trim() : undefined
-    const base = baseOf('codex', cred)
-    if (k) { secrets.push(k); Object.assign(env, { OPENAI_API_KEY: k, CODEX_API_KEY: k }) }
-    if (base) env.OPENAI_BASE_URL = base
+    if (k) { secrets.push(k); env.OPENAI_API_KEY = k }
+    env.OPENAI_BASE_URL = baseOf('qwen', cred) || QWEN_BASE
+    env.OPENAI_MODEL = qwenModel(emp, cred)
+  } else if (kind === 'codebuddy') {
+    // CodeBuddy Code：CodeBuddy 的 API Key；默认国内站（internal），账号上标了国际站就不设
+    cred = defaultOf('codebuddy')
+    const k = cred ? getSecret(cred)?.trim() : undefined
+    if (k) { secrets.push(k); env.CODEBUDDY_API_KEY = k }
+    if (String(get<Credential>('credentials', cred ?? '')?.meta?.region ?? '') !== 'intl') env.CODEBUDDY_INTERNET_ENVIRONMENT = 'internal'
+    const base = baseOf('codebuddy', cred)
+    if (base) env.CODEBUDDY_BASE_URL = base
+  } else {
+    // Codex：员工指定的账号 → 默认 → 其它（到上限的往后排）。ChatGPT 订阅账号：auth.json 交给 codexCmd 写进这个账号的 CODEX_HOME；API Key 账号：环境变量
+    cred = pickAccount('codex', emp)
+    const k = cred ? getSecret(cred)?.trim() : undefined
+    if (k && codexMode(cred) === 'chatgpt') {
+      secrets.push(k, ...codexAuthInfo(k).tokens)
+      Object.assign(env, { OPERO_CODEX_ACCT: cred!, OPERO_CODEX_AUTH: k, OPERO_CODEX_GEN: String(get<Credential>('credentials', cred!)?.meta?.gen ?? 0) })
+    } else {
+      const base = baseOf('codex', cred)
+      if (k) { secrets.push(k); Object.assign(env, { OPENAI_API_KEY: k, CODEX_API_KEY: k }) }
+      if (base) env.OPENAI_BASE_URL = base
+    }
   }
   Object.assign(env, egressEnv(kind, host))
   return { env, secrets, cred }
@@ -178,8 +297,10 @@ export async function oneShot(prompt: string, timeoutMs = 180_000): Promise<stri
   ]
   let last = ''
   for (const [bin, args, kind] of tries) {
-    const { env, secrets } = aiEnv(kind)
-    const r = await hosts.runAiOn(hosts.LOCAL, bin, args, { env, input: prompt, timeoutMs })
+    const { env, secrets, cred } = aiEnv(kind)
+    const [b2, a2] = kind === 'codex' ? codexCmd(bin, args, env) : [bin, args]
+    const r = await hosts.runAiOn(hosts.LOCAL, b2, a2, { env, input: prompt, timeoutMs })
+    if (kind === 'codex') void syncCodexAuth(hosts.LOCAL, cred).catch(() => {})
     if (r.code === 0 && r.out.trim()) return scrub(r.out.trim(), secrets)
     last = scrub(r.out, secrets).slice(-300)
   }
@@ -223,10 +344,11 @@ async function shimEnv(host: string, p: Policy): Promise<Record<string, string>>
 
 /** 那台的 claude 支持哪些参数（看 --help；老版本没有的参数不加，免得起不来） */
 const helpCache = new Map<string, string>()
-async function claudeHelp(host: string): Promise<string> {
-  if (helpCache.has(host)) return helpCache.get(host)!
-  const r = await hosts.runAiOn(host, hosts.claudeBin(host), ['--help'], { timeoutMs: 20_000 })
-  if (r.code === 0) helpCache.set(host, r.out) // 没跑成（比如 Agent 刚好断了）不记，下次再问
+async function execHelp(host: string, kind: ExecKind = 'claude'): Promise<string> {
+  const key = `${host}:${kind}`
+  if (helpCache.has(key)) return helpCache.get(key)!
+  const r = await hosts.runAiOn(host, hosts.execBin(kind, host), ['--help'], { timeoutMs: 20_000 })
+  if (r.code === 0) helpCache.set(key, r.out) // 没跑成（比如 Agent 刚好断了）不记，下次再问
   return r.out
 }
 
@@ -288,7 +410,7 @@ function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: stri
   const ln = LANG_NAMES[st.lang && st.lang !== 'auto' ? (st.lang === 'zh' ? 'zh-CN' : st.lang) : st.langResolved ?? ''] ?? ''
   return [
     ln && `主人的界面语言是「${ln}」：回复主人、发卡片、写给主人看的内容都用 ${ln}（主人用别的语言跟你说话就跟着主人）。`,
-    `你是 Opero 里的 AI 员工「${emp.name}」${emp.title ? `：${emp.title}` : ''}。主人在手机或电脑上通过聊天和你协作。`,
+    `你是 Opero 里的 AI 员工「${emp.name}」${emp.role ? `（职位：${emp.role}）` : ''}${emp.title ? `：${emp.title}` : ''}。主人在手机或电脑上通过聊天和你协作。别的员工、文档里可能用你的职位称呼你。`,
     emp.prompt?.trim() && `## 你的角色\n${emp.prompt.trim()}`,
     emp.persona?.trim() && `## 说话风格\n${emp.persona.trim()}`,
     habits && `## 主人的习惯（每次都要遵守）\n${habits}`,
@@ -300,11 +422,15 @@ function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: stri
 - 接入、编译、发布是你的活，不是主人的：主人只管给 key 和批生产。先 setup_info 看现场（仓库平台、主人有哪些凭证、平台上已有的流水线、服务器、缺什么），再看仓库里已有的（.github/workflows、.gitlab-ci.yml、Jenkinsfile、Dockerfile、deploy/、README 的部署说明）。三种情况：① 已有流水线 / 部署脚本：pipeline_read 读出来，照着它的步骤配 Opero（build_set 的 cmd、release_target_set 的 command 或包里的 deploy.sh），不另起一套；② 什么都没有：自己写 deploy/build.sh 和 deploy.sh，build_set → build_generate → build_try 编通 → release_target_set 建测试 / 生产目标；③ 缺 key（仓库令牌、云效流水线权限、Jenkins Token、数据库账号…）：request_credential 说清楚要什么权限、拿来干嘛，然后等它（主人存好你会收到消息）。不要让主人「去网页上配编译 / 发布 / 目录」，能自己做的都做完再汇报。
 - 跑命令时 description 用中文写清楚这一步做什么、为什么（比如「去掉部署脚本里重启失败计数那一行，再检查语法」）：要主人确认时卡片标题就是它，主人看不懂命令。删根目录 / 家目录、格式化、关机重启、curl | sh 这类会被直接拒绝：被拒了别换写法再试，跟主人说清楚由他来做。
 - 等发布 / 编译结果不要用 sleep 干等：release_publish 发起后，发完 Opero 会把结果发给你；build_try 隔一会用 build_status 查一次，没编完就先做别的或者这一轮先结束。
+- 「应用」里的功能基本都有工具（改服务器 / 数据库的名字和保护、存查询、凭证改名和授权、提醒渠道、预算、系统设置、项目设置、AI 执行器、域名、操作记录…，见 server_update、database_update、saved_query、credential_manage、notify_manage、budget_set、settings_set、workspace_update、ai_status、domain_manage、audit_search）：主人说「帮我改一下 xxx」就直接用工具改；放宽安全的那几种会自动出卡片让主人本人点，你不用自己再问。
 - 配置类的事都是你用工具配，不要让主人去页面上填：定时 / Webhook 任务用 schedule_set（schedule_list、schedule_delete），服务器目录用 server_dir_set，日志用 log_register，发布目标用 release_target_set，编译用 build_set。主人一句话说清楚的直接配好，配完一句话告诉他配了什么；说不清的地方先自己查（list_servers、server_exec 看路径），实在定不了再 ask_owner 给几个选项。
 - 编译的细节：build_info 看现在怎么编；顺序是写好 deploy/build.sh（把要发的东西放进 out/）和包里的 deploy.sh → 提交推送 → build_set → build_generate（云效、GitHub Actions、GitLab CI、Jenkins）→ build_try → build_status 看日志改到编通。建流水线、试编译、建发布目标都不用问主人；发生产要主人确认。在哪编默认「自动」：编译那台资源够就本地编，不够走流水线；不要自己在服务器上硬跑大编译（Android、Docker 这类）。
+- App 的安装包（apk / aab / ipa / dmg / msix / exe / AppImage…）放进项目的「安装包」：每个项目按端（android / ios / mac / windows / linux）× 渠道（test 测试 / prod 正式）一格，每格只留最新一个。发布目标用 release_target_set 的 package（比如 android:test）就会编完签好自动放进去；自己打的用 package_upload；package_list 看现在各格是什么，package_get 拿到自己目录，要给测试同事装就 package_share 出下载链接（扫码能装安卓包）。安卓包要先签名（发布目标选签名证书，或者 sign_package）。打出新包就放进去，不用问主人。
 - Opero 给自己发版（发布目标就是 Opero 跑的那台、部署脚本会重启 Opero）：发布中途 Opero 会跟着重启，健康检查和回滚走不完——这种先告诉主人，用别的发布渠道或者在部署脚本里把重启放到最后、用 systemd-run 之类脱离出去。
 - 线上问题记进问题清单：issue_report（同一个问题用同一个 key），修好了 issue_update 标 fixed；issue_list 看现在有哪些。
 - 要主人在几个方案里选，用 ask_owner；做不可撤销或影响生产的事之前用 confirm；要给主人看结构化的结果用 send_card；要把文件或图片发给主人用 send_file。
+- Opero 这边连不上外面的地址（邮箱、提醒渠道、AI Key、DNS、流水线、代码平台的接口报「连不上 / 超时」）：用 egress_manage 先 list 看最近连不上的，test 找一台能连上的服务器，再 set 让那个域名经它出去；别让主人自己去找设置。
+- 要图片（头像、插画、图标、配图、界面效果图）用 image_generate：主人存的 AI Key 由 Opero 去调（通义万相、OpenAI、豆包、智谱、硅基流动），图放进你目录的 images/ 并发到聊天；每张都花钱，先出 1 张给主人看风格，定了再批量。没有能用的 Key 它会告诉你找主人要哪个。
 - 按约定直接做，少问：只有删重要数据、影响生产（发生产、改生产服务器 / 生产库）这类不可撤销的事才用 confirm；同步代码、建临时文件、清理自己的临时目录、在测试 / 开发环境改东西这些都直接做，不要问主人。
 - 临时文件放在你自己的目录 ${path.posix.join(homeOn(emp, host), 'tmp')}（没有就建），不要用 /tmp；在你自己干活的这台机器上直接在终端跑命令，不要用 server_exec（那是管别的服务器用的，以 root 跑）。
 - 别的员工更合适的活，用 delegate 转给它（list_employees 看有谁）。${emp.canManage ? '\n- 你能管员工：主人要建新员工或改别的员工的职责，用 emp_create / emp_update（主人会点确认；服务器、库、凭证的权限由主人自己给）。' : ''}
@@ -339,6 +465,24 @@ export function canInterject(empId: string) {
   if (booting.has(empId)) return true
   const l = live.get(empId)
   return !!l && l.kind === 'claude' && l.stdinOpen
+}
+
+// ---------- 花费 ----------
+/** 这一轮花了多少。Claude Code 的 total_cost_usd 是累计值（见 docs/设计.md「花费怎么算」）：
+ *  ① 流式输入下每次结果都是「这个进程到现在」的累计，不能加起来；② 2.1.277 起续上会话时还会把这个会话之前的花费带回来。
+ *  所以：这一轮 = 最新累计 − 开始时带着的（costBase）。带没带（老版本、Qwen 这些不带）看第一次结果：是续的同一个会话，
+ *  而且累计花费和累计 token（modelUsage）都不少于上次记下的、累计 token 明显比这一次的多，才当作带了。 */
+export function costOf(emp: Employee, l: Pick<Live, 'cost' | 'costBase' | 'resumedFrom'>, ev: { total_cost_usd?: number; modelUsage?: Record<string, any>; session_id?: string }, turnTok: number): number | undefined {
+  if (ev.total_cost_usd === undefined || ev.total_cost_usd === null) return
+  const total = Number(ev.total_cost_usd) || 0
+  const tok = Object.values(ev.modelUsage ?? {}).reduce((n: number, m: any) => n + (m?.inputTokens ?? 0) + (m?.outputTokens ?? 0) + (m?.cacheReadInputTokens ?? 0) + (m?.cacheCreationInputTokens ?? 0), 0)
+  if (l.costBase === undefined) {
+    const m = emp.costMark
+    const carried = !!m && !!l.resumedFrom && m.sid === l.resumedFrom && total >= m.total - 1e-6 && tok > 0 && tok >= m.tok && tok > turnTok * 1.2 + 1000
+    l.costBase = carried ? m!.total : 0
+  }
+  if (ev.session_id) { emp.costMark = { sid: ev.session_id, total, tok }; saveEmp(emp.id, { costMark: emp.costMark }) }
+  return Math.max(0, total - l.costBase)
 }
 
 // ---------- 派活 ----------
@@ -423,13 +567,14 @@ const withFiles = (text: string, files: Attachment[]) =>
 function start(emp: Employee, text: string, files: Attachment[]) {
   const ask = text // 主人原话（自动提交的说明用；下面可能在前面加 Opero 的提示）
   const s = sessionFor(emp.id)
-  const kind: 'claude' | 'codex' = /codex/i.test(emp.executor) ? 'codex' : 'claude'
+  const exec = kindOf(emp.executor)
+  const kind = driverOf(exec) // stream-json（Claude Code / Qwen Code / CodeBuddy Code）还是 codex
   const host = hostOf(emp)
   const { cwd, ws } = cwdOf(emp, host)
   files = place(emp, host, files)
   const runId = uid('r')
   const token = crypto.randomBytes(24).toString('base64url')
-  const { env, secrets, cred } = aiEnv(kind, host, emp)
+  const { env, secrets, cred } = aiEnv(exec, host, emp)
   const mcpEnv = { OPERO_API: hosts.apiBase(host), OPERO_TOKEN: token }
   const uploads = hosts.isLocal(host) ? path.join(empHome(emp), 'uploads') : path.posix.join(homeOn(emp, host), 'uploads')
   const mkdirs = hosts.isLocal(host) ? [] : [uploads, cwd]
@@ -482,7 +627,31 @@ function start(emp: Employee, text: string, files: Attachment[]) {
     Object.assign(env, await shimEnv(host, policyOf(get<Server>('servers', host))))
     if (aborted) return
     step('在启动执行器…')
-    if (kind === 'claude') {
+    if (kind === 'claude' && exec !== 'claude') {
+      // Qwen Code / CodeBuddy Code：和 Claude Code 一样的 stream-json，参数各自的。没有「每步请示 Opero」的权限工具：
+      // 「自动」档和 Codex 一样放开，靠 Opero 的命令拦截（shim）守规矩；「命令要问 / 每步都问」在无界面时等于不许
+      const sys = rules(emp, cwd, ws, host, mem.dir)
+      const dirs = [uploads, ...memDirs.filter((d) => d !== cwd), ...readDirsOf(emp, host).map((r) => r.dir), ...writeDirsOf(host).map((r) => r.dir)].flatMap((d) => ['--add-dir', d])
+      const help = await execHelp(host, exec)
+      let args: string[]
+      if (exec === 'qwen') {
+        const mcp = { mcpServers: { opero: { command: hosts.nodeBin(host), args: ['--disable-warning=ExperimentalWarning', mcpScript], env: mcpEnv, trust: true, timeout: 1_900_000 } } }
+        const am = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : emp.approval === 'edits' ? 'auto-edit' : 'yolo'
+        args = ['--input-format', 'stream-json', '-o', 'stream-json', '--auth-type', 'openai', '--approval-mode', am, '--max-session-turns', String(cfg.maxTurns),
+          '--mcp-config', JSON.stringify(mcp), '--append-system-prompt', sys, ...dirs, '-m', qwenModel(emp, cred)]
+      } else {
+        const mcp = { mcpServers: { opero: { command: hosts.nodeBin(host), args: ['--disable-warning=ExperimentalWarning', mcpScript], env: mcpEnv } } }
+        const pm = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : emp.approval === 'edits' ? 'acceptEdits' : 'bypassPermissions'
+        args = ['-p', '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json', '--permission-mode', pm, '--max-turns', String(cfg.maxTurns),
+          '--mcp-config', JSON.stringify(mcp), '--strict-mcp-config', '--allowedTools', 'mcp__opero', '--append-system-prompt', sys, ...dirs]
+        if (!cfg.aiUser && hosts.isLocal(host)) args.push('--disallowedTools', `Read(/${cfg.data}/**),Edit(/${cfg.data}/**),Write(/${cfg.data}/**)`)
+        if (emp.model && emp.model !== '执行器默认') args.push('--model', emp.model)
+        if (emp.effort && help.includes('--effort')) args.push('--effort', emp.effort)
+      }
+      if (help.includes('--replay-user-messages')) { args.push('--replay-user-messages'); replay = true }
+      if (emp.resumeId) args.push('--resume', emp.resumeId)
+      proc = hosts.spawnAiOn(host, hosts.execBin(exec, host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
+    } else if (kind === 'claude') {
       const pm = emp.approval === 'plan' ? 'plan' : emp.approval === 'ask' ? 'default' : 'acceptEdits'
       const mcp = { mcpServers: { opero: { command: hosts.nodeBin(host), args: ['--disable-warning=ExperimentalWarning', mcpScript], env: mcpEnv } } }
       const args = ['-p', '--output-format', 'stream-json', '--verbose', '--input-format', 'stream-json',
@@ -493,7 +662,7 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       // 显示名（Opus 5.5）换成型号；从接口读到的完整型号（claude-…）直接用
       const mid = MODEL_IDS[emp.model] ?? (/^claude-[\w.-]+$/.test(emp.model ?? '') ? emp.model : '')
       if (mid) args.push('--model', mid)
-      const help = await claudeHelp(host)
+      const help = await execHelp(host, 'claude')
       if (emp.effort && help.includes('--effort')) args.push('--effort', emp.effort)
       if (help.includes('--replay-user-messages')) { args.push('--replay-user-messages'); replay = true }
       if (emp.resumeId) args.push('--resume', emp.resumeId)
@@ -519,14 +688,15 @@ function start(emp: Employee, text: string, files: Attachment[]) {
       if (emp.model && emp.model !== '执行器默认') args.push('-m', emp.model)
       if (emp.resumeId) args.push('resume', emp.resumeId)
       args.push('-')
-      proc = hosts.spawnAiOn(host, hosts.codexBin(host), args, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
+      const [cbin, cargs] = codexCmd(hosts.codexBin(host), args, env)
+      proc = hosts.spawnAiOn(host, cbin, cargs, env, cwd, mkdirs, policyOf(get<Server>('servers', host)).memPct, policyOf(get<Server>('servers', host)).cpuPct)
     }
     if (aborted) { killTree(proc); return } // 准备太久已经放弃了 / 你按了停止
     clearTimeout(guard)
     bootAbort.delete(emp.id)
     step('在想…')
-    const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, host, proc, stdinOpen: kind === 'claude', pending: 0, replay, activity: 0, statusId: status.id,
-      said: 0, lastResult: '', stopped: false, cost: 0, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0, before, cred }
+    const l: Live = { emp: emp.id, sid: s.id, runId, token, kind, exec, host, proc, stdinOpen: kind === 'claude', pending: 0, replay, activity: 0, statusId: status.id,
+      said: 0, lastResult: '', stopped: false, cost: 0, resumedFrom: emp.resumeId, tokens: 0, ok: false, stderr: '', secrets, ask, ws, unwatch: () => {}, warned: 0, before, cred }
     // 内存上限（这台的规矩）：本机在这里看着，远程由 Agent 看着、超了在 stderr 里说一句
     const { memPct, cpuPct } = policyOf(get<Server>('servers', host))
     if (hosts.isLocal(host)) l.unwatch = watchResources(proc.pid, { memPct, cpuPct }, {
@@ -628,9 +798,11 @@ function onClaude(l: Live, emp: Employee, ev: any) {
       return
     }
     case 'result': {
-      l.cost += Number(ev.total_cost_usd ?? 0)
       const u = ev.usage ?? {}
-      l.tokens += (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)
+      const turnTok = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0)
+      l.tokens += turnTok // usage 只算这一次（不累计）
+      const c = costOf(emp, l, ev, turnTok)
+      if (c !== undefined) l.cost = c
       l.ok = !ev.is_error
       if (ev.session_id) saveEmp(emp.id, { resumeId: ev.session_id })
       if (l.said === 0 && typeof ev.result === 'string' && ev.result.trim()) say(l, ev.result)
@@ -730,9 +902,10 @@ function finish(l: Live, code: number | null) {
 }
 
 /** 订阅登录（计入订阅额度）还是 API Key（按量计费）：执行器报的花费对订阅只是估算 */
-function billing(kind: 'claude' | 'codex', cred?: string): 'sub' | 'api' {
+function billing(kind: ExecKind, cred?: string): 'sub' | 'api' {
   const c = aiConf()
-  if (kind === 'codex') return codexAccounts().length ? 'api' : 'sub'
+  if (kind === 'qwen' || kind === 'codebuddy') return 'api'
+  if (kind === 'codex') return !codexAccounts().length || codexMode(cred ?? defaultOf('codex')) === 'chatgpt' ? 'sub' : 'api'
   const id = cred ?? c.claudeCred
   if (baseOf('claude', id)) return 'api'
   const k = claudeKey(id)
@@ -748,13 +921,13 @@ function runSummary(l: Live, ok: boolean, git: string, sessCost: number, d: auto
   if (w && changed && d!.pushed) for (const t of (w.deploys ?? []).filter((x) => x.servers?.length).slice(0, 2)) actions.push({ id: `release:${t.id}`, label: (w.deploys!.length > 1 ? `发布到${t.name}` : '发布这次改动'), style: 'primary' })
   const card: Card = { id: uid('c'), type: 'run', v: 1, state: actions.length ? 'open' : 'done', level: 'info', actions,
     data: { ok, stopped: l.stopped, git, ws: w?.id ?? '', before: l.before, after: d?.after ?? '', files: d?.files ?? 0, ins: d?.ins ?? 0, del: d?.del ?? 0, list: d?.list ?? [],
-      cost: l.cost, sessionCost: sessCost, tokens: l.tokens, billing: billing(l.kind, l.cred), title: l.ask.replace(/\s+/g, ' ').trim().slice(0, 60) } }
+      cost: l.cost, sessionCost: sessCost, tokens: l.tokens, billing: billing(l.exec, l.cred), title: l.ask.replace(/\s+/g, ' ').trim().slice(0, 60) } }
   addMsg(l.sid, { from: l.emp, kind: 'card', card })
 }
 
 /** 账号用量到上限（订阅的 5 小时 / 每周额度、429）：记下来，后面的活先换别的账号，并告诉主人 */
 function limitHit(l: Live, text: string) {
-  if (l.kind !== 'claude' || !l.cred || !/usage limit|rate.?limit|limit reached|429|quota|too many requests|5-hour limit|weekly limit/i.test(text)) return
+  if ((l.exec !== 'claude' && l.exec !== 'codex') || !l.cred || !/usage limit|rate.?limit|limit reached|429|quota|too many requests|5-hour limit|weekly limit|try again in/i.test(text)) return
   const m = text.match(/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i)
   let ms = 60 * 60_000
   if (m) {
@@ -766,17 +939,20 @@ function limitHit(l: Live, text: string) {
   }
   markLimited(l.cred, ms)
   const name = get<Credential>('credentials', l.cred)?.name ?? '这个账号'
-  const next = claudeAccounts().filter((id) => id !== l.cred && !(limitedUntil()[id] > Date.now()))
-  system(l.sid, next.length ? `「${name}」用量到上限了，后面的活先换「${get<Credential>('credentials', next[0])?.name ?? '另一个账号'}」；说「继续」就用新账号接着做` : `「${name}」用量到上限了，也没有别的可用账号：等额度恢复，或者在「我 → AI 执行器」再登录一个账号`)
+  const next = accountsOf(l.exec).filter((id) => id !== l.cred && !(limitedUntil()[id] > Date.now()))
+  system(l.sid, next.length ? `「${name}」用量到上限了，后面的活先换「${get<Credential>('credentials', next[0])?.name ?? '另一个账号'}」；说「继续」就用新账号接着做` : `「${name}」用量到上限了，也没有别的可用账号：等额度恢复，或者在「应用 → AI 执行器」再加一个账号`)
 }
 
 function after(l: Live, code: number | null, emp: Employee | undefined) {
+  // ChatGPT 订阅账号：Codex 跑的时候可能续期了令牌，读回来存进保险箱
+  if (l.exec === 'codex') void syncCodexAuth(l.host, l.cred).catch(() => {})
   if (!l.stopped && !l.ok && code !== 0) {
     const err = scrub(l.stderr.trim(), l.secrets).split('\n').slice(-6).join('\n')
     limitHit(l, err)
-    const hint = /Request not allowed|unsupported_country|not available in your (country|region)|forbidden/i.test(err) ? '\n\n这台服务器连 Anthropic 被拒绝（所在地区不支持）：到「我 → AI 执行器」第 2 步「网络出口」把 Claude 设成经海外的服务器出去，或者让这个员工跑在海外那台。'
-      : /auth|login|api key|401|credential|unauthorized|OAuth/i.test(err) ? '\n\n像是执行器没登录：到「我 → AI 执行器」配 API Key，或者在服务器上用 AI 用户登录一次。'
-      : /not found|No such file|command not found/i.test(err) ? '\n\n像是服务器上没装这个执行器：到「我 → AI 执行器」看安装方法。' : ''
+    const hint = /Request not allowed|unsupported_country|not available in your (country|region)|forbidden/i.test(err) ? '\n\n这台服务器连 Anthropic 被拒绝（所在地区不支持）：到「应用 → AI 执行器」第 2 步「网络出口」把 Claude 设成经海外的服务器出去，或者让这个员工跑在海外那台。'
+      : l.exec === 'codex' && codexMode(l.cred) === 'chatgpt' && /refresh|expired|sign in again|log ?in again|401|unauthorized/i.test(err) ? `\n\nChatGPT 登录失效了（「${get<Credential>('credentials', l.cred ?? '')?.name ?? 'Codex 账号'}」）：到「应用 → AI 执行器 → Codex」第 3 步再登录一次这个 ChatGPT 账号，登录好把旧的去掉。`
+      : /auth|login|api key|401|credential|unauthorized|OAuth/i.test(err) ? '\n\n像是执行器没登录：到「应用 → AI 执行器」加一个账号（订阅登录或 API Key）。'
+      : /not found|No such file|command not found/i.test(err) ? '\n\n像是服务器上没装这个执行器：到「应用 → AI 执行器」一键安装。' : ''
     system(l.sid, `执行器退出了（${code}）${err ? '：\n' + err : ''}${hint}`)
     push({ kind: 'info', error: true, title: emp?.name ?? '员工', body: '执行器出错了', route: `chat/${l.sid}` })
   }
