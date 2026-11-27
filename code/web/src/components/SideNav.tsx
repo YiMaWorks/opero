@@ -9,6 +9,7 @@ import { LIVE_CONFIG } from '../pages/live'
 import { DEMO_CONFIG } from '../pages/apps'
 import { LIVE } from '../mode'
 import { AppIcon } from './AppIcon'
+import { empGroups } from '../empGroups'
 
 interface Props {
   tab: Exclude<Tab, 'chat'>
@@ -44,14 +45,15 @@ export function SideNav({ tab, active, onPick }: Props) {
       <>
         {item({ page: 'employees' }, '全部员工', <TabIcon tab="people" />, <em>{s.employees.length}</em>)}
         <div className="side-sep" />
-        {s.employees.filter((e) => match(e.name + e.title))
-          // 置顶的（和会话列表同一个置顶）排前面
-          .map((e) => ({ e, ss: s.sessions.find((x) => x.employee === e.id) }))
-          .sort((a, b) => Number(!!b.ss?.pinned) - Number(!!a.ss?.pinned))
+        {/* 按项目分组（同员工页），组里置顶的（和会话列表同一个置顶）排前面 */}
+        {empGroups(s.employees.filter((e) => match(e.name + e.title)), s.workspaces, s.sessions).map((g) => [
+          <div key={`g-${g.key}`} className="side-group">{g.name}</div>,
+          ...g.list.map((e) => ({ e, ss: s.sessions.find((x) => x.employee === e.id) }))
           .map(({ e, ss }) => item({ page: 'employee', params: { id: e.id } }, e.name, <Avatar id={e.id} size={32} />,
             ss ? <span role="button" tabIndex={0} className={'side-pin' + (ss.pinned ? ' on' : '')} title={ss.pinned ? '取消置顶' : '置顶'} onClick={(ev) => { ev.stopPropagation(); togglePin(ss.id) }}>
               <svg viewBox="0 0 24 24" width="14" height="14" fill={ss.pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 17v5M9 3h6l-1 6 4 3v2H6v-2l4-3z" /></svg>
-            </span> : undefined, e.title))}
+            </span> : undefined, e.title)),
+        ])}
       </>
     )
   } else if (tab === 'workspace') {

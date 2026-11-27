@@ -4567,4 +4567,6 @@
 "这个地址用不了指纹：要用加通行密钥时的那个 https 地址打开（现在是 {0}）":"L’empreinte n’est pas utilisable à cette adresse : ouvrez l’adresse https où la clé d’accès a été ajoutée (actuellement {0})",
 "这个浏览器不支持指纹（通行密钥），用密码":"Ce navigateur ne prend pas en charge l’empreinte (clés d’accès) ; utilisez votre mot de passe",
 "这台设备上没找到能用的指纹（通行密钥），或者取消了 / 超时了。之前可能是在别的设备上加的：先用密码，验证完可以在这台也加上":"Aucune empreinte (clé d’accès) utilisable sur cet appareil, ou c’est annulé / le délai est dépassé. Elle a peut-être été ajoutée sur un autre appareil : utilisez d’abord votre mot de passe, vous pourrez ensuite en ajouter une sur cet appareil",
-"这台设备已经加过指纹了":"Cet appareil a déjà une empreinte"}
+"这台设备已经加过指纹了":"Cet appareil a déjà une empreinte",
+"+ 加员工":"+ Ajouter un employé",
+"没有项目":"Sans projet"}

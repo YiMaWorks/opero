@@ -1,7 +1,7 @@
 {
   "name": "opero-web",
   "private": true,
-  "version": "0.49.2",
+  "version": "0.50.0",
   "description": "Opero 网页端：官网 + 在线试用（假数据）+ 装好的一套的界面（后台注入 OPERO_MODE 后走 code/server 的接口）",
   "type": "module",
   "scripts": {

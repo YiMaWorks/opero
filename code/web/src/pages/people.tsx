@@ -18,11 +18,15 @@ import { APPROVALS, EFFORTS, approvalLabel, effortLabel, modelsFor } from '../wo
 import { IconPlus } from '../components/icons'
 import { headNav, type PageProps } from './nav'
 import { EmpName } from '../components/EmpName'
+import { empGroups } from '../empGroups'
 
 export function EmployeesPage({ nav }: PageProps) {
   const employees = useStore((s) => s.employees)
   const sessions = useStore((s) => s.sessions)
+  const workspaces = useStore((s) => s.workspaces)
   const [tpl, setTpl] = useState(false)
+  // 给某个项目加员工：点了就建好（同项目页的「+ 加一个员工」）
+  const addTo = async (wsId: string) => { const r = await call<Employee>('POST', `/api/workspaces/${wsId}/employees`, undefined); if (r) toast(`已加上「${r.name}」：点它改名、发消息`) }
   const [url, setUrl] = useState('')
   return (
     <div className="page">
@@ -48,16 +52,24 @@ export function EmployeesPage({ nav }: PageProps) {
         </Sheet>
       )}
       <div className="page-body">
-        <Section flush>
-          {employees.map((e) => {
-            const working = sessions.find((s) => s.employee === e.id)?.working
-            return (
-              <Row key={e.id} icon={<Avatar id={e.id} size={44} />} chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
-                title={<EmpName e={e} />}
-                sub={working ? <span className="ok">● {working}</span> : `${e.title} · ${e.executor} · ${e.host}`} />
-            )
-          })}
-        </Section>
+        {/* 按项目分组：组名点了进项目，旁边「+ 加员工」直接给这个项目加一个 */}
+        {empGroups(employees, workspaces, sessions).map((g) => (
+          <Section key={g.key || 'none'}
+            title={`${g.name} · ${g.list.length}`}
+            right={g.ws ? <span className="row-actions">
+              <button className="btn ghost sm" onClick={() => nav.push({ page: 'workspace', params: { id: g.ws!.id } })}>项目</button>
+              {LIVE && <button className="btn ghost sm" onClick={() => addTo(g.ws!.id)}>+ 加员工</button>}
+            </span> : undefined}>
+            {g.list.map((e) => {
+              const working = sessions.find((s) => s.employee === e.id)?.working
+              return (
+                <Row key={e.id} icon={<Avatar id={e.id} size={44} />} chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
+                  title={<EmpName e={e} />}
+                  sub={working ? <span className="ok">● {working}</span> : `${e.title} · ${e.executor} · ${e.host}`} />
+              )
+            })}
+          </Section>
+        ))}
         <p className="hint">也可以跟「系统管家」说一句：「建一个 XX 员工，负责 …」。</p>
       </div>
     </div>

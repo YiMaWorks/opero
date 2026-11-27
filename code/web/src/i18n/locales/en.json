@@ -4567,4 +4567,6 @@
 "这个地址用不了指纹：要用加通行密钥时的那个 https 地址打开（现在是 {0}）":"Fingerprint can't be used at this address: open the https address where the passkey was added (now {0})",
 "这个浏览器不支持指纹（通行密钥），用密码":"This browser doesn't support fingerprint (passkeys); use your password",
 "这台设备上没找到能用的指纹（通行密钥），或者取消了 / 超时了。之前可能是在别的设备上加的：先用密码，验证完可以在这台也加上":"No usable fingerprint (passkey) found on this device, or it was cancelled / timed out. It may have been added on another device: use your password for now, then you can add one on this device too",
-"这台设备已经加过指纹了":"This device already has a fingerprint added"}
+"这台设备已经加过指纹了":"This device already has a fingerprint added",
+"+ 加员工":"+ Add employee",
+"没有项目":"No project"}

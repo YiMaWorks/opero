@@ -4567,4 +4567,6 @@
 "这个地址用不了指纹：要用加通行密钥时的那个 https 地址打开（现在是 {0}）":"Fingerabdruck ist unter dieser Adresse nicht nutzbar: öffne die https-Adresse, unter der der Passkey hinzugefügt wurde (jetzt {0})",
 "这个浏览器不支持指纹（通行密钥），用密码":"Dieser Browser unterstützt keinen Fingerabdruck (Passkeys); nutze dein Passwort",
 "这台设备上没找到能用的指纹（通行密钥），或者取消了 / 超时了。之前可能是在别的设备上加的：先用密码，验证完可以在这台也加上":"Auf diesem Gerät wurde kein nutzbarer Fingerabdruck (Passkey) gefunden, oder es wurde abgebrochen / die Zeit lief ab. Vielleicht wurde er auf einem anderen Gerät hinzugefügt: erst mit Passwort bestätigen, danach kannst du ihn auch auf diesem Gerät hinzufügen",
-"这台设备已经加过指纹了":"Auf diesem Gerät ist bereits ein Fingerabdruck hinzugefügt"}
+"这台设备已经加过指纹了":"Auf diesem Gerät ist bereits ein Fingerabdruck hinzugefügt",
+"+ 加员工":"+ Mitarbeiter hinzufügen",
+"没有项目":"Kein Projekt"}
