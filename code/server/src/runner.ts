@@ -246,7 +246,7 @@ function cwdOf(emp: Employee, host: string): { cwd: string; ws?: Workspace } {
   return { cwd: homeOn(emp, host) }
 }
 
-/** 员工档案上显示：在哪台、工作目录、记忆放在哪 */
+/** 员工资料上显示：在哪台、工作目录、记忆放在哪 */
 export function whereOf(emp: Employee): { host: string; cwd: string; project?: string; mem: string } {
   const host = hostOf(emp)
   const { cwd, ws } = cwdOf(emp, host)
@@ -382,7 +382,7 @@ export async function send(empId: string, text: string, files: Attachment[] = []
 
 /** 员工 / 它的项目这个月的预算用满了：返回原因 */
 export function budgetOver(emp: Employee): string {
-  if (emp.budget && monthCostOf({ emp: emp.id }) >= emp.budget) return `「${emp.name}」这个月的预算（$${emp.budget}）用满了，先停下。到员工档案里调高预算再试。`
+  if (emp.budget && monthCostOf({ emp: emp.id }) >= emp.budget) return `「${emp.name}」这个月的预算（$${emp.budget}）用满了，先停下。到员工资料里调高预算再试。`
   const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
   if (ws?.budget && monthCostOf({ ws: ws.id }) >= ws.budget) return `项目「${ws.name}」这个月的预算（$${ws.budget}）用满了，先停下。到项目里调高预算再试。`
   return ''

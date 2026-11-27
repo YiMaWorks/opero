@@ -1,4 +1,4 @@
-// DNS：主人在「域名」里登记域名（哪家：Cloudflare / 阿里云，用哪个凭证），再在员工档案里给员工开哪些域名。
+// DNS：主人在「域名」里登记域名（哪家：Cloudflare / 阿里云，用哪个凭证），再在员工资料里给员工开哪些域名。
 // 员工用 dns_list / dns_set / dns_delete 改解析；账号在保险箱里，员工拿不到。
 //   Cloudflare：API 令牌（凭证的值）；阿里云：AccessKey（凭证的用户名 = AccessKeyId，值 = AccessKeySecret），RPC 签名 v1（HMAC-SHA1）。
 import crypto from 'node:crypto'

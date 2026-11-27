@@ -7,7 +7,7 @@ import { cfg } from './config.ts'
 import { all, kvGet, kvSet } from './db.ts'
 import { clientIp, HttpError, json, match, parseCookies, readBody, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { expireStaleCards, interruptedRuns, migrateBuilds, migrateEmployeeCreds } from './api.ts'
+import { expireStaleCards, interruptedRuns, migrateBuilds, migrateEmployeeCreds, migrateMenus } from './api.ts'
 import * as runner from './runner.ts'
 import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
@@ -143,6 +143,7 @@ const interrupted = interruptedRuns()
 expireStaleCards()
 migrateEmployeeCreds()
 migrateBuilds()
+migrateMenus()
 const server = http.createServer((req, res) => { handle(req, res).catch((e) => { console.error(e); try { json(res, 500, { message: '出错了' }) } catch { /* 已经断了 */ } }) })
 server.requestTimeout = 0 // SSE、长轮询、上传
 server.headersTimeout = 60_000

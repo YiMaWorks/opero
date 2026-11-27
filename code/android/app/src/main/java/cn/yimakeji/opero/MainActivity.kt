@@ -1,7 +1,6 @@
 package cn.yimakeji.opero
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -17,147 +16,160 @@ import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
+import cn.yimakeji.opero.data.Account
 import cn.yimakeji.opero.data.Api
-import cn.yimakeji.opero.data.ApiError
+import cn.yimakeji.opero.data.Live
+import cn.yimakeji.opero.i18n.t
 import cn.yimakeji.opero.lock.AppLock
 import cn.yimakeji.opero.push.Notifier
 import cn.yimakeji.opero.push.PushClient
 import cn.yimakeji.opero.push.PushService
+import cn.yimakeji.opero.ui.ErrorScreen
+import cn.yimakeji.opero.ui.Home
+import cn.yimakeji.opero.ui.Nav
+import cn.yimakeji.opero.ui.common.LocalHost
+import cn.yimakeji.opero.ui.login.LoginScreen
+import cn.yimakeji.opero.ui.theme.OperoTheme
 import cn.yimakeji.opero.update.Updater
-import cn.yimakeji.opero.web.Bridge
+import cn.yimakeji.opero.web.WebEnv
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import org.json.JSONObject
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
- * Opero App 就这一个界面：WebView 打开你自己那套 Opero 的网页（界面全在网页里，加功能不用发 App）。
- * 外壳只管网页做不了的：常驻推送、指纹（解锁 App / 验证本人）、点通知直达会话、选文件 / 拍照、麦克风、App 内更新。
- *
- * 打开时：
- *   - 没连过 → 外壳自带的「连接你的 Opero」页（assets/pair.html）
- *   - 配对过（有设备令牌）→ POST /api/app/ticket 要一张一次性的票，打开票地址（后台种好登录 cookie 再跳到首页）
- *   - 只填了地址没配对（现在的界面原型没有后台）→ 直接打开地址，收不到推送
+ * Opero App 唯一的 Activity：整页 Compose（docs/多端架构.md「逐步原生化」）。
+ *   - 没登录 → 原生登录页（ui/login）
+ *   - 登录了 → 主界面（ui/Home.kt）：会话列表、聊天是原生的；员工 / 项目 / 应用 / 我 和别的页面嵌网页（web/EmbedPage.kt）
+ *   - 被断开（任何接口 401 DEVICE）→ 回登录页并说明；开机拉不到数据 → 出错页（重试 / 退出登录）
+ * 这里还实现原生页面和嵌入页要用的系统能力（[WebEnv]）：指纹验证本人、语音识别、选文件、麦克风、打开文件 / 外链、锁屏、App 内更新。
  */
-class MainActivity : FragmentActivity(), Bridge.Host {
+class MainActivity : FragmentActivity(), WebEnv {
     private lateinit var root: FrameLayout
-    private lateinit var web: WebView
     private var lockView: View? = null
-    @Volatile private var currentUrl: String = ""
-    @Volatile private var dark = false
-    private var pendingRoute: String? = null
+
+    private var loggedIn by mutableStateOf(false)
+    private var notice by mutableStateOf<String?>(null)
+    private val nav = Nav(this)
+
     private var fileCallback: ValueCallback<Array<Uri>>? = null
-    private var pendingPermission: PermissionRequest? = null
+    private var pendingMic: PermissionRequest? = null
+    private var voiceDone: ((String, String?) -> Unit)? = null
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
         fileCallback = null
     }
-    private val askMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        pendingPermission?.let { if (ok) it.grant(it.resources) else it.deny() }
-        pendingPermission = null
+    private val askMicPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        pendingMic?.let { if (ok) it.grant(it.resources) else it.deny() }
+        pendingMic = null
     }
     private val askNotify = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
     private val askVoice = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val text = r.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: ""
-        web.evaluateJavascript("window.__operoNative && window.__operoNative.onVoice && window.__operoNative.onVoice(${JSONObject.quote(text)})", null)
+        voiceDone?.invoke(text, null)
+        voiceDone = null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         OperoApp.ensureStore(this)
-        dark = Api.store.dark
-        applyBars()
+        loggedIn = Api.store.loggedIn
+        bars(Api.store.dark)
         Notifier.ensureChannels(this)
         buildViews()
         handle(intent)
         if (savedInstanceState == null) AppLock.onColdStart()
         lifecycleScope.launch { AppLock.locked.collect { showLock(it) } }
+        lifecycleScope.launch { Api.signedOut.collect { signedOut(it) } }
+        lifecycleScope.launch { Live.toasts.collect { Toast.makeText(this@MainActivity, it, Toast.LENGTH_SHORT).show() } }
+        // 页面里的返回（BackHandler）先处理；都退到底了就回桌面
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            // 网页每打开一层（聊天、页面、面板、弹层）都记一步历史，返回只关最上面一层；到底了退到桌面
-            override fun handleOnBackPressed() { if (web.canGoBack()) web.goBack() else moveTaskToBack(true) }
+            override fun handleOnBackPressed() { moveTaskToBack(true) }
         })
-        if (savedInstanceState != null) web.restoreState(savedInstanceState) else start()
-        checkUpdate()
+        if (loggedIn) { PushService.start(this); checkUpdate() }
     }
 
-    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); web.saveState(outState) }
-    override fun onStart() { super.onStart(); AppLock.onStart() }
-    override fun onStop() { super.onStop(); AppLock.onStop() }
+    override fun onStart() { super.onStart(); AppLock.onStart(); Live.resume() }
+    override fun onStop() { super.onStop(); AppLock.onStop(); Live.pause() }
     override fun onResume() {
         super.onResume()
         // 开了指纹解锁：最近任务里不显示内容（安卓 13+）
         if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!Api.store.lockOn)
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
-    override fun onDestroy() { web.destroy(); super.onDestroy() }
 
     // ───── 界面 ─────
 
-    @SuppressLint("SetJavaScriptEnabled")
     private fun buildViews() {
         root = FrameLayout(this)
-        web = WebView(this).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            settings.setSupportMultipleWindows(false)
-            settings.userAgentString = "${settings.userAgentString} OperoApp/${BuildConfig.VERSION_NAME} ${if (dark) "dark" else "light"}"
-            setBackgroundColor(bgColor())
-            addJavascriptInterface(Bridge(this@MainActivity), "OperoNative")
-            webViewClient = Client()
-            webChromeClient = Chrome()
-            setDownloadListener { url, _, _, _, _ -> openExternal(url) }
+        val compose = ComposeView(this).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent {
+                val dark = when (Live.theme) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
+                LaunchedEffect(dark) { setBars(dark) }
+                OperoTheme(dark = dark) {
+                    CompositionLocalProvider(LocalHost provides this@MainActivity) {
+                        val err = Live.bootError
+                        when {
+                            !loggedIn -> LoginScreen(notice, onDone = { onLoggedIn() })
+                            err != null && !Live.ready -> ErrorScreen(err, onRetry = { Live.retry() }, onLogout = { logout() })
+                            else -> Home(nav, this@MainActivity, dark)
+                        }
+                    }
+                }
+            }
         }
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
-        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        root.setBackgroundColor(panelColor())
-        // 状态栏、导航栏、键盘让出来（edge-to-edge 下 adjustResize 不管用，自己按 insets 留边）
+        root.addView(compose, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // 状态栏、导航栏、键盘让出来（edge-to-edge 下自己按 insets 留边）
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            v.setPadding(sys.left, sys.top, sys.right, maxOf(sys.bottom, ime.bottom))
             WindowInsetsCompat.CONSUMED
         }
         setContentView(root)
     }
 
-    // 网页告诉过风格就用网页的颜色（setBars），没有就用默认的紫晶 / 石板
-    @Volatile private var bgC: Int? = null
-    @Volatile private var panelC: Int? = null
-    private fun bgColor() = bgC ?: Color.parseColor(if (dark) "#0F1117" else "#F4F5F8")
-    private fun panelColor() = panelC ?: Color.parseColor(if (dark) "#171A23" else "#FFFFFF")
-
-    private fun applyBars() {
+    private fun bars(dark: Boolean) {
         val style = if (dark) SystemBarStyle.dark(Color.TRANSPARENT) else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
         enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+        if (::root.isInitialized) root.setBackgroundColor(Color.parseColor(if (dark) "#171A23" else "#FFFFFF"))
     }
 
-    /** 锁屏：盖在网页上面，验过才拿掉 */
+    /** 锁屏：盖在最上面，验过才拿掉 */
     private fun showLock(on: Boolean) {
         if (!on) { lockView?.let { root.removeView(it) }; lockView = null; return }
         if (lockView != null) return
+        val dark = Api.store.dark
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(bgColor())
+            setBackgroundColor(Color.parseColor(if (dark) "#0F1117" else "#F4F5F8"))
             isClickable = true
             addView(ImageView(context).apply { setImageResource(R.drawable.ic_mark) })
             addView(TextView(context).apply {
@@ -178,209 +190,121 @@ class MainActivity : FragmentActivity(), Bridge.Host {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    // ───── 打开哪里 ─────
+    // ───── 登录状态 ─────
 
-    private fun start() {
-        val s = Api.store
-        val server = s.server
-        when {
-            server == null -> loadPair()
-            s.deviceToken == null -> web.loadUrl(server + (pendingRoute?.let { "/#/$it" } ?: "/"))
-            else -> openWithTicket(server)
-        }
+    /** 登录好了：要通知权限、开常驻连接、拉数据 */
+    private fun onLoggedIn() {
+        notice = null
+        loggedIn = true
+        if (Build.VERSION.SDK_INT >= 33) askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        lifecycleScope.launch { try { PushClient.register() } catch (_: Exception) { } }
+        PushService.start(this)
+        Live.resume()
+        checkUpdate()
     }
 
-    private fun loadPair(error: String? = null) {
-        val q = Uri.Builder().appendQueryParameter("server", Api.store.server ?: BuildConfig.DEFAULT_SERVER)
-            .apply { if (error != null) appendQueryParameter("error", error) }.build().encodedQuery
-        web.loadUrl("file:///android_asset/pair.html?$q")
+    /** 被断开（401 DEVICE，Api 已经清掉令牌）：清数据、网页的登录也清掉，回登录页 */
+    private fun signedOut(msg: String) {
+        PushService.stop(this)
+        Live.clear()
+        nav.reset()
+        CookieManager.getInstance().removeAllCookies(null)
+        notice = msg
+        loggedIn = false
     }
 
-    private fun openWithTicket(server: String) {
+    override fun logout() {
         lifecycleScope.launch {
-            try {
-                val r = Api.post("/api/app/ticket", JSONObject().put("route", pendingRoute ?: ""))
-                pendingRoute = null
-                val url = r.optString("url")
-                web.loadUrl(if (url.startsWith("http")) url else server + url)
-                PushService.start(this@MainActivity)
-            } catch (e: ApiError) {
-                when {
-                    e.status == 401 -> { Api.store.clearPairing(); loadPair(Tr.s(R.string.unpaired)) }
-                    e.status == 404 -> web.loadUrl(server) // 后台还没有外壳接口（界面原型）：直接打开
-                    else -> loadPair(Tr.s(R.string.cant_reach, Uri.parse(server).host ?: server, e.message ?: ""))
-                }
-            }
+            Account.logout()
+            PushService.stop(this@MainActivity)
+            Live.clear()
+            nav.reset()
+            CookieManager.getInstance().removeAllCookies(null)
+            notice = null
+            loggedIn = false
         }
     }
 
-    /** 点通知打开（operoapp://open?route=… 或通知带的 route）：网页开着就直接交给网页，没开就等打开后再交 */
+    /** 点通知打开（operoapp://open?route=chat/<会话> 或通知带的 route）：打开那个会话 */
     private fun handle(i: Intent?) {
         if (i == null) return
         val route = i.getStringExtra(Notifier.EXTRA_ROUTE) ?: i.data?.takeIf { it.scheme == "operoapp" }?.getQueryParameter("route")
         i.removeExtra(Notifier.EXTRA_ROUTE); i.data = null
-        if (route == null || !Regex("^[\\w/?=&.-]{1,120}$").matches(route)) return
-        if (::web.isInitialized && isOpero(currentUrl)) deliverRoute(route) else pendingRoute = route
-    }
-
-    private fun deliverRoute(route: String) {
-        web.evaluateJavascript("window.__operoNative && window.__operoNative.open(${JSONObject.quote(route)})", null)
-    }
-
-    private fun isOpero(url: String): Boolean {
-        val server = Api.store.server ?: return false
-        val h = Uri.parse(server)
-        val u = Uri.parse(url)
-        return u.scheme == h.scheme && u.host == h.host && u.port == h.port
-    }
-
-    private inner class Client : WebViewClient() {
-        override fun shouldOverrideUrlLoading(view: WebView?, req: WebResourceRequest?): Boolean {
-            val u = req?.url?.toString() ?: return false
-            if (isOpero(u) || u.startsWith("file:///android_asset/")) return false
-            openExternal(u) // 别的网站（邮件 / Slack 原消息、文档链接）交给系统
-            return true
-        }
-        override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) { currentUrl = url ?: "" }
-        override fun onPageFinished(view: WebView?, url: String?) {
-            if (url == null) return
-            currentUrl = url
-            if (isOpero(url)) pendingRoute?.let { pendingRoute = null; deliverRoute(it) }
-        }
-        override fun onReceivedError(view: WebView?, req: WebResourceRequest?, err: WebResourceError?) {
-            if (req == null || !req.isForMainFrame || req.url.toString().startsWith("file:")) return
-            loadPair(Tr.s(R.string.cant_open, req.url.host ?: "", err?.description ?: Tr.s(R.string.no_network)))
+        if (route == null || !Regex("^[\\w/?=&;.-]{1,160}$").matches(route) || !Api.store.loggedIn) return
+        when {
+            route.startsWith("chat/") -> nav.openFromPush(route.removePrefix("chat/").substringBefore('?'))
+            else -> nav.open(route)
         }
     }
 
-    private inner class Chrome : WebChromeClient() {
-        override fun onShowFileChooser(view: WebView?, cb: ValueCallback<Array<Uri>>?, params: FileChooserParams?): Boolean {
-            if (cb == null || params == null) return false
-            fileCallback?.onReceiveValue(null)
-            fileCallback = cb
-            return try { AppLock.skipNext(); pickFiles.launch(params.createIntent()); true } catch (_: Exception) { fileCallback = null; false }
-        }
-        override fun onPermissionRequest(req: PermissionRequest?) {
-            if (req == null) return
-            runOnUiThread {
-                val wantsMic = PermissionRequest.RESOURCE_AUDIO_CAPTURE in req.resources
-                if (!isOpero(req.origin.toString()) || !wantsMic) { req.deny(); return@runOnUiThread }
-                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) req.grant(req.resources)
-                else { pendingPermission = req; askMic.launch(Manifest.permission.RECORD_AUDIO) }
+    // ───── AppHost / WebEnv ─────
+
+    override fun verify(title: String, subtitle: String?, done: (Boolean) -> Unit) {
+        AppLock.verify(this, title, subtitle,
+            onOk = {
+                lifecycleScope.launch {
+                    val ok = try { Api.post("/api/app/verified"); true } catch (_: Exception) { false }
+                    if (!ok) Live.toast(t("验证失败"))
+                    done(ok)
+                }
+            },
+            onFail = { err -> if (err != null) Live.toast(err); done(false) })
+    }
+
+    override fun openExternal(url: String) {
+        try { AppLock.skipNext(); startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) { }
+    }
+
+    override fun openFile(name: String, bytes: ByteArray, mime: String) {
+        lifecycleScope.launch {
+            try {
+                val f = withContext(Dispatchers.IO) {
+                    val dir = File(cacheDir, "open").apply { mkdirs() }
+                    File(dir, name.replace(Regex("[/\\\\]"), "_")).apply { writeBytes(bytes) }
+                }
+                val uri = FileProvider.getUriForFile(this@MainActivity, "$packageName.files", f)
+                AppLock.skipNext()
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION), name))
+            } catch (_: Exception) {
+                Live.toast(t("这台手机上没有能打开它的 App"))
             }
         }
     }
 
-    // ───── Bridge.Host（网页调过来的，都切回主线程） ─────
+    override fun haptic() { window.decorView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
 
-    override fun trusted(): Boolean = isOpero(currentUrl) || currentUrl.startsWith("file:///android_asset/")
+    override fun skipLock() { AppLock.skipNext() }
 
-    override fun verify(id: String, title: String, subtitle: String) = runOnUiThread {
-        AppLock.verify(this, title, subtitle,
-            onOk = { lifecycleScope.launch { callback(id, reportVerified()) } },
-            onFail = { err -> callback(id, false, err) })
-    }
-
-    /** 告诉后台「这台手机刚验过本人」（后台按这次登录记 30 分钟）；后台还没这个接口（原型）也算过 */
-    private suspend fun reportVerified(): Boolean = try {
-        if (Api.store.deviceToken != null) Api.post("/api/app/verified")
-        true
-    } catch (e: ApiError) { e.status == 404 } catch (_: Exception) { false }
-
-    private fun callback(id: String, ok: Boolean, err: String? = null) {
-        web.evaluateJavascript("window.__operoNative && window.__operoNative.onVerify(${JSONObject.quote(id)}, $ok, ${if (err == null) "undefined" else JSONObject.quote(err)})", null)
-    }
-
-    override fun setTheme(dark: Boolean) = runOnUiThread {
-        if (this.dark == dark) return@runOnUiThread
-        this.dark = dark
-        Api.store.dark = dark
-        applyBars()
-        root.setBackgroundColor(panelColor())
-        web.setBackgroundColor(bgColor())
-    }
-
-    override fun setBars(dark: Boolean, bg: Int, panel: Int) = runOnUiThread {
-        bgC = bg; panelC = panel
-        this.dark = dark
-        Api.store.dark = dark
-        applyBars()
-        root.setBackgroundColor(panel)
-        web.setBackgroundColor(bg)
-    }
-
-    override fun openExternal(url: String) = runOnUiThread {
-        try { AppLock.skipNext(); startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) { }
-    }
-
-    override fun haptic() = runOnUiThread { web.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) }
-
-    override fun voice(lang: String) = runOnUiThread {
+    override fun voice(lang: String, done: (String, String?) -> Unit) {
         val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang.ifBlank { "zh-CN" })
             .putExtra(RecognizerIntent.EXTRA_PROMPT, Tr.s(R.string.speak))
-        try { AppLock.skipNext(); askVoice.launch(i) } catch (_: Exception) {
-            web.evaluateJavascript("window.__operoNative && window.__operoNative.onVoice && window.__operoNative.onVoice('', 'none')", null)
-        }
+        try { voiceDone = done; AppLock.skipNext(); askVoice.launch(i) } catch (_: Exception) { voiceDone = null; done("", "none") }
     }
 
-    override fun unpair() = runOnUiThread {
-        lifecycleScope.launch {
-            PushClient.unregister()
-            Api.store.clearPairing()
-            PushService.stop(this@MainActivity)
-            CookieManager.getInstance().removeAllCookies(null)
-            loadPair()
-        }
+    override fun chooseFiles(params: WebChromeClient.FileChooserParams, cb: ValueCallback<Array<Uri>>): Boolean {
+        fileCallback?.onReceiveValue(null)
+        fileCallback = cb
+        return try { AppLock.skipNext(); pickFiles.launch(params.createIntent()); true } catch (_: Exception) { fileCallback = null; false }
     }
 
-    override fun relogin() = runOnUiThread { Api.store.server?.let { if (Api.store.deviceToken != null) openWithTicket(it) } }
+    override fun askMic(req: PermissionRequest) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) req.grant(req.resources)
+        else { pendingMic = req; askMicPerm.launch(Manifest.permission.RECORD_AUDIO) }
+    }
 
-    override fun shellChanged() = runOnUiThread {
+    /** 状态栏 / 导航栏跟着深浅色（原生页面按 Opero 设置的 theme 算，嵌入的网页报过来的也走这里） */
+    private var barsDark: Boolean? = null
+    override fun setBars(dark: Boolean) {
+        if (barsDark == dark) return
+        barsDark = dark
+        Api.store.dark = dark
+        bars(dark)
+    }
+
+    override fun shellChanged() {
         if (PushService.canRun()) PushService.start(this) else PushService.stop(this)
-    }
-
-    /**
-     * 连接页：App 不带任何默认服务器（Opero 没有公共服务器，官网只是介绍和试用），只连用户自己填的那套。
-     * 先问一下 /api/health 确认真是 Opero 后台（填成官网、别的网站会被拦下）；有配对码就配对（拿设备令牌，能收推送），没有就只记地址、直接打开。
-     */
-    override fun pair(server: String, code: String) = runOnUiThread {
-        val base = server.trim().trimEnd('/').let { if (it.startsWith("http")) it else "https://$it" }
-        if (Uri.parse(base).host.isNullOrBlank()) { pairResult(false, Tr.s(R.string.bad_address)); return@runOnUiThread }
-        lifecycleScope.launch {
-            try {
-                val health = try { Api.call("GET", "/api/health", server = base, auth = false) } catch (e: ApiError) {
-                    throw ApiError(e.status, "NOT_OPERO", if (e.status == 0) Tr.s(R.string.cant_reach, Uri.parse(base).host ?: base, e.message ?: "") else Tr.s(R.string.not_opero_http, e.status.toString()))
-                }
-                if (!health.optBoolean("ok")) throw ApiError(0, "NOT_OPERO", Tr.s(R.string.not_opero))
-                if (code.isNotBlank()) {
-                    val r = Api.call("POST", "/api/app/pair", JSONObject().apply {
-                        put("code", code.trim())
-                        put("deviceId", Api.store.deviceId)
-                        put("name", "${Build.MANUFACTURER} ${Build.MODEL}")
-                        put("platform", "android")
-                        put("appVersion", BuildConfig.VERSION_NAME)
-                    }, server = base, auth = false)
-                    val token = r.optString("deviceToken")
-                    if (token.isBlank()) throw ApiError(0, null, Tr.s(R.string.bad_code))
-                    Api.store.server = base
-                    Api.store.deviceToken = token
-                    if (Build.VERSION.SDK_INT >= 33) askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    openWithTicket(base)
-                } else {
-                    Api.store.server = base
-                    Api.store.deviceToken = null
-                    web.loadUrl(base)
-                }
-            } catch (e: ApiError) {
-                pairResult(false, if (e.status == 404 && e.code != "NOT_OPERO") Tr.s(R.string.too_old) else e.message ?: Tr.s(R.string.cant_connect))
-            }
-        }
-    }
-
-    private fun pairResult(ok: Boolean, msg: String) {
-        web.evaluateJavascript("window.__operoPair && window.__operoPair($ok, ${JSONObject.quote(msg)})", null)
     }
 
     // ───── 更新 ─────
@@ -395,7 +319,7 @@ class MainActivity : FragmentActivity(), Bridge.Host {
                 .setPositiveButton(Tr.s(R.string.update)) { _, _ ->
                     lifecycleScope.launch {
                         try { val f = Updater.download(this@MainActivity, l); AppLock.skipNext(); Updater.install(this@MainActivity, f) }
-                        catch (e: Exception) { android.widget.Toast.makeText(this@MainActivity, e.message ?: Tr.s(R.string.download_failed), android.widget.Toast.LENGTH_LONG).show() }
+                        catch (e: Exception) { Toast.makeText(this@MainActivity, e.message ?: Tr.s(R.string.download_failed), Toast.LENGTH_LONG).show() }
                     }
                 }
                 .apply { if (!l.must) setNegativeButton(Tr.s(R.string.later), null) }

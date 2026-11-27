@@ -79,7 +79,7 @@ function bootstrap(c: Ctx) {
   const sess = c.sess
   const setupDone = kvGet('setupDone', false)
   if (!o || !sess) return { auth: { needOwner: !o, loggedIn: false, setupDone }, instance: instanceInfo() }
-  const sessions = all<Session>('sessions').filter((s) => !s.archived) // 归档的在员工档案「历史会话」里按需拉
+  const sessions = all<Session>('sessions').filter((s) => !s.archived) // 归档的在员工资料「历史会话」里按需拉
   return {
     auth: { needOwner: false, loggedIn: true, setupDone },
     instance: instanceInfo(),
@@ -548,7 +548,7 @@ async function handoffDraft(e: Employee, sid: string): Promise<string> {
     wsLine = `项目「${w.name}」：${n ? `还有 ${n} 个文件没提交` : '没有未提交的改动'}${lg.out ? `；最近提交：\n${lg.out.split('\n').map((l) => `  - ${l}`).join('\n')}` : ''}`
   }
   return [
-    '接着上一个会话做（上一个会话已归档，上下文清空了）。先读你记忆仓库的 CLAUDE.md 和 docs/交接.md 最上面几条。',
+    '接着上一个会话做（上一个会话已归档，上下文清空了）。先读你目录里的 CLAUDE.md / AGENTS.md 和 docs/交接.md 最上面几条。',
     asks.length && `上一个会话里我最近说的：\n${asks.join('\n')}`,
     last && `你最后说的：\n> ${last.replace(/\n/g, '\n> ')}`,
     wsLine,
@@ -577,10 +577,21 @@ route('POST', '/api/employees/:id/switch', async (c) => {
   const host = runner.hostOf(e)
   const bin = to === 'Codex' ? hosts.codexBin(host) : hosts.claudeBin(host)
   const v = await hosts.runAiOn(host, bin, ['--version'], { timeoutMs: 20_000 })
-  if (v.code !== 0) throw bad(`这台还没装好 ${to}：先到「我 → AI 执行器」装好、登录`)
+  if (v.code !== 0) throw bad(`这台还没装好 ${to}：先到「应用 → AI 执行器」装好、登录`)
+  // 换执行器 = 开一段新的 work（新执行器、上下文清空），自动发一条交接：你是谁、负责什么、目录在哪、上一段在做什么。员工的目录和项目都在，读文档就能接上
   const draft = await handoffDraft(e, sessionFor(e.id).id)
-  const ns = rotate({ ...e }, `换成 ${to}`, draft)
-  put1('employees', { ...get<Employee>('employees', e.id)!, executor: to, model: to === 'Codex' ? '执行器默认' : 'Opus 5.5' })
+  const ns = rotate({ ...e }, `换成 ${to}`)
+  const cur = put1('employees', { ...get<Employee>('employees', e.id)!, executor: to, model: to === 'Codex' ? '执行器默认' : 'Opus 5.5', claudeAccount: to === 'Codex' ? undefined : e.claudeAccount })
+  const w = cur.workspace ? get<Workspace>('workspaces', cur.workspace) : undefined
+  const msg = [
+    `（Opero 交接）你接手「${cur.name}」这个员工的工作：以前用 ${e.executor} 干，现在换成你（${to}）。`,
+    `你负责：${cur.title || '（没写角色）'}${cur.prompt ? `\n${cur.prompt.slice(0, 1500)}` : ''}`,
+    w ? `你的项目：「${w.name}」（${w.repo}，分支 ${w.branch || '默认'}），目录就是你的工作目录。` : '你的目录和记忆仓库都还在，就是你的工作目录。',
+    draft,
+    '先读完上面说的文档，回我一句：你接手了什么、现在进行到哪、下一步做什么。',
+  ].join('\n\n')
+  queue.post(ns.id, msg, [])
+  runner.send(cur.id, msg, [])
   audit({ via: '—', action: 'employee.switch', target: `${e.name}：${e.executor} → ${to}`, level: '写', result: '成功', how: '本人' })
   return ns
 })
@@ -1786,7 +1797,11 @@ export function interruptedRuns(): { sid: string; emp: string }[] {
 }
 
 
-/** 以前没有「员工能用哪些凭证」（谁都能用全部允许 AI 的凭证）：第一次启动按原样写下来，之后在员工档案里收放 */
+/** 以前没有「员工能用哪些凭证」（谁都能用全部允许 AI 的凭证）：第一次启动按原样写下来，之后在员工资料里收放 */
+/** 聊天底部不再放「知识库」：知识库就是员工的 docs，要加东西直接发给员工 */
+export function migrateMenus() {
+  for (const e of all<Employee>('employees')) if (e.menus?.includes('知识库')) put('employees', { ...e, menus: e.menus.filter((m) => m !== '知识库') })
+}
 /** 以前一个项目只有一份编译设置（buildCfg）：变成编号 main 的编译组件，流水线记录照留 */
 export function migrateBuilds() {
   const NAME: Record<string, string> = { node: 'Node', go: 'Go', android: '安卓', spring: 'Java', custom: '主程序' }

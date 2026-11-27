@@ -64,7 +64,7 @@ export interface Session {
   pinned?: boolean
   working?: string
   waiting?: string
-  /** 归档了（开了新会话接着做 / 换了执行器）：不在会话列表里，员工档案「历史会话」能看 */
+  /** 归档了（开了新会话接着做 / 换了执行器）：不在会话列表里，员工资料「历史会话」能看 */
   archived?: number
   /** 归档时记一句：为什么换、用的执行器 */
   title?: string

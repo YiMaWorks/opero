@@ -1,5 +1,5 @@
 // 凭证管理：按分类列出来；新增 = 选分类 → 选类型 → 照着步骤去那个平台拿（有直达按钮）→ 贴进来 → 测试连接 → 保存。
-// 谁能用不在这里定：在员工档案「能用的凭证」里勾（EmployeeCredsSection）。
+// 谁能用不在这里定：在员工资料「能用的凭证」里勾（EmployeeCredsSection）。
 import { useState } from 'react'
 import type { Credential, CredGroup, Employee } from '../types'
 import { toast, useStore } from '../store'
@@ -265,7 +265,7 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
         <Field label="名字（可选）" hint="不填自动起，比如「MySQL · 10.0.0.5/shop」「GitHub · 你的账号」"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="自动起" /></Field>
         <Field label="环境标签"><EnvPicker value={env} onChange={setEnv} /></Field>
         <div className="lrow boxed">
-          <span className="row-main"><span className="row-title">允许 AI 员工使用</span><span className="row-sub">关掉 = 只有你本人能用；开着也要在员工档案「能用的凭证」里给那个员工勾上</span></span>
+          <span className="row-main"><span className="row-title">允许 AI 员工使用</span><span className="row-sub">关掉 = 只有你本人能用；开着也要在员工资料「能用的凭证」里给那个员工勾上</span></span>
           <Toggle on={aiAllowed} onChange={setAiAllowed} />
         </div>
 
@@ -273,7 +273,7 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
           <Section title="谁在用">
             {users.length
               ? users.map((e) => <Row key={e.id} title={e.name} sub={e.title} chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })} />)
-              : <Empty>还没给员工用：打开员工档案 →「能用的凭证」勾上它</Empty>}
+              : <Empty>还没给员工用：打开员工资料 →「能用的凭证」勾上它</Empty>}
             {!users.length && emps.length > 0 && <div className="pad chips">{emps.map((e) => <button key={e.id} className="chip" onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}>{e.name} ›</button>)}</div>}
           </Section>
         )}
@@ -292,8 +292,8 @@ function CredForm({ existing, group, kind, t, setKind, back, nav, emps }: {
   )
 }
 
-// ======================= 员工档案：能用的凭证 =======================
-// 档案里只列给了的；「授权凭证」从右边滑出全部凭证（能搜、按分类筛），勾好点确定。凭证再多也不挤
+// ======================= 员工资料：能用的凭证 =======================
+// 员工资料里只列给了的；「授权凭证」从右边滑出全部凭证（能搜、按分类筛），勾好点确定。凭证再多也不挤
 export function EmployeeCredsSection({ e, nav }: { e: Employee; nav: PageProps['nav'] }) {
   const creds = useStore((s) => s.credentials)
   const [open, setOpen] = useState(false)

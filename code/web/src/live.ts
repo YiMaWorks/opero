@@ -115,7 +115,7 @@ function apply(ev: any) {
     case 'put': {
       const coll = collOf(ev.coll)
       if (!COLLS.includes(coll)) return
-      // 归档的会话不在会话列表里（员工档案「历史会话」按需拉）
+      // 归档的会话不在会话列表里（员工资料「历史会话」按需拉）
       if (coll === 'sessions' && ev.item.archived) { set((s) => ({ sessions: s.sessions.filter((x) => x.id !== ev.item.id) })); return }
       set((s) => {
         const list = s[coll] as { id: string }[]

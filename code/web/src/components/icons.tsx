@@ -36,6 +36,7 @@ export const IconSliders = () => <svg {...base}><path d="M4 7h10M18 7h2M4 17h4M1
 export const IconFlow = () => <svg {...base}><rect x="3.5" y="4" width="7" height="5" rx="1.5" /><rect x="13.5" y="15" width="7" height="5" rx="1.5" /><path d="M7 9v4a2 2 0 0 0 2 2h4.5" /></svg>
 export const IconRefresh = () => <svg {...base}><path d="M19 8a7.5 7.5 0 1 0 .5 6M19 3.5V8h-4.5" /></svg>
 export const IconPalette = () => <svg {...base}><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.8 1.8-1.7 0-1.2-1-1.6-1-2.6 0-.9.7-1.6 1.7-1.6h2.1a3.9 3.9 0 0 0 3.9-3.9C20.5 6.6 16.7 3.5 12 3.5z" /><circle cx="7.6" cy="11" r="1.1" fill="currentColor" /><circle cx="10.2" cy="7.4" r="1.1" fill="currentColor" /><circle cx="14.6" cy="7.6" r="1.1" fill="currentColor" /></svg>
+export const IconGlobe = () => <svg {...base}><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.4 2.4 3.6 5.2 3.6 8.5s-1.2 6.1-3.6 8.5c-2.4-2.4-3.6-5.2-3.6-8.5S9.6 5.9 12 3.5z" /></svg>
 export const IconSend = () => <svg {...base}><path d="M4 12l16-8-6 16-2.5-6.5z" /></svg>
 
 export function IconCheck({ size = 16 }: { size?: number }) {

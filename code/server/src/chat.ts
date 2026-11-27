@@ -16,7 +16,7 @@ export function sessionFor(empId: string): Session {
   return s
 }
 
-/** 换一个会话接着做：现在的归档（员工档案「历史会话」能看），开一个新的；draft = 新会话输入框预填的交接 */
+/** 换一个会话接着做：现在的归档（员工资料「历史会话」能看），开一个新的；draft = 新会话输入框预填的交接 */
 export function rotateSession(empId: string, title: string, o: { draft?: string; note?: string } = {}): Session {
   const old = sessionFor(empId)
   const archived: Session = { ...old, archived: Date.now(), title, working: undefined, waiting: undefined, unread: 0, draft: undefined }

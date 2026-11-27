@@ -378,6 +378,12 @@ export function compactContext(sid: string, empId: string) {
   })
 }
 /** 换 work：旧的先把交接写进员工的 git，新的读交接接着干（上下文满了 / 卡住了 / 换服务器） */
+/** 换 AI 执行器（Claude Code ↔ Codex）：开一段新的 work，Opero 自动发一条交接（负责什么、目录、上一段在做什么），员工读完自己的文档接着干 */
+export function switchExecutor(empId: string, to: 'Claude Code' | 'Codex') {
+  if (LIVE) { live.call('POST', `/api/employees/${empId}/switch`, { executor: to }, `已换成 ${to}：新 work 收到交接，正在接手`); return }
+  set((s) => ({ employees: s.employees.map((x) => (x.id === empId ? { ...x, executor: to } : x)) }))
+  toast(`已换成 ${to}`)
+}
 export function switchWork(sid: string, empId: string, reason = '上下文满了') {
   // 真的一套：现在的会话归档、开新会话，交接预填在输入框里（员工从记忆仓库接着做）
   if (LIVE) { live.call('POST', `/api/sessions/${sid}/handoff`, { reason }, '已开新会话：交接写在输入框里，看一下再发'); return }

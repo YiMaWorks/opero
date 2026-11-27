@@ -25,6 +25,8 @@ interface Props {
   onProfile: () => void
   onSearch: () => void
   onSettings: () => void
+  /** 「···」：右边滑出「聊天信息」（和员工资料一样从右边出来） */
+  onMore: () => void
 }
 
 const EMPTY: Message[] = []
@@ -59,7 +61,7 @@ function setCtxOff(k: string) {
 type Pend = { key: string; name: string; image: boolean; preview?: string; busy: boolean; err?: string; att?: QAtt }
 const pendDrafts = new Map<string, Pend[]>()
 
-export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile, onSearch, onSettings }: Props) {
+export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile, onSearch, onSettings, onMore }: Props) {
   const emp = useStore((s) => s.employees.find((e) => e.id === session.employee))
   const raw = useStore((s) => s.messages[session.id] ?? EMPTY)
   // 「正在输入」气泡（这一轮开始时建的）永远放在最下面；空的系统行不显示
@@ -89,7 +91,10 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const [text, setText] = useState(() => loadDrafts()[session.id] ?? '')
   useEffect(() => saveDraft(session.id, text), [session.id, text])
   const [voice, setVoice] = useState(mobile && !LIVE) // 语音转文字还没接：真的一套默认打字
-  const [sheet, setSheet] = useState<null | 'more' | 'attach' | 'work' | 'menus' | 'attachD' | 'phrases'>(null)
+  const [sheet, setSheet] = useState<null | 'attach' | 'work' | 'menus' | 'attachD' | 'phrases'>(null)
+  const [dragging, setDragging] = useState(false)
+  // 常用语直接摆在输入框上面：点一下填进去；「编辑」时能删、能把输入框里的存成常用语
+  const [editPh, setEditPh] = useState(false)
   // 「先不换」：这一段上下文里不再提醒（记在本机）；换不换由主人决定
   const [, setCtxTick] = useState(0)
   const phrases = useStore((s) => s.settings.phrases) ?? NO_PHRASES
@@ -102,6 +107,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   const [forward, setForward] = useState<Message | null>(null)
   const server = useStore((s) => s.servers.find((x) => x.name === emp?.host || x.id === emp?.host))
   const ws = useStore((s) => s.workspaces.find((w) => w.id === emp?.workspace))
+  /** 底部菜单「改动记录」显示成项目名：点开就是这个项目（提交、分支、编译和发布） */
+  const menuLabel = (m: string) => (m === '改动记录' && ws ? ws.name : m)
   // 真的一套：附件先传（输入框上面一排），跟着下一句话一起发；员工在干活时可以排队（带着附件）
   const allQueue = useStore((s) => s.queue)
   const myQueue = allQueue.filter((q) => q.emp === session.employee).sort((a, b) => a.at - b.at)
@@ -236,16 +243,22 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
   }
 
   return (
-    <section className="chat"
-      onDragOver={(e) => { if (Array.from(e.dataTransfer.items).some((i) => i.type.startsWith('image/'))) e.preventDefault() }}
+    <section className={'chat' + (dragging ? ' dropping' : '')}
+      onDragOver={(e) => { if (Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); if (!dragging) setDragging(true) } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }}
       onDrop={async (e) => {
-        const imgs = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
-        if (!imgs.length) return
+        setDragging(false)
+        const files = Array.from(e.dataTransfer.files)
+        if (!files.length) return
         e.preventDefault()
+        // 图片先过编辑器（裁剪 / 压缩）；别的文件直接放到输入框上面，跟着下一句话一起发
+        const imgs = files.filter((f) => f.type.startsWith('image/'))
+        for (const f of files.filter((x) => !x.type.startsWith('image/'))) { if (LIVE) addPending(f, f.name, false); else sendFile(session.id, f.name, false, { size: f.size }, f) }
         const out: File[] = []
         for (const f of imgs) { const r = await editImage(f, { title: '编辑图片', okText: '发送' }); if (r) out.push(r) }
-        sendImages(out)
+        if (out.length) sendImages(out)
       }}>
+      {dragging && <div className="drop-hint">松开就发：图片先裁剪，文件跟着下一句话一起发</div>}
       <header className="chat-head">
         {mobile && <button className="icon-btn" onClick={onBack} aria-label="返回"><IconBack /></button>}
         <span onClick={onProfile} className="click"><Avatar id={emp.id} size={mobile ? 36 : 44} dot={session.working ? 'ok' : undefined} /></span>
@@ -267,7 +280,7 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
                 <span className="meta-chip">{emp.title}</span>
                 <span className="meta-chip">{emp.executor}</span>
                 <span className="meta-chip">{server ? (server.id === 'local' && server.name === '本机' ? 'Opero 这台' : server.name) : emp.host}</span>
-                {ws && <span className="meta-chip branch" title={ws.name}>{ws.name} · ⎇ {ws.branch || '…'}</span>}
+                {ws && <span className="meta-chip branch" title={`${ws.name} · ${ws.branch || ''}`}>⎇ {ws.branch || '…'}</span>}
                 {server && <ServerLoad cpu={server.cpu} mem={server.mem} online={server.online} />}
                 <button type="button" className={'meta-chip work-chip' + ((emp.contextUsed ?? 0) >= 80 ? ' hot' : '')} title="模型、思考方式、审核方式、上下文：点开改" onClick={() => setSheet('work')}>
                   {emp.model} · 思考{effortLabel(emp.effort)} · {approvalShort(emp.approval)} · 上下文 {emp.contextUsed ?? 0}%
@@ -275,8 +288,8 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
               </span>
             )}
         </div>
-        {!mobile && <button className="btn default sm" onClick={onProfile}>档案</button>}
-        <button className="icon-btn" aria-label="更多" onClick={() => setSheet('more')}><IconMore /></button>
+        {!mobile && <button className="btn default sm" onClick={onProfile}>员工资料</button>}
+        <button className="icon-btn" aria-label="聊天信息" title="聊天信息" onClick={onMore}><IconMore /></button>
       </header>
 
       {aiDown && (
@@ -390,13 +403,13 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         )}
         {mobile ? (
           <>
-            {emp.menus.length > 0 && (
-              <nav className="menu-bar">
-                <span className="menu-icon"><IconMenu /></span>
-                {(emp.menus.length > 3 ? emp.menus.slice(0, 2).concat('更多') : emp.menus).map((m) => (
-                  <button key={m} onClick={() => (m === '更多' ? setSheet('menus') : onMenu(m))}>{m}</button>
-                ))}
-              </nav>
+            {/* 手机：底部菜单（项目名等）+ 常用语合成输入框上面一排小标签，能左右滑；不再单独占一行菜单条 */}
+            {(emp.menus.length > 0 || (LIVE && phrases.length > 0)) && (
+              <div className="m-quick">
+                {emp.menus.map((m) => <button key={m} type="button" className="m-menu-chip" onClick={() => onMenu(m)}>{menuLabel(m)}</button>)}
+                {emp.menus.length > 0 && LIVE && phrases.length > 0 && <i className="m-quick-sep" />}
+                {LIVE && phrases.length > 0 && <PhraseChips phrases={phrases} editing={editPh} setEditing={setEditPh} text={text} onPick={(p) => setText((t) => (t ? `${t}\n${p}` : p))} />}
+              </div>
             )}
             <div className="composer m">
               {!LIVE && (
@@ -439,13 +452,13 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         ) : (
           <>
             <div className="composer-ctl">
-              {LIVE && <button className="ctx-chip" onClick={() => setSheet('phrases')} title="常用语：点一下填进输入框">常用语</button>}
+              {LIVE && <PhraseChips phrases={phrases} editing={editPh} setEditing={setEditPh} text={text} onPick={(p) => setText((t) => (t ? `${t}\n${p}` : p))} />}
               {emp.menus.length > 0 && (
                 <>
                   <span className="grow" />
                   <nav className="menu-chips" aria-label="底部菜单">
                     <span className="menu-chips-icon"><IconMenu /></span>
-                    {emp.menus.map((m) => <button key={m} onClick={() => onMenu(m)}>{m}</button>)}
+                    {emp.menus.map((m) => <button key={m} onClick={() => onMenu(m)} title={m === '改动记录' && ws ? `${ws.name}：提交、分支、编译和发布` : m}>{menuLabel(m)}</button>)}
                   </nav>
                 </>
               )}
@@ -475,48 +488,10 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         </div>
       )}
 
-      {sheet === 'more' && (
-        // 「···」：照微信「聊天信息」分组——谁（点进档案）· 常用四个 · 这个 work · 不常用的
-        <Sheet onClose={() => setSheet(null)}>
-          <div className="more">
-            <button className="more-who" onClick={() => { setSheet(null); onProfile() }}>
-              <Avatar id={emp.id} size={48} />
-              <span className="more-who-main"><b>{emp.name}</b><span>{emp.title}</span></span>
-              <span className="row-chev"><IconChevron /></span>
-            </button>
-            <div className="more-grid">
-              <button onClick={() => { setSheet(null); onSearch() }}><span><IconSearch /></span>搜索记录</button>
-              <button className={session.pinned ? 'on' : ''} onClick={() => togglePin(session.id)}><span><IconPin /></span>{session.pinned ? '已置顶' : '置顶'}</button>
-              <button className={emp.notify === 'none' ? 'on' : ''} onClick={() => toggleMute(session.id)}><span>{emp.notify === 'none' ? <IconBellOff /> : <IconBell />}</span>{emp.notify === 'none' ? '已免打扰' : '免打扰'}</button>
-              <button onClick={() => { setSheet(null); onSettings() }}><span><IconSliders /></span>聊天设置</button>
-            </div>
-            <div className="more-box">
-              <button className="more-work" onClick={() => setSheet('work')}>
-                <span className="more-box-title">这个 work</span>
-                <span className="more-work-v">{emp.model} · 思考{effortLabel(emp.effort)} · {approvalShort(emp.approval)}</span>
-                <span className="row-chev"><IconChevron /></span>
-              </button>
-              <div className="more-ctx">
-                <div className="meter-bar"><i className={(emp.contextUsed ?? 0) >= 80 ? 'm-warn' : 'm-ok'} style={{ width: `${Math.max(2, emp.contextUsed ?? 0)}%` }} /></div>
-                <span>上下文 {emp.contextUsed ?? 0}%</span>
-              </div>
-              <div className="more-acts">
-                <button onClick={() => { compactContext(session.id, emp.id); setSheet(null) }}>压缩</button>
-                <button onClick={() => { newTopic(session.id, emp.id); setSheet(null) }}>新话题</button>
-                <button className="hot" onClick={() => { switchWork(session.id, emp.id, '你让换的'); setSheet(null) }}>{LIVE ? '开新会话接着做' : '换一个 work'}</button>
-              </div>
-            </div>
-            <div className="more-list">
-              <button onClick={() => { saveFlowFromChat(emp.id); setSheet(null) }}><IconFlow /><span>把刚才做的存成流程<small>下次点一下就跑，不经过 AI</small></span></button>
-              <button onClick={() => { restartWork(session.id); setSheet(null) }}><IconRefresh /><span>重启 work<small>卡住时用，会话和记忆都在</small></span></button>
-            </div>
-          </div>
-        </Sheet>
-      )}
       {sheet === 'menus' && (
         <Sheet title="菜单" onClose={() => setSheet(null)}>
           <div className="sheet-list">
-            {emp.menus.map((m) => <Row key={m} title={m} chevron onClick={() => { setSheet(null); onMenu(m) }} />)}
+            {emp.menus.map((m) => <Row key={m} title={menuLabel(m)} chevron onClick={() => { setSheet(null); onMenu(m) }} />)}
           </div>
         </Sheet>
       )}
@@ -552,6 +527,24 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
         </Sheet>
       )}
     </section>
+  )
+}
+
+/** 常用语：直接摆出来（每个最多显示 6 个字，悬停看全文），点一下填进输入框；「编辑」时每个带 ×，还能把输入框里的存成一条 */
+function PhraseChips({ phrases, editing, setEditing, text, onPick }: { phrases: string[]; editing: boolean; setEditing: (v: boolean) => void; text: string; onPick: (p: string) => void }) {
+  const short = (p: string) => { const a = Array.from(p.replace(/\s+/g, ' ').trim()); return a.length > 6 ? `${a.slice(0, 6).join('')}…` : a.join('') }
+  const t = text.trim()
+  return (
+    <span className="phrase-chips">
+      {phrases.map((p) => (
+        <span key={p} className={'phrase-chip' + (editing ? ' edit' : '')}>
+          <button type="button" title={p} onClick={() => (editing ? undefined : onPick(p))} data-no-i18n="">{short(p)}</button>
+          {editing && <button type="button" className="phrase-x" aria-label="删掉" onClick={() => setSettings({ phrases: phrases.filter((x) => x !== p) })}>×</button>}
+        </span>
+      ))}
+      {editing && <button type="button" className="phrase-chip add" disabled={!t || phrases.includes(t)} title={t ? '把输入框里的话存成常用语' : '先在输入框里写好'} onClick={() => { setSettings({ phrases: [...phrases, t].slice(-30) }); toast('已存成常用语') }}>+ 存输入框里的</button>}
+      <button type="button" className="ctx-chip" onClick={() => setEditing(!editing)}>{editing ? '完成' : phrases.length ? '编辑' : '+ 常用语'}</button>
+    </span>
   )
 }
 

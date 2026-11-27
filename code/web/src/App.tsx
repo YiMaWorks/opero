@@ -11,7 +11,8 @@ import { ThemeQuick } from './components/ThemeQuick'
 import { SideNav } from './components/SideNav'
 import { ImageEditHost } from './components/ImageEditor'
 import { NewChatSheet, ReplySuggestSheet, SearchOverlay, Toast, VerifyModal } from './components/overlays'
-import { IconPalette, TabIcon } from './components/icons'
+import { IconGlobe, IconPalette, TabIcon } from './components/icons'
+import { LangSheet } from './components/LangPicker'
 import { PageView } from './pages'
 import { menuRoute } from './menus'
 import { LoginPage, Onboarding } from './pages/auth'
@@ -76,6 +77,7 @@ export default function App() {
   const [search, setSearch] = useState(false)
   const [newChat, setNewChat] = useState(false)
   const [themeSheet, setThemeSheet] = useState(false)
+  const [langSheet, setLangSheet] = useState(false)
   const [suggest, setSuggest] = useState<{ title: string; ch: string; original?: string } | null>(null)
 
   // 风格：跟随系统（浅色 / 深色各用一套）/ 固定一套 / 自己挑的三个颜色（themes.ts）
@@ -232,6 +234,7 @@ export default function App() {
   const closeTop = useRef<() => void>(() => {})
   closeTop.current = () => {
     if (verify) set({ verify: null })
+    else if (langSheet) setLangSheet(false)
     else if (themeSheet) setThemeSheet(false)
     else if (suggest) setSuggest(null)
     else if (newChat) setNewChat(false)
@@ -309,7 +312,8 @@ export default function App() {
       }}
       onProfile={() => setPanel([{ page: 'profile', params: { id: session.employee } }])}
       onSearch={() => setSearch(true)}
-      onSettings={() => setPanel([{ page: 'chatSettings', params: { id: session.employee } }])} />
+      onSettings={() => setPanel([{ page: 'chatSettings', params: { id: session.employee } }])}
+      onMore={() => setPanel([{ page: 'chatInfo', params: { sid: session.id, onSearch: () => setSearch(true) } }])} />
   )
   const listEl = (
     <SessionList sessions={sessions} current={current} mobile={mobile} onOpen={openSession}
@@ -355,6 +359,7 @@ export default function App() {
             </button>
           ))}
           <span className="grow" />
+          <button className={'nav-btn' + (langSheet ? ' on' : '')} onClick={() => setLangSheet(true)} title="界面语言"><IconGlobe /><span>语言</span></button>
           <button className="nav-btn" onClick={() => setThemeSheet(true)} title="换风格"><IconPalette /><span>风格</span></button>
           <button className={'nav-btn' + (tab === 'me' ? ' on' : '')} onClick={() => switchTab('me')}>
             <TabIcon tab="me" /><span>我</span>
@@ -396,6 +401,7 @@ export default function App() {
             setStacks((st) => ({ ...st, people: mobile ? [...ROOTS.people, { page: 'employeeEdit' }] : [{ page: 'employeeEdit' }] }))
           }} />
       )}
+      {langSheet && <LangSheet onClose={() => setLangSheet(false)} />}
       {themeSheet && (
         <ThemeQuick onClose={() => setThemeSheet(false)}
           onMore={() => {

@@ -3,14 +3,14 @@
 > **2026-11-25 起方向变了**：各端改成原生实现（安卓 Kotlin + Compose，核心页面先原生、其它页面先嵌网页），见 `docs/多端架构.md`。下面写的是现在这个 WebView 外壳的做法（推送、指纹、配对、更新这些照用），其中「界面全在网页里、不用原生写」那条不再适用。
 >
 > 代码在 `code/android/`，网页那边是 `code/web/src/native.ts`。
-> 外壳做的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 30 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
+> 外壳做的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 5 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
 > 聊天、卡片、表单不用原生写：如果每种卡片网页和 App 各写一遍，加一种卡片就要发 App。Opero 的界面**全在网页里**，外壳只做网页做不了的事；加功能只发网页，不用发 App。
 
 ## 1. 外壳管什么、不管什么
 
 | 外壳管（原生） | 网页管 |
 |---|---|
-| 连接你的 Opero（地址 + 配对码，`assets/pair.html`） | 所有页面、聊天、卡片、表单 |
+| 登录你的 Opero（原生 Compose：地址 + 账号密码 / 配对码 + 两步验证，`ui/login/LoginScreen.kt`） | 所有页面、聊天、卡片、表单 |
 | 常驻推送、通知渠道、严重告警一直响 | 推什么（按员工的「提醒」设置，后台定） |
 | 指纹：解锁 App、验证本人 | 什么时候要验证本人（`requireVerify`） |
 | 点通知打开某个会话 | 打开以后显示什么 |
@@ -31,10 +31,10 @@
 | 网页调外壳 `OperoNative.*` | 做什么 |
 |---|---|
 | `version()` | 外壳版本 |
-| `verify(id, title, subtitle)` | 弹系统指纹 / 面容 / 锁屏密码；30 分钟内验过直接过。验过后外壳调后台 `POST /api/app/verified`，结果回 `window.__operoNative.onVerify(id, ok, err)` |
+| `verify(id, title, subtitle)` | 弹系统指纹 / 面容 / 锁屏密码；5 分钟内验过直接过（和后台 `VERIFY_MS` 一致）。验过后外壳调后台 `POST /api/app/verified`，结果回 `window.__operoNative.onVerify(id, ok, err)` |
 | `setTheme(dark)` | 状态栏、导航栏、底色跟着网页 |
-| `setBadge(n)` | 红点数（只算要你决定的） |
-| `setRoute(route)` | 正在看的会话 `chat/<编号>`：推的就是它时不弹通知 |
+| `setBadge(n)` | 红点数（只算要你决定的）。安卓 0.4.0 起会话页签是原生的，自己算，这个不用了 |
+| `setRoute(route)` | 正在看的会话 `chat/<编号>`：推的就是它时不弹通知。安卓 0.4.0 起聊天是原生的，自己记，这个不用了 |
 | `openExternal(url)` | 交给系统打开（邮件 / Slack / Telegram 原消息、文档链接；只认 http / mailto / tg / slack） |
 | `haptic()` | 轻震（长按、按住说话） |
 | `relogin()` | 网页登录过期（接口 401）：外壳用设备令牌重新要票再打开 |
@@ -60,7 +60,7 @@
 | `POST /api/app/ticket` `{route, embed?}` | 要一张一次性的票（1 分钟有效）；`embed: true` = 只显示 `route` 那一页（原生 App 嵌网页用，见 `docs/api/README.md`「嵌网页」） | `{url}`：打开它，后台种好登录 cookie 再跳到首页（带 route 就跳到那里） |
 | `POST /api/app/login` `{email, password, deviceId, name, platform, appVersion}`（不带令牌） | App 自己用账号密码登录（不依赖网页给配对码）；开了两步验证先回票，再 `POST /api/app/login/mfa` `{ticket, code, …}` | `{deviceToken, token, deviceId}` 或 `{mfa: true, ticket}` |
 | `POST /api/app/session` | 原生页面用：换一个会话令牌，调主人的接口带 `Authorization: Bearer`；和网页的 cookie 会话各记各的，不互相踢 | `{token}` |
-| `POST /api/app/verified` | 这台手机刚验过本人：后台按「这次登录」记 30 分钟 | `{}` |
+| `POST /api/app/verified` | 这台手机刚验过本人：这台设备的会话（原生和网页）记 5 分钟 | `{}` |
 | `POST /api/app/devices` `{deviceId, platform, brand, model, osVersion, appVersion, enabled}` | 登记这台手机 | `{}` |
 | `GET /api/app/push?device=&after=&wait=25` | 长轮询：没新的就等最多 25 秒；后台存 24 小时 | `{items: [PushItem], last}`；没这台手机回 `404 {code: "DEVICE_NOT_FOUND"}` |
 | `DELETE /api/app/devices/<deviceId>` | 断开 | `{}` |
@@ -78,7 +78,7 @@
 
 1. 没连过 → 连接页：填地址（**没有默认值**：Opero 没有公共服务器，App 只连用户自己装的那套；官网只是介绍和试用）+ 配对码（可不填）。点「连接」先 `GET <地址>/api/health`，回 `{"ok":true}` 才算是 Opero 后台，否则提示「这个地址不是 Opero 后台」。
 2. 配对过 → `POST /api/app/ticket` → 打开票地址；同时起常驻连接。
-3. 点通知 → 带 `route` 打开：网页开着就直接 `__operoNative.open(route)`，没开就等网页加载完再交。
+3. 点通知 → 带 `route` 打开：安卓 0.4.0 起直接打开原生聊天（`chat/<会话>`）；以前的整页网页外壳是交给网页 `__operoNative.open(route)`。
 4. 开了「指纹解锁 App」→ 冷启动、离开超过设定时间回来先盖锁屏；打开系统的选文件、相机、安装界面回来不锁。
 
 ## 5. 构建和发版

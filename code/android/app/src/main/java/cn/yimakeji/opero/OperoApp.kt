@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import cn.yimakeji.opero.data.Api
 import cn.yimakeji.opero.data.Store
+import cn.yimakeji.opero.i18n.I18n
 import cn.yimakeji.opero.push.Notifier
 import cn.yimakeji.opero.push.PushService
 import cn.yimakeji.opero.push.Watchdog
@@ -22,7 +23,10 @@ class OperoApp : Application() {
         fun ensureStore(ctx: Context) {
             Tr.ctx = ctx.applicationContext
             val ready = try { Api.store; true } catch (_: UninitializedPropertyAccessException) { false }
-            if (!ready) Api.store = Store(ctx.applicationContext)
+            if (!ready) {
+                Api.store = Store(ctx.applicationContext)
+                I18n.init(ctx, Api.store.lang)
+            }
         }
     }
 }

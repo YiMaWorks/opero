@@ -114,6 +114,31 @@ if ! node -v 2>/dev/null | grep -q '^v22\\.'; then
   export PATH="$CACHE/node22/bin:$PATH"
 fi
 export npm_config_registry=https://registry.npmmirror.com npm_config_cache="$CACHE/npm"`
+/** Gradle 发行包：自己下（阿里 → 腾讯 → 华为 → 官方轮流试，每次 unzip -t 校验），再让 wrapper 用本地文件。
+ *  以前只把地址换成腾讯镜像交给 gradlew 自己下，云效上会下到坏的 zip（错误页 / 半截）直接失败。仓库里的地址不改（开源用户在国外照样能编）。
+ *  在 gradle/wrapper/gradle-wrapper.properties 所在的目录（项目根）里跑；要 unzip（构建机上没有就装一个）。 */
+const GRADLE_DIST = `command -v unzip >/dev/null || yum install -y -q unzip >/dev/null 2>&1 || apt-get install -y -qq unzip >/dev/null 2>&1 || true
+WP=gradle/wrapper/gradle-wrapper.properties
+if [ -f "$WP" ]; then
+  GURL=$(sed -n 's/^distributionUrl=//p' "$WP" | tr -d '\\r' | sed 's#\\\\:#:#g')
+  GZIP=$(basename "$GURL")
+  GVER=$(echo "$GZIP" | sed -n 's/^gradle-\\(.*\\)-\\(bin\\|all\\)\\.zip$/\\1/p')
+  GDIR="$CACHE/gradle-dist"; mkdir -p "$GDIR"
+  # wrapper 缓存里以前下坏的：校验不过的 zip、半截的 .part、锁
+  for z in "$HOME"/.gradle/wrapper/dists/gradle-*/*/*.zip; do [ -f "$z" ] && ! unzip -tq "$z" >/dev/null 2>&1 && rm -rf "$(dirname "$z")"; done
+  rm -f "$HOME"/.gradle/wrapper/dists/gradle-*/*/*.part "$HOME"/.gradle/wrapper/dists/gradle-*/*/*.lck 2>/dev/null || true
+  if [ -n "$GVER" ] && ! unzip -tq "$GDIR/$GZIP" >/dev/null 2>&1; then
+    for u in "https://mirrors.aliyun.com/gradle/distributions/v$GVER/$GZIP" "https://mirrors.cloud.tencent.com/gradle/$GZIP" "https://mirrors.huaweicloud.com/gradle/$GZIP" "$GURL"; do
+      echo "下载 Gradle $GVER：$u"
+      rm -f "$GDIR/$GZIP.tmp"
+      if curl -fsSL --retry 3 --connect-timeout 20 -o "$GDIR/$GZIP.tmp" "$u" && unzip -tq "$GDIR/$GZIP.tmp" >/dev/null 2>&1; then mv "$GDIR/$GZIP.tmp" "$GDIR/$GZIP"; break; fi
+      echo "这个地址下的不对，换下一个"
+    done
+    rm -f "$GDIR/$GZIP.tmp"
+  fi
+  if [ -n "$GVER" ] && unzip -tq "$GDIR/$GZIP" >/dev/null 2>&1; then sed -i "s#^distributionUrl=.*#distributionUrl=file://$GDIR/$GZIP#" "$WP"; echo "Gradle $GVER 用本地的 $GDIR/$GZIP"
+  else echo "Gradle 发行包几个地址都没下好，交给 gradlew 自己下"; fi
+fi`
 const SUMS = 'cd "$ROOT/out" && sha256sum * > /tmp/SHA256SUMS && mv /tmp/SHA256SUMS SHA256SUMS && git -C "$ROOT" rev-parse HEAD > COMMIT && echo "$V" > VERSION && cat SHA256SUMS COMMIT VERSION'
 
 function deployScript(b: BuildCfg, body: string) {
@@ -181,7 +206,7 @@ fi
 yes | "$SDKM" --licenses >/dev/null 2>&1 || true
 cd ${sh(dir)}
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-[ -f gradle/wrapper/gradle-wrapper.properties ] && sed -i 's#services.gradle.org/distributions/#mirrors.cloud.tencent.com/gradle/#' gradle/wrapper/gradle-wrapper.properties
+${GRADLE_DIST}
 cat > /tmp/op-mirror.gradle <<'OPINIT'
 def ali = ['https://maven.aliyun.com/repository/google', 'https://maven.aliyun.com/repository/central', 'https://maven.aliyun.com/repository/gradle-plugin']
 settingsEvaluated { s ->
@@ -209,7 +234,7 @@ ${SUMS}`
     const dirs = (s.dirs ?? []).map((d) => `[ -e ${sh(`${dir}/${d}`)} ] && cp -r ${sh(`${dir}/${d}`)} "$BUNDLE/" || { echo "没找到要带上的目录 ${d}"; exit 1; }`).join('\n')
     const build = gradle
       ? `cd ${sh(dir)}
-[ -f gradle/wrapper/gradle-wrapper.properties ] && sed -i 's#services.gradle.org/distributions/#mirrors.cloud.tencent.com/gradle/#' gradle/wrapper/gradle-wrapper.properties
+${GRADLE_DIST}
 chmod +x gradlew
 ./gradlew --no-daemon --console=plain --max-workers=2 -Dorg.gradle.jvmargs="-Xmx2g -Dfile.encoding=UTF-8" ${s.task || 'clean build -x test'}
 cd "$ROOT"`

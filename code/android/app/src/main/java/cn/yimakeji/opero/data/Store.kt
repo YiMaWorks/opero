@@ -13,8 +13,9 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * 本机保存：连的是哪套 Opero、这台手机的设备令牌（系统密钥库加密后再存）、推送取到哪了、解锁设置。
- * 一人一套：没有账号密码，配对时拿到一个设备令牌，网页里「我 → 账号安全 → 手机」能随时作废。
+ * 本机保存：连的是哪套 Opero、这台手机的设备令牌和会话令牌（系统密钥库加密后再存）、推送取到哪了、解锁设置。
+ * 登录（账号密码 / 配对码）拿到设备令牌；会话令牌用设备令牌换（POST /api/app/session），调主人的接口用它。
+ * 网页里「我 → 账号安全」能随时断开这台手机（docs/api/README.md「登录」）。
  */
 class Store(ctx: Context) {
     private val sp: SharedPreferences = ctx.getSharedPreferences("opero", Context.MODE_PRIVATE)
@@ -24,10 +25,43 @@ class Store(ctx: Context) {
         get() = sp.getString("server", null)
         set(v) { sp.edit().apply { if (v == null) remove("server") else putString("server", v.trim().trimEnd('/')) }.apply() }
 
-    /** 配对拿到的设备令牌；null = 没配对（只打开网页、收不到推送） */
+    /** 登录 / 配对拿到的设备令牌；null = 没登录 */
     var deviceToken: String?
         get() = sp.getString("dt", null)?.let { Crypto.open(it) }
         set(v) { sp.edit().apply { if (v == null) remove("dt") else putString("dt", Crypto.seal(v)) }.commit() }
+
+    /** 主人的会话令牌（调主人的接口带 Authorization: Bearer）；过期了用设备令牌再换 */
+    var sessionToken: String?
+        get() = sp.getString("st", null)?.let { Crypto.open(it) }
+        set(v) { sp.edit().apply { if (v == null) remove("st") else putString("st", Crypto.seal(v)) }.commit() }
+
+    /** 上次登录用的账号（邮箱），登录页预填 */
+    var email: String?
+        get() = sp.getString("email", null)
+        set(v) { sp.edit().putString("email", v).apply() }
+
+    /** Opero 设置里的语言（settings.lang；auto / zh-CN / en…），打开时先用它，不闪 */
+    var lang: String?
+        get() = sp.getString("lang", null)
+        set(v) { sp.edit().putString("lang", v).apply() }
+
+    val loggedIn: Boolean get() = server != null && deviceToken != null
+
+    /** 聊天输入框的草稿：按会话记（发出去清掉） */
+    fun draft(sid: String): String = drafts().optString(sid)
+    fun setDraft(sid: String, text: String) {
+        val o = drafts()
+        if (text.isBlank()) o.remove(sid) else o.put(sid, text)
+        sp.edit().putString("drafts", o.toString()).apply()
+    }
+    private fun drafts() = try { org.json.JSONObject(sp.getString("drafts", null) ?: "{}") } catch (_: Exception) { org.json.JSONObject() }
+
+    /** 「上下文快满」点过「先不换」的（员工 + 第几段 work），这一段里不再提示 */
+    fun ctxOff(key: String): Boolean = key in (sp.getStringSet("ctx_off", null) ?: emptySet())
+    fun setCtxOff(key: String) {
+        val set = (sp.getStringSet("ctx_off", null) ?: emptySet()).toMutableSet().apply { add(key) }
+        sp.edit().putStringSet("ctx_off", set.toList().takeLast(200).toSet()).apply()
+    }
 
     val deviceId: String
         get() = sp.getString("device_id", null) ?: UUID.randomUUID().toString().also { sp.edit().putString("device_id", it).apply() }
@@ -59,8 +93,10 @@ class Store(ctx: Context) {
         get() = sp.getBoolean("dark", false)
         set(v) { sp.edit().putBoolean("dark", v).apply() }
 
+    /** 退出登录 / 被断开：令牌都删掉（地址和账号留着，重新登录时预填） */
     fun clearPairing() {
         deviceToken = null
+        sessionToken = null
         pushLast = -1
     }
 }

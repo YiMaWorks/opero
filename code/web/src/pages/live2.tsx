@@ -9,7 +9,7 @@ import { Empty, Field, PageHeader, Row, Section, Segmented, Tag, Toggle } from '
 import { headNav, type PageProps } from './nav'
 import { AskBar } from '../components/AskBar'
 
-// ======================= 员工档案里的：记忆、会话、执行器 =======================
+// ======================= 员工资料里的：记忆、会话、执行器 =======================
 export function EmployeeWorkSections({ e, nav }: { e: Employee; nav: PageProps['nav'] }) {
   const working = useStore((s) => s.sessions.find((x) => x.employee === e.id)?.working)
   const sid = useStore((s) => s.sessions.find((x) => x.employee === e.id)?.id)
@@ -303,7 +303,6 @@ export function WorkspaceAutoSections({ w, nav }: { w: Workspace; nav?: PageProp
       <Section title="自动同步">
         <label className="lrow"><span className="row-main"><span className="row-title">干完自动提交推送</span><span className="row-sub">员工开工前拉到最新（冲突会告诉它先解决）；这一轮干完有改动就提交（出错的、你点停止的都标「[未完成]」照样提交，做了一半的不丢）再推送，被拒就变基一次再推。要配了令牌才推送</span></span><Toggle on={w.autoSync !== false} onChange={(v) => call('PUT', `/api/workspaces/${w.id}`, { autoSync: v }, v ? '已开自动同步' : '已关：员工自己用 git_sync')} /></label>
       </Section>
-      <BuildSection w={w} />
       <Section title={`发布环境 · ${list.length}`} right={<button className="btn ghost sm" onClick={() => setEditing('new')}>手动加</button>}>
         {list.length === 0 && !editing && <Empty>还没有：跟上面的员工说一句「加一个测试环境」，它会看好服务器、目录建好；发生产时会先问你</Empty>}
         {list.map((d) => {
@@ -330,8 +329,8 @@ const pipeReady = (b: BuildCfg) => (b.provider === 'yunxiao' ? !!b.yunxiao?.pipe
 const pipeAt = (b: BuildCfg) => b.yunxiao?.at ?? b.github?.at ?? b.gitlab?.at ?? b.jenkins?.at
 const KIND: Record<BuildCfg['kind'], string> = { node: 'Node', go: 'Go', android: '安卓 App', spring: 'Java（Spring）', custom: '自定义命令' }
 
-/** 编译组件（网页、安卓、后台…）：每个有自己的模板、在哪编、流水线，各自试编、各自生成流水线；发布目标选发哪个 */
-function BuildSection({ w }: { w: Workspace }) {
+/** 编译组件（网页、安卓、后台…）：每个有自己的模板、在哪编、流水线，各自试编、各自生成流水线；发布目标选发哪个。放在项目页最上面 */
+export function BuildSection({ w }: { w: Workspace }) {
   const list = w.builds ?? []
   const [editing, setEditing] = useState<string | null>(null) // 组件编号，或 'new'
   const save = async (next: BuildComp[], msg: string) => !!(await call('PUT', `/api/workspaces/${w.id}`, { builds: next }, msg))

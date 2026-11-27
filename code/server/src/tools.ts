@@ -224,7 +224,7 @@ async function approve(run: Run, emp: Employee, a: { tool_name?: string; input?:
   const what = String(input.description ?? '').trim()
   const yes = await confirmCard(run, emp, {
     title: what || `要${verb}`, detail: summary,
-    why: `你给这个员工选的审核方式是「${emp.approval === 'ask' ? '每一步都问' : '改文件自动，跑命令要问'}」（员工档案里能改成「自动」）`,
+    why: `你给这个员工选的审核方式是「${emp.approval === 'ask' ? '每一步都问' : '改文件自动，跑命令要问'}」（员工资料里能改成「自动」）`,
     note: what ? `${emp.name} 要${verb}` : '',
   })
   return yes ? allow : deny('主人没同意，换个办法或者问问主人')
@@ -280,7 +280,7 @@ function sendFile(emp: Employee, a: { path?: string; name?: string }): ToolResul
 }
 export const fmtSize = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
 
-/** 员工能不能用这个凭证：总开关开着，并且主人在员工档案「能用的凭证」里给它勾了 */
+/** 员工能不能用这个凭证：总开关开着，并且主人在员工资料「能用的凭证」里给它勾了 */
 function credBlock(emp: Employee, id: string | undefined, what: string): string {
   if (!id) return ''
   const c = get<Credential>('credentials', id)
@@ -393,7 +393,7 @@ const myDomains = (emp: Employee) => all<dns.Domain>('domains').filter((d) => (e
 function grantedDomain(emp: Employee, name: string): dns.Domain | string {
   const d = all<dns.Domain>('domains').find((x) => x.domain === name.trim().replace(/\.$/, '').toLowerCase())
   if (!d) return `没有登记域名 ${name}（主人在「应用 → 域名」里登记）`
-  if (!(emp.dns ?? []).includes(d.id)) return `主人没给你改 ${d.domain} 的权限（员工档案里开）`
+  if (!(emp.dns ?? []).includes(d.id)) return `主人没给你改 ${d.domain} 的权限（员工资料里开）`
   return d
 }
 async function dnsList(emp: Employee, a: { domain?: string }): Promise<ToolResult> {
@@ -860,7 +860,7 @@ function kbSave(emp: Employee, a: { name?: string; kind?: string; summary?: stri
   return ok(old ? '已更新' : '已加进知识库')
 }
 
-// ---------- 建 / 改员工（员工档案里开了「能管员工」的才行，都要主人点确认） ----------
+// ---------- 建 / 改员工（员工资料里开了「能管员工」的才行，都要主人点确认） ----------
 async function empCreate(run: Run, emp: Employee, a: any): Promise<ToolResult> {
   if (!emp.canManage) return fail('你没有管员工的权限：主人在你的档案里打开「能建、改别的员工」才行')
   const name = String(a.name ?? '').trim().slice(0, 30)

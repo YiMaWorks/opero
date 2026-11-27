@@ -1,4 +1,4 @@
-// 真的一套（LIVE）用的页面：开机 / 登录、AI 执行器、服务器、凭证、数据、触发器、知识库、项目、员工档案、账号安全。
+// 真的一套（LIVE）用的页面：开机 / 登录、AI 执行器、服务器、凭证、数据、触发器、知识库、项目、员工资料、账号安全。
 // 演示（/demo）还是用原来那些页面和假数据；没做完的功能在真的一套里显示「还在做」。
 import { useEffect, useState, type ReactNode } from 'react'
 import type { Credential, CredGroup, DataSource, Employee, EnvTag, KbDoc, Trigger, Workspace } from '../types'
@@ -7,7 +7,7 @@ import { api, boot, call } from '../live'
 import { Avatar } from '../components/Avatar'
 import { Mark, Wordmark } from '../components/brand'
 import { Empty, Field, Meter, PageHeader, Row, Section, Segmented, Sheet, Stat, StatusDot, Table, Tag, Toggle } from '../components/ui'
-import { IconCheck, IconPlus } from '../components/icons'
+import { IconCheck, IconChevron, IconPlus } from '../components/icons'
 import { Markdown } from '../components/Markdown'
 import { WorkSheet } from '../components/WorkSheet'
 import { AskBar, Manual } from '../components/AskBar'
@@ -17,7 +17,7 @@ import { LangPicker } from '../components/LangPicker'
 import { useLang } from '../i18n'
 import { CUR } from '../mode'
 import { headNav, type PageProps } from './nav'
-import { DirsSection, EmployeeWorkSections, PolicySection, WorkspaceAutoSections } from './live2'
+import { BuildSection, DirsSection, EmployeeWorkSections, PolicySection, WorkspaceAutoSections } from './live2'
 import { LogViewer } from './live3'
 import { EmployeeCredsSection } from './creds'
 import { getPasskey, passkeySupported, createPasskey } from '../webauthn'
@@ -987,6 +987,8 @@ export function LiveWorkspaceAddPage({ params, nav }: PageProps) {
   const [credential, setCredential] = useState<string>(params.credential ?? creds[0]?.id ?? '')
   const [repos, setRepos] = useState<RepoItem[] | null>(null)
   const [q, setQ] = useState('')
+  // 先选分组（组织 / 命名空间），再选里面的仓库：令牌能看到的仓库可能很多、跨好几个组织，不一股脑全列出来
+  const [grp, setGrp] = useState<string | null>(null)
   const [manual, setManual] = useState(false)
   const [url, setUrl] = useState('')
   const [br, setBr] = useState<{ def?: string; branches: string[] } | null>(null)
@@ -997,7 +999,7 @@ export function LiveWorkspaceAddPage({ params, nav }: PageProps) {
   const [server, setServer] = useState(workHosts.find((x) => x.id === 'local')?.id ?? workHosts[0]?.id ?? 'local')
   const [busy, setBusy] = useState(false)
   useEffect(() => {
-    setRepos(null); setUrl(''); setManual(false)
+    setRepos(null); setUrl(''); setManual(false); setGrp(null); setQ('')
     if (!credential) { setRepos([]); return }
     call<{ repos: RepoItem[] }>('GET', `/api/credentials/${credential}/repos`).then((r) => setRepos(r?.repos ?? []))
   }, [credential])
@@ -1014,7 +1016,18 @@ export function LiveWorkspaceAddPage({ params, nav }: PageProps) {
     return () => clearTimeout(t)
   }, [url]) // eslint-disable-line react-hooks/exhaustive-deps
   const picked = repos?.find((x) => x.url === url)
-  const shown = (repos ?? []).filter((x) => !q || x.name.toLowerCase().includes(q.toLowerCase()))
+  const groupOf = (x: RepoItem) => x.group || '（没有分组）'
+  /** 分组：仓库数、最近更新；最近动过的排前面。只有一个分组就不分层 */
+  const groups = (() => {
+    const m = new Map<string, { name: string; n: number; updated: number }>()
+    for (const x of repos ?? []) { const g = groupOf(x); const cur = m.get(g) ?? { name: g, n: 0, updated: 0 }; cur.n++; cur.updated = Math.max(cur.updated, x.updated ?? 0); m.set(g, cur) }
+    return [...m.values()].sort((a, b) => b.updated - a.updated || a.name.localeCompare(b.name))
+  })()
+  const layered = groups.length > 1
+  const inGroup = layered ? grp : groups[0]?.name ?? null
+  // 搜索：在分组里就只搜这个分组；还没进分组时跨所有分组搜（结果带分组名）
+  const shown = (repos ?? []).filter((x) => (inGroup ? groupOf(x) === inGroup : !!q) && (!q || `${x.name} ${x.group ?? ''}`.toLowerCase().includes(q.toLowerCase())))
+  const showGroups = layered && !inGroup && !q
   const save = async () => {
     setBusy(true)
     const r = await call('POST', '/api/workspaces', { repo: url.trim(), branch, name: name.trim() || lastSeg(url), credential, server }, '在拉代码，好了会显示分支和提交')
@@ -1059,22 +1072,41 @@ export function LiveWorkspaceAddPage({ params, nav }: PageProps) {
           {credential && !manual ? (
             <>
               {repos === null && <div className="sub wsadd-wait"><i className="spinner" /> 在读这个账号能访问的仓库…</div>}
-              {repos && repos.length > 6 && <input className="wsadd-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={`搜 ${repos.length} 个仓库`} />}
               {repos && repos.length === 0 && <Empty>这个账号没读到仓库：检查令牌有没有勾读仓库的权限，或者手填地址</Empty>}
-              <div className="wsadd-repos">
-                {shown.slice(0, 80).map((x) => {
-                  const on = x.url === url
-                  const short = x.short ?? lastSeg(x.url)
-                  return (
-                    <button key={x.url} className={'wsadd-repo' + (on ? ' on' : '')} onClick={() => setUrl(x.url)}>
-                      <span className="wsadd-repo-ico">{on ? <IconCheck size={14} /> : short.slice(0, 1).toUpperCase()}</span>
-                      <span className="wsadd-repo-main"><b data-no-i18n="">{short}</b><small data-no-i18n="">{x.group || ' '}</small></span>
-                      <span className="wsadd-repo-meta">{x.private && <span className="wsadd-tag">私有</span>}<small>{agoText(x.updated)}</small></span>
+              {layered && inGroup && (
+                <div className="wsadd-crumb">
+                  <button type="button" className="btn ghost sm" onClick={() => { setGrp(null); setQ('') }}>← 全部分组</button>
+                  <b data-no-i18n="">{inGroup}</b><span className="sub">{`${groups.find((g) => g.name === inGroup)?.n ?? 0} 个仓库`}</span>
+                </div>
+              )}
+              {repos && repos.length > 6 && <input className="wsadd-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={inGroup && layered ? `在「${inGroup}」里搜` : layered ? `搜全部 ${repos.length} 个仓库（先选分组更清楚）` : `搜 ${repos.length} 个仓库`} />}
+              {showGroups ? (
+                <div className="wsadd-repos">
+                  {groups.map((g) => (
+                    <button key={g.name} className="wsadd-repo grp" onClick={() => { setGrp(g.name); setQ('') }}>
+                      <span className="wsadd-repo-ico">{g.name.replace(/^（.*）$/, '·').slice(0, 1).toUpperCase()}</span>
+                      <span className="wsadd-repo-main"><b data-no-i18n="">{g.name}</b><small>{`${g.n} 个仓库`}</small></span>
+                      <span className="wsadd-repo-meta"><small>{agoText(g.updated)}</small><span className="row-chev"><IconChevron /></span></span>
                     </button>
-                  )
-                })}
-              </div>
-              {shown.length > 80 && <p className="hint">还有 {shown.length - 80} 个，搜一下名字</p>}
+                  ))}
+                </div>
+              ) : (
+                <div className="wsadd-repos">
+                  {shown.slice(0, 80).map((x) => {
+                    const on = x.url === url
+                    const short = x.short ?? lastSeg(x.url)
+                    return (
+                      <button key={x.url} className={'wsadd-repo' + (on ? ' on' : '')} onClick={() => setUrl(x.url)}>
+                        <span className="wsadd-repo-ico">{on ? <IconCheck size={14} /> : short.slice(0, 1).toUpperCase()}</span>
+                        <span className="wsadd-repo-main"><b data-no-i18n="">{short}</b><small data-no-i18n="">{inGroup ? '' : x.group || ' '}</small></span>
+                        <span className="wsadd-repo-meta">{x.private && <span className="wsadd-tag">私有</span>}<small>{agoText(x.updated)}</small></span>
+                      </button>
+                    )
+                  })}
+                  {q && shown.length === 0 && <span className="sub">没搜到</span>}
+                </div>
+              )}
+              {!showGroups && shown.length > 80 && <p className="hint">还有 {shown.length - 80} 个，搜一下名字</p>}
             </>
           ) : (
             <input className="mono wsadd-url" value={url} onChange={(e) => setUrl(e.target.value.trim())} placeholder="https://github.com/you/app.git" autoFocus />
@@ -1166,6 +1198,7 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
       <PageHeader title={w.name} sub={`${w.provider} · ${short}`} {...headNav(nav)} right={<span className="row-actions"><button className="btn ghost sm" onClick={() => copy(w.repo)}>复制地址</button><button className="btn default sm" disabled={busy} onClick={refresh}>{busy ? '刷新中…' : '刷新'}</button></span>} />
       <div className="page-body">
         {w.error && <div className="pad"><div className="banner b-warn">{w.error}</div></div>}
+        <BuildSection w={w} />
         <Section title={`员工 · ${users.length}`} right={<button className="btn ghost sm" onClick={addEmp}>+ 加一个员工</button>}>
           {users.length === 0 && <Empty>还没有员工：点右上角「+ 加一个员工」，点了就建好</Empty>}
           {users.map((e) => (
@@ -1210,7 +1243,7 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
   )
 }
 
-// ======================= 员工档案 =======================
+// ======================= 员工资料 =======================
 export function LiveEmployeePage({ params, nav }: PageProps) {
   const e = useStore((s) => s.employees.find((x) => x.id === params.id))
   const usage = useStore((s) => s.usage)
@@ -1233,7 +1266,7 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
   }
   return (
     <div className="page">
-      <PageHeader title={e.name} sub="员工档案" {...headNav(nav)} right={<button className="btn default sm" onClick={() => nav.push({ page: 'employeeEdit', params: { id: e.id } })}>编辑</button>} />
+      <PageHeader title={e.name} sub="员工资料" {...headNav(nav)} right={<button className="btn default sm" onClick={() => nav.push({ page: 'employeeEdit', params: { id: e.id } })}>编辑</button>} />
       <div className="page-body">
         <div className="hero">
           <Avatar id={e.id} size={64} />
@@ -1251,7 +1284,7 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
           </div>
         )}
         <Section title="work" right={<span className="sub">选了就记住</span>}>
-          <Row title="执行器" right={e.executor} />
+          <Row title="执行器" right={e.executor} chevron onClick={() => setWork(true)} />
           <Row title="模型" right={e.model} chevron onClick={() => setWork(true)} />
           <Row title="思考方式" right={effortLabel(e.effort)} chevron onClick={() => setWork(true)} />
           <Row title="审核方式" right={approvalLabel(e.approval)} chevron onClick={() => setWork(true)} />

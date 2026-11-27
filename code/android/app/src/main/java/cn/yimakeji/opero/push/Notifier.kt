@@ -127,5 +127,5 @@ object Notifier {
     }
 }
 
-/** 正在前台看的会话（网页通过 OperoNative.setRoute 告诉外壳）：推的就是这个会话时不弹 */
+/** 正在前台看的会话（原生聊天页打开、App 在前台时记着，ui/chat/ChatScreen.kt）：推的就是这个会话时不弹 */
 object VisibleRoute { @Volatile var route: String? = null }

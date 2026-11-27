@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 /**
  * 指纹 / 面容：
  *   - 解锁 App：打开、离开超过设定时间再回来，先盖一层锁屏，验过才能看（设置里开，默认关）
- *   - 验证本人（危险操作、看明文…）：网页调 OperoNative.verify → 这里弹系统验证；30 分钟内验过不再问
+ *   - 验证本人（危险操作、看明文…）：网页调 OperoNative.verify → 这里弹系统验证；5 分钟内验过不再问（和后台 VERIFY_MS 一致，docs/api/README.md「验证本人」）
  *   没录指纹 / 面容的手机可以用锁屏密码（DEVICE_CREDENTIAL）
  */
 object AppLock {
@@ -52,9 +52,9 @@ object AppLock {
         else -> Tr.s(R.string.bio_unsupported)
     }
 
-    private const val GRACE_MS = 30 * 60_000L
+    private const val GRACE_MS = 5 * 60_000L
     @Volatile private var verifiedAt = 0L
-    /** 验证本人：30 分钟内验过直接过 */
+    /** 验证本人：5 分钟内验过直接过 */
     fun verify(activity: FragmentActivity, title: String, subtitle: String?, onOk: () -> Unit, onFail: (String?) -> Unit) {
         if (verifiedAt > 0 && now() - verifiedAt < GRACE_MS) { onOk(); return }
         prompt(activity, title, subtitle, onOk = { verifiedAt = now(); onOk() }, onFail = onFail)

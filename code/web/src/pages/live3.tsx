@@ -25,7 +25,7 @@ export function DomainsPage({ nav }: PageProps) {
   const add = (domain: string) => zones && call('POST', '/api/domains', { domain, provider: zones.provider, cred }, `已登记 ${domain}`)
   return (
     <div className="page">
-      <PageHeader title="域名" sub="登记后在员工档案里开给员工，它就能改解析" {...headNav(nav)} />
+      <PageHeader title="域名" sub="登记后在员工资料里开给员工，它就能改解析" {...headNav(nav)} />
       <div className="page-body">
         <Section flush>
           {list.length === 0 && <Empty>还没有登记域名</Empty>}

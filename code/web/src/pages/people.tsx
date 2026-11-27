@@ -1,4 +1,4 @@
-// 员工：列表 · 档案 · 新建 / 编辑 · 记忆
+// 员工：列表 · 员工资料 · 新建 / 编辑 · 记忆
 import { useEffect, useState } from 'react'
 import type { Employee } from '../types'
 import { memoryFiles } from '../data/mock'
@@ -76,7 +76,7 @@ export function EmployeePage({ params, nav }: PageProps) {
   const myCreds = creds.filter((c) => (c.usedBy ?? []).includes(e.id) || (c.usedBy ?? []).includes('全部员工'))
   return (
     <div className="page">
-      <PageHeader title={e.name} sub="员工档案" {...headNav(nav)}
+      <PageHeader title={e.name} sub="员工资料" {...headNav(nav)}
         right={<button className="btn default sm" onClick={() => nav.push({ page: 'employeeEdit', params: { id: e.id } })}>编辑</button>} />
       <div className="page-body">
         <div className="hero">
@@ -104,7 +104,7 @@ export function EmployeePage({ params, nav }: PageProps) {
         </Section>
 
         <Section title="基本">
-          <Row title="执行器" right={e.executor} />
+          <Row title="执行器" right={e.executor} chevron onClick={() => setWork(true)} />
           <Row title="跑在" right={e.host} />
           <Row title="项目" right={e.workspace} />
           {e.persona && <Row title="人设" right={e.persona} />}
@@ -475,7 +475,7 @@ export function ChatSettingsPage({ params, nav }: PageProps) {
             <span className="row-main"><span className="row-title">置顶聊天</span></span>
             <Toggle on={!!sess?.pinned} onChange={() => togglePin(sess ? sess.id : sessionFor(e.id))} />
           </div>
-          <Row title="员工档案" sub="职责、work 设置、记忆、权限" chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })} />
+          <Row title="员工资料" sub="职责、work 设置、记忆、权限" chevron onClick={() => nav.push({ page: 'employee', params: { id: e.id } })} />
         </Section>
       </div>
     </div>
