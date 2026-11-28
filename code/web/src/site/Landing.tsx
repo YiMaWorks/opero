@@ -68,6 +68,17 @@ const ROWS: { zh: string; en: string; v: string[] }[] = [
 ]
 const COLS = { zh: ['Opero', '手机遥控 Agent', '个人 AI 助理', 'AI SRE', 'AI 员工平台'], en: ['Opero', 'Agent remotes', 'Personal AI agents', 'AI SRE', 'AI workforce'] }
 
+/** 命令框：整条显示（手机上换行，不截断），右上角「复制」 */
+function CodeBox({ text, lang }: { text: string; lang: Lang }) {
+  const [ok, setOk] = useState(false)
+  return (
+    <div className="site-codebox">
+      <pre className="site-code"><code>{text}</code></pre>
+      <button type="button" onClick={() => { navigator.clipboard?.writeText(text).then(() => { setOk(true); setTimeout(() => setOk(false), 1500) }).catch(() => {}) }}>{ok ? (lang === 'zh' ? '已复制' : 'Copied') : (lang === 'zh' ? '复制' : 'Copy')}</button>
+    </div>
+  )
+}
+
 export default function Landing() {
   const code = useLang()
   // 英文用英文底稿；其它语言用中文底稿，页面上再按字典换成那个语言
@@ -77,13 +88,21 @@ export default function Landing() {
   const t = T[lang]
   const m = (f: string) => `/media/${zhish ? 'zh' : 'en'}/${f}`
   useEffect(() => { document.title = `Opero — ${t.tagline}` }, [t.tagline])
+  // 搜索引擎（会跑 JS 的，比如 Google）看到的语言、描述、规范地址跟着当前语言走；不跑 JS 的看 index.html 里写死的那份
+  useEffect(() => {
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
+    const meta = (sel: string, make: () => HTMLElement, attr: string, val: string) => { let el = document.head.querySelector(sel); if (!el) { el = make(); document.head.appendChild(el) } el.setAttribute(attr, val) }
+    meta('meta[name="description"]', () => Object.assign(document.createElement('meta'), { name: 'description' }), 'content', t.sub)
+    meta('link[rel="canonical"]', () => Object.assign(document.createElement('link'), { rel: 'canonical' }), 'href', `${location.origin}/`)
+  }, [lang, t.sub])
   return (
     <div className="site" onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 40)}>
       <header className={'site-nav' + (scrolled ? '' : ' on-dark')}>
         <a className="site-brand" href="/"><img src="/media/logo.png" alt="Opero" /></a>
         <nav>{t.nav.map((n, i) => <a key={n} href={['#why', '#screens', '#compare', '#install'][i]}>{n}</a>)}</nav>
         <span className="grow" />
-        <LangPicker className="site-lang" />
+        {/* 手机上只留一个地球（文字会被截成「跟随系…」） */}
+        <span className="site-lang-wrap" title="Language"><svg className="site-lang-ico" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></svg><LangPicker className="site-lang" /></span>
         {GITHUB_URL && <a className="site-btn ghost" href={GITHUB_URL} target="_blank" rel="noreferrer">{t.github}</a>}
         <a className="site-btn" href="/demo">{t.demo}</a>
       </header>
@@ -107,9 +126,10 @@ export default function Landing() {
 
       <section id="screens" className="site-sec">
         <h2>{t.screens}</h2>
-        <img className="site-media" src={m('ide-to-chat.png')} alt="" loading="lazy" />
+        {/* 手机上截图太小：点了打开原图看 */}
+        <a className="site-zoom" href={m('ide-to-chat.png')} target="_blank" rel="noreferrer"><img className="site-media" src={m('ide-to-chat.png')} alt={t.screens} loading="lazy" /><span>{lang === 'zh' ? '点开看大图' : 'Tap to enlarge'}</span></a>
         {t.screenItems.map(([h, f]) => (
-          <figure key={f}><figcaption>{h}</figcaption><img className="site-media" src={m(`${f}.png`)} alt={h} loading="lazy" /></figure>
+          <figure key={f}><figcaption>{h}</figcaption><a className="site-zoom" href={m(`${f}.png`)} target="_blank" rel="noreferrer"><img className="site-media" src={m(`${f}.png`)} alt={h} loading="lazy" /><span>{lang === 'zh' ? '点开看大图' : 'Tap to enlarge'}</span></a></figure>
         ))}
       </section>
 
@@ -121,6 +141,16 @@ export default function Landing() {
             <tbody>{ROWS.map((r) => <tr key={r.en}><td>{r[lang]}</td>{r.v.map((v, i) => <td key={i} className={i === 0 ? 'me' : ''}>{v}</td>)}</tr>)}</tbody>
           </table>
         </div>
+        {/* 手机：表格太挤（第一列一行两三个字、右边被截），改成一项一张卡 */}
+        <div className="site-cmp-cards">
+          {ROWS.map((r) => (
+            <div key={r.en} className="site-cmp-card">
+              <b>{r[lang]}</b>
+              <div className="site-cmp-vals">{r.v.map((v, i) => <span key={i} className={(i === 0 ? 'me ' : '') + (v === '✓' ? 'yes' : v === '—' ? 'no' : 'part')}><i>{v === '—' ? '–' : v}</i>{COLS[lang][i]}</span>)}</div>
+            </div>
+          ))}
+          <p className="site-cmp-note">{lang === 'zh' ? '✓ 有　~ 部分有　– 没有' : '✓ yes　~ partly　– no'}</p>
+        </div>
       </section>
 
       <section id="install" className="site-sec">
@@ -128,9 +158,9 @@ export default function Landing() {
         <p className="site-lead">{t.installSub}</p>
         <ol className="site-steps">{t.steps.map((s) => <li key={s}>{s}</li>)}</ol>
         <p className="site-lead">{t.manual}</p>
-        <pre className="site-code"><code>{INSTALL_CMD}</code></pre>
+        <CodeBox text={INSTALL_CMD} lang={lang} />
         <p className="site-lead">{t.aiLabel}</p>
-        <pre className="site-code"><code>{AI_PROMPT[zhish ? 'zh' : 'en']}</code></pre>
+        <CodeBox text={AI_PROMPT[zhish ? 'zh' : 'en']} lang={lang} />
         <p className="site-note"><a href={INSTALL_DOC} target="_blank" rel="noreferrer">{t.doc} →</a></p>
         <p className="site-note">{t.soon}</p>
       </section>

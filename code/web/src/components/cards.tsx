@@ -293,6 +293,8 @@ function ConfirmCard({ card, onAction, cls }: { card: Card; onAction: OnAction; 
       <Head card={card} title={d.title} tag={d.tag} tagCls="t-danger" />
       {d.note && <p className="confirm-who">{d.note}</p>}
       {open && d.why && <div className="banner b-warn">{d.why}</div>}
+      {/* 员工那时没等到（超时 / 那一轮结束 / 重启）：卡片照样有效，点了 Opero 告诉员工 */}
+      {open && d.late && <p className="card-late">员工先去做别的了；这张一直有效，你点了 Opero 会告诉它，同意的话它再做时直接放行</p>}
       {detail && (
         <div className="confirm-cmd">
           <button type="button" className="confirm-toggle" onClick={() => setShow(!show)}>{show ? '收起' : '看具体命令 / 内容'}</button>
@@ -318,6 +320,7 @@ function AskCard({ card, onAction }: { card: Card; onAction: OnAction }) {
           </button>
         ))}
       </div>
+      {open && d.late && <p className="card-late">员工先去做别的了；这张一直有效，你选了 Opero 会告诉它</p>}
       {open ? (
         <div className="card-foot">
           <span className="sub">AI 推荐的已选好</span>
@@ -390,7 +393,8 @@ function ReleaseCard({ card, onAction }: { card: Card; onAction: OnAction }) {
             </span>
             <span className="rel2-time">
               {x.s === 'done' || x.s === 'failed' ? (x.t0 && x.t1 ? dur(x.t1 - x.t0) : '')
-                : x.s === 'running' ? `${dur(now - x.t0)}${x.est ? ` / 约 ${dur(x.est)}` : ''}`
+                // 已经超过预估：不再写「/ 约 1 秒」这种对不上的（主人 2026-11-28）
+                : x.s === 'running' ? `${dur(now - x.t0)}${x.est && now - x.t0 <= x.est ? ` / 约 ${dur(x.est)}` : ''}`
                 : x.est ? `约 ${dur(x.est)}` : ''}
             </span>
           </li>

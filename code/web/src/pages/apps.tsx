@@ -1,4 +1,5 @@
 // 应用（插件）：服务器 · 发布 · 凭证 · 数据 · 触发器 · 插件 · 操作记录
+import { auditLabel } from '../auditLabels'
 import { useState } from 'react'
 import type { Channel, CredGroup, Credential, EnvTag, KbDoc, Trigger } from '../types'
 import {
@@ -527,7 +528,7 @@ export function AuditPage({ nav }: PageProps) {
         <Section flush>
           {shown.length === 0 && <Empty>没有</Empty>}
           {shown.map((a) => (
-            <Row key={a.id} title={<><span className="mono">{a.action}</span> · {a.target}</>}
+            <Row key={a.id} title={<>{auditLabel(a.action) ? <b className="audit-act">{auditLabel(a.action)}</b> : <span className="audit-code mono">{a.action}</span>}<span className="audit-target">{a.target}</span></>}
               sub={`${a.who}${a.via !== '—' ? ' 通过「' + a.via + '」' : ''} · ${a.how}`}
               right={<span className="audit-right"><span className="sub">{a.when}</span><Tag tone={a.result === '成功' ? (a.level === '危险' ? 'danger' : a.level === '写' ? 'warn' : 'mute') : 'danger'}>{a.result === '成功' ? a.level : a.result}</Tag></span>} />
           ))}

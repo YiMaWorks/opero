@@ -1,0 +1,36 @@
+# Opero
+
+> Opero is an open-source (Apache-2.0), self-hosted AI dev team that you run from a chat app. Claude Code and Codex "employees" work on your own servers: they catch bugs from logs, fix code, ship releases, watch logs and run ops. Credentials stay encrypted on your server and never reach the AI; you read conclusions and tap cards on your phone to decide.
+> Opero 是开源（Apache-2.0）、自己部署的 AI 开发团队：Claude Code / Codex 员工跑在你的服务器上，替你查 bug、改代码、发版本、盯日志、管运维；账号密码加密存在你自己的服务器上，AI 拿不到；你在手机上的聊天 App 里看结论、点卡片做决定。
+
+## What it does / 能做什么
+
+- Employees: each AI employee is one long-running chat with a role and memory (Claude Code, Codex, Qwen Code, CodeBuddy Code; several subscription accounts or API keys, and it switches accounts before one runs out).
+- Log monitoring: employees watch logs, find bugs on their own and report cause, impact and a suggestion as a card.
+- Fix and release in one chat: fix on a branch → checks → release → automatic rollback if it fails; production releases need the owner's confirmation (fingerprint / face).
+- Ops through tools (MCP): servers (via Opero's Agent), databases (read-only by default), DNS, signing certificates, app packages, knowledge base, schedules and webhooks.
+- Credentials: stored encrypted on your own server; the AI only sees results, never the secrets.
+- Clients: web (phone and desktop browsers) and an Android app; native Apple and Windows apps are in progress.
+- 中文：员工有角色、有记忆；日志巡检自己发现 bug；修复 → 检查 → 上线 → 回滚在一个聊天里；服务器、数据库、DNS、证书、安装包都由员工经 Opero 操作；危险操作要你本人确认。
+
+## Install / 安装
+
+1. A Linux server with systemd (2 vCPU / 4 GB or more).
+2. Run the one-line installer as root (the command is in the guide below).
+3. Open the address it prints: create your account → install Claude Code with one click → log in → add employees.
+
+Full guide / 完整安装说明: https://github.com/yimaworks/opero/blob/main/INSTALL.md
+
+## Links
+
+- Source code: https://github.com/yimaworks/opero
+- Website (中文): https://opero.yimakeji.cn/
+- Website (English): https://opero.yimaworks.com/
+- Live demo (mock data, connects to nothing): https://opero.yimaworks.com/demo
+- License: Apache-2.0
+
+## How it compares
+
+- vs. phone remotes for coding agents: Opero is a team of long-running employees with roles and memory, finds bugs from logs on its own, and runs fix → checks → release → rollback in one chat.
+- vs. personal AI assistants: built for software teams' development and ops work, self-hosted, using your existing access without handing secrets to the AI.
+- vs. AI SRE products: open source and self-hosted; it also writes and ships the fix, not just the alert.

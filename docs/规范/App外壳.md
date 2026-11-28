@@ -1,6 +1,6 @@
 # App 外壳规范（安卓，v0.1，2026-11-22）
 
-> **2026-11-25 起方向变了**：各端改成原生实现（安卓 Kotlin + Compose，核心页面先原生、其它页面先嵌网页），见 `docs/多端架构.md`。下面写的是现在这个 WebView 外壳的做法（推送、指纹、配对、更新这些照用），其中「界面全在网页里、不用原生写」那条不再适用。
+> **2026-11-28 主人定（安卓 0.5.0 起）**：App 的界面就用网页的手机版，原生只做外壳（这份规范的做法）。2026-11-25 起试过把会话列表 / 聊天做成原生，两套界面要各写一遍，挪到了 `code/android/native-ui/`（不参与编译）。登录页是原生的（账号密码 / 配对码 / 两步验证），登录后用票整页打开网页。
 >
 > 代码在 `code/android/`，网页那边是 `code/web/src/native.ts`。
 > 外壳做的：常驻推送 + 看门狗补取、严重告警追着响 + 「我知道了」、指纹解锁 / 验证本人 5 分钟、点通知直达、密钥库加密存令牌、App 内更新、edge-to-edge + 状态栏跟主题。
@@ -33,14 +33,17 @@
 | `version()` | 外壳版本 |
 | `verify(id, title, subtitle)` | 弹系统指纹 / 面容 / 锁屏密码；5 分钟内验过直接过（和后台 `VERIFY_MS` 一致）。验过后外壳调后台 `POST /api/app/verified`，结果回 `window.__operoNative.onVerify(id, ok, err)` |
 | `setTheme(dark)` | 状态栏、导航栏、底色跟着网页 |
-| `setBadge(n)` | 红点数（只算要你决定的）。安卓 0.4.0 起会话页签是原生的，自己算，这个不用了 |
-| `setRoute(route)` | 正在看的会话 `chat/<编号>`：推的就是它时不弹通知。安卓 0.4.0 起聊天是原生的，自己记，这个不用了 |
+| `setBadge(n)` | 红点数（只算要你决定的）。安卓桌面角标跟着通知走，外壳收下不用 |
+| `setRoute(route)` | 正在看的会话 `chat/<编号>`：推的就是它时不弹通知 |
+| `download(url, name)`（安卓 0.5.0） | 把文件存到手机：外壳带登录取 `url`（相对地址 / 绝对地址 / `data:`），图片进相册（Pictures/Opero），别的进「下载」（Download/Opero）；安卓 9 及以下让用户选位置。网页里 `<a download>`、`?dl=1` 的链接不调它也会被外壳的下载监听接住 |
+| `share(url, name)`（安卓 0.5.0） | 把文件交给系统分享面板（发微信、邮件…）。WebView 没有 `navigator.share`，网页在 App 里要分享文件就调它 |
+
+网页在哪调（web 0.52.2）：`native.ts` 的 `nativeDownload` / `nativeShare`；聊天文件 `components/FileView.tsx`（下载、分享、看大图里的按钮），安装包 `components/Packages.tsx` 的「下载」。不在 App 里或老外壳没有这两个方法时，网页照旧用浏览器的下载 / `navigator.share`。
 | `openExternal(url)` | 交给系统打开（邮件 / Slack / Telegram 原消息、文档链接；只认 http / mailto / tg / slack） |
 | `haptic()` | 轻震（长按、按住说话） |
 | `relogin()` | 网页登录过期（接口 401）：外壳用设备令牌重新要票再打开 |
-| `unpair()` | 断开这台手机，回到连接页 |
+| `unpair()` | 退出登录：断开这台手机，回到原生登录页 |
 | `getShell()` / `setShell(json)` | 「这台手机」的设置：`lockOn`、`lockAfter`（秒，0 = 每次）、`pushEnabled`、`insistent`；网页设置页在 App 里多一组「这台手机」 |
-| `pair(server, code)` | 只给外壳自带的连接页用 |
 | `open(route)`（可选） | 嵌入页（`?embed=1`）里点到别的页面：App 开原生页或再开一个嵌入页；`chat;emp=<员工>` = 打开聊天。外壳没有它，网页就在自己里面跳 |
 | `close()`（可选） | 嵌入页最外层点了关闭：App 退回上一层。外壳没有它，网页不显示关闭按钮 |
 
@@ -67,8 +70,7 @@
 | `POST /api/app/alarms/<编号>/ack` | 通知上点「我知道了」：不再响 | `{}` |
 | `GET /api/app/update?platform=android&build=` | 有没有新外壳 | `{versionCode, versionName, url, sha256, must, notes}` |
 
-设备令牌被作废（网页里断开了）→ 任何接口回 401 → 外壳清掉令牌，回连接页。
-后台还没有这些接口（现在的界面原型）→ 回 404 → 外壳不配对，直接打开地址（收不到推送，验证本人只在手机上验）。
+设备令牌被作废（网页里断开了、改了密码）→ 任何接口回 `401 DEVICE` → 外壳清掉令牌，回原生登录页并说明。
 
 **PushItem**：`{id, kind, title, body?, route?, alarm?}`
 - `kind`：`decide` 要你决定（高优先级、横幅）/ `alarm` 严重告警（闹钟铃声、长震、一直响到点「我知道了」）/ `info` 知道就行 / `clear` 收掉 `alarm` 那条（别处已处理 / 已恢复）。
@@ -76,9 +78,9 @@
 
 ## 4. 打开流程
 
-1. 没连过 → 连接页：填地址（**没有默认值**：Opero 没有公共服务器，App 只连用户自己装的那套；官网只是介绍和试用）+ 配对码（可不填）。点「连接」先 `GET <地址>/api/health`，回 `{"ok":true}` 才算是 Opero 后台，否则提示「这个地址不是 Opero 后台」。
-2. 配对过 → `POST /api/app/ticket` → 打开票地址；同时起常驻连接。
-3. 点通知 → 带 `route` 打开：安卓 0.4.0 起直接打开原生聊天（`chat/<会话>`）；以前的整页网页外壳是交给网页 `__operoNative.open(route)`。
+1. 没登录 → 原生登录页：填地址（**没有默认值**：Opero 没有公共服务器，App 只连用户自己装的那套；官网只是介绍和试用），先 `GET <地址>/api/health`，回 `{"ok":true}` 才算是 Opero 后台，否则提示「这个地址不是 Opero 后台」→ 账号密码（`/api/app/login`，开了两步验证再 `/api/app/login/mfa`），或者配对码（`/api/app/pair`）。
+2. 登录过 → `POST /api/app/ticket {route}` → 整页打开票地址；同时起常驻连接。返回键：网页能后退就后退，退到底回桌面。
+3. 点通知 → 带 `route`（`chat/<会话>`）：网页开着就交给网页 `__operoNative.open(route)`；还没开（或正在加载）就带在票里 / 加载完再交。
 4. 开了「指纹解锁 App」→ 冷启动、离开超过设定时间回来先盖锁屏；打开系统的选文件、相机、安装界面回来不锁。
 
 ## 5. 构建和发版

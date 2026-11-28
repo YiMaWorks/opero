@@ -7,13 +7,15 @@ import { cfg } from './config.ts'
 import { all, kvGet, kvSet } from './db.ts'
 import { clientIp, HttpError, json, match, parseCookies, readBody, type Ctx } from './http.ts'
 import * as auth from './auth.ts'
-import { expireStaleCards, interruptedRuns, migrateBuilds, migrateEmployeeCreds, migrateMenus, migrateRoles } from './api.ts'
+import { expireStaleCards, interruptedRuns, migrateBuilds, migrateEmployeeCreds, migrateMenus, migrateRoles, migrateCostReset } from './api.ts'
 import * as runner from './runner.ts'
 import * as agents from './agents.ts'
 import { ensureLocal, startHealthLoop } from './ssh.ts'
 import { startTriggerLoop } from './triggers.ts'
 import { startLocalProxy } from './tunnel.ts'
 import * as egress from './egress.ts'
+import { instanceHtml } from './sitehtml.ts'
+import * as agentUpgrade from './agentupgrade.ts'
 import * as inbox from './inbox.ts'
 import './notify.ts' // 推送同时转给外部提醒渠道
 import type { Device } from './types.ts'
@@ -40,13 +42,16 @@ function indexHtml(req: http.IncomingMessage): string | null {
   const base = basePath(req)
   if (indexCache?.mtime !== st.mtimeMs || indexCache.base !== base) {
     const raw = fs.readFileSync(p, 'utf8')
-    indexCache = { mtime: st.mtimeMs, base, html: raw.replace(/<base href="[^"]*"\s*\/?>/, `<base href="${base}" />`).replace('</head>', `<script>window.OPERO_MODE='instance'</script></head>`) }
+    indexCache = { mtime: st.mtimeMs, base, html: instanceHtml(raw, base) }
   }
   return indexCache.html
 }
 
 function serveStatic(req: http.IncomingMessage, res: http.ServerResponse, pathname: string) {
   const rel = path.normalize(decodeURIComponent(pathname)).replace(/^([/\\])+/, '')
+  // 官网给搜索引擎的文件：自己服务器上的 Opero 不给（不让收录）
+  if (rel === 'robots.txt') { res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' }); res.end('User-agent: *\nDisallow: /\n'); return }
+  if (rel === 'sitemap.xml' || rel === 'llms.txt') { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Not found'); return }
   const file = path.join(cfg.web, rel)
   if (rel && file.startsWith(cfg.web + path.sep) && !rel.endsWith('index.html')) {
     try {
@@ -147,6 +152,7 @@ migrateEmployeeCreds()
 migrateBuilds()
 migrateMenus()
 migrateRoles()
+migrateCostReset()
 // 网络出口：Opero 自己往外连的（fetch、邮件）按主人设的规则走（egress.ts）；要在收件箱、提醒这些开始连之前装好
 await egress.startInternalProxy()
 egress.installFetch()
@@ -161,6 +167,10 @@ server.listen(cfg.port, cfg.host, () => {
   inbox.start()
   startLocalProxy()
   startTriggerLoop()
+  // Codex 订阅账号的用量每 10 分钟问一次（Claude 的在干活时报）
+  runner.startQuotaLoop()
+  // Agent 比 Opero 旧就挑那台空闲的时候自己升
+  agentUpgrade.startLoop()
   // 被重启打断的员工：等几秒（Agent、执行器连好）让它接着做；10 分钟内同一个会话只续一次，免得「发版 → 重启 → 续上又发版」转圈
   setTimeout(() => {
     const last = kvGet<Record<string, number>>('resumedAt', {})

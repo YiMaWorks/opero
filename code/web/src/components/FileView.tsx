@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Copy, Download, Forward, Share2, X } from 'lucide-react'
 import type { Message } from '../types'
 import { toast } from '../store'
+import { canNativeShare, inApp, nativeDownload, nativeShare } from '../native'
 
 type F = NonNullable<Message['file']>
 
@@ -17,6 +18,8 @@ export function fileHref(f: F, dl = false): string {
 
 export function downloadFile(f: F) {
   if (!f.url) { toast('这个文件还没传好'); return }
+  // 安卓 App 里交给外壳存（WebView 的 <a download> 没有登录、文件名靠猜）
+  if (nativeDownload(fileHref(f, true), f.name)) { toast('正在存到手机'); return }
   const a = document.createElement('a')
   a.href = fileHref(f, true)
   a.download = f.name
@@ -33,11 +36,13 @@ async function blobOf(f: F): Promise<Blob> {
 }
 
 /** 这个浏览器能不能把文件交给系统分享（手机、Mac Safari、Windows 上的 Chrome / Edge 一般都能） */
-export const canShare = typeof navigator !== 'undefined' && typeof navigator.canShare === 'function'
+export const canShare = canNativeShare() || (typeof navigator !== 'undefined' && typeof navigator.canShare === 'function')
 /** 能不能把图片放进剪贴板（电脑上复制了直接粘到微信 / 飞书） */
-export const canCopyImage = typeof window !== 'undefined' && 'ClipboardItem' in window && !!navigator.clipboard?.write
+// App 里不给（WebView 的剪贴板不收图片；系统分享面板里能复制）
+export const canCopyImage = !inApp && typeof window !== 'undefined' && 'ClipboardItem' in window && !!navigator.clipboard?.write
 
 export async function shareFile(f: F) {
+  if (nativeShare(fileHref(f), f.name)) return
   try {
     const b = await blobOf(f)
     const file = new File([b], f.name, { type: b.type || 'application/octet-stream' })

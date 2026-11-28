@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -7,10 +7,100 @@
     <!-- 装在子路径下时后台把它换成前缀（比如 /opero/）；资源和接口都按它走 -->
     <base href="/" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-    <title>Opero</title>
+    <title>Opero — 你自己部署的 AI 开发团队，装在一个聊天 App 里</title>
+    <!--site-meta 官网给搜索引擎（SEO）和 AI 搜索（GEO）看的；装在自己服务器上的 Opero，后台会把这一段去掉并加 noindex（main.ts）-->
+    <meta name="description" content="Opero 是开源、自己部署的 AI 开发团队：Claude Code / Codex 员工跑在你的服务器上，替你查 bug、改代码、发版本、盯日志、管运维；账号密码加密存在你自己的服务器上，AI 拿不到；你在手机上的聊天 App 里看结论、点卡片做决定。Apache-2.0。" />
+    <meta name="keywords" content="Opero,AI 开发团队,AI 员工,Claude Code,Codex,自己部署,开源,AI 运维,日志巡检,自动修 bug,AI 发版,MCP,self-hosted AI dev team,AI agents" />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <link rel="canonical" href="https://opero.yimakeji.cn/" />
+    <link rel="alternate" hreflang="zh-CN" href="https://opero.yimakeji.cn/" />
+    <link rel="alternate" hreflang="en" href="https://opero.yimaworks.com/" />
+    <link rel="alternate" hreflang="x-default" href="https://opero.yimaworks.com/" />
+    <link rel="alternate" type="text/plain" title="llms.txt" href="/llms.txt" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Opero" />
+    <meta property="og:title" content="Opero — 你自己部署的 AI 开发团队，装在一个聊天 App 里" />
+    <meta property="og:description" content="Claude Code / Codex 员工跑在你的服务器上，替你查 bug、改代码、发版本；账号在你手上，AI 拿不到；你在手机上只做决定。开源 · Apache-2.0。" />
+    <meta property="og:url" content="https://opero.yimakeji.cn/" />
+    <meta property="og:image" content="https://opero.yimakeji.cn/media/zh/ide-to-chat.png" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:locale:alternate" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Opero — your self-hosted AI dev team, in a chat app" />
+    <meta name="twitter:description" content="Claude Code & Codex employees run on your servers: they catch bugs, fix code, ship releases and run ops. Your credentials stay yours. Open source, Apache-2.0." />
+    <meta name="twitter:image" content="https://opero.yimakeji.cn/media/zh/ide-to-chat.png" />
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "SoftwareApplication",
+          "name": "Opero",
+          "alternateName": ["Opero AI 开发团队", "Opero self-hosted AI dev team"],
+          "url": "https://opero.yimakeji.cn/",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "Linux (server); web browser and Android (clients)",
+          "description": "开源、自己部署的 AI 开发团队：Claude Code / Codex 员工跑在你的服务器上，查 bug、改代码、发版本、盯日志、管运维；密码加密存在你自己的服务器上，AI 拿不到；你在聊天 App 里做决定。Open-source, self-hosted AI dev team run from a chat app.",
+          "license": "https://www.apache.org/licenses/LICENSE-2.0",
+          "isAccessibleForFree": true,
+          "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+          "softwareHelp": "https://github.com/yimaworks/opero/blob/main/INSTALL.md",
+          "downloadUrl": "https://github.com/yimaworks/opero",
+          "sameAs": ["https://github.com/yimaworks/opero", "https://opero.yimaworks.com/"],
+          "featureList": ["Claude Code / Codex 员工：每个员工一个会话，有角色、有记忆", "日志巡检，自己从日志里发现 bug", "修复 → 检查 → 上线 → 回滚在一个聊天里", "服务器、数据库、云的账号加密存在你的服务器上，AI 只看到结果", "危险操作要你本人确认（指纹 / 面容）", "MCP 工具：员工能操作服务器、数据库、发布、DNS、知识库", "手机、电脑浏览器和安卓 App 都能用（苹果、Windows 原生 App 在做）"]
+        },
+        {
+          "@type": "SourceCode",
+          "name": "Opero",
+          "codeRepository": "https://github.com/yimaworks/opero",
+          "programmingLanguage": ["TypeScript", "Kotlin", "Swift", "C#"],
+          "license": "https://www.apache.org/licenses/LICENSE-2.0"
+        },
+        {
+          "@type": "FAQPage",
+          "mainEntity": [
+            { "@type": "Question", "name": "Opero 是什么？", "acceptedAnswer": { "@type": "Answer", "text": "Opero 是开源（Apache-2.0）、装在你自己服务器上的 AI 开发团队。Claude Code / Codex 当员工，替你查 bug、改代码、发版本、盯日志、管运维；你在手机或电脑上的聊天 App 里看结论、点卡片做决定。" } },
+            { "@type": "Question", "name": "AI 能拿到我的服务器密码、数据库账号吗？", "acceptedAnswer": { "@type": "Answer", "text": "拿不到。密码和令牌加密存在你自己的服务器上，员工通过 Opero 去连服务器、数据库和云，只看到结果；发生产、改生产数据这类危险操作要你本人确认。" } },
+            { "@type": "Question", "name": "怎么安装 Opero？", "acceptedAnswer": { "@type": "Answer", "text": "准备一台 Linux 服务器（2 核 4G 起，有 systemd），用 root 运行一条安装命令（见 https://github.com/yimaworks/opero/blob/main/INSTALL.md），然后打开它给的地址：设账号、一键安装 Claude Code、登录、建员工，全程点按钮。也可以把安装说明发给服务器上的 Claude Code / Codex 让它装。" } },
+            { "@type": "Question", "name": "支持哪些 AI？", "acceptedAnswer": { "@type": "Answer", "text": "Claude Code、Codex，也支持 Qwen Code、CodeBuddy Code；可以接多个订阅账号或 API Key，用到上限会自动换账号。" } },
+            { "@type": "Question", "name": "要钱吗？", "acceptedAnswer": { "@type": "Answer", "text": "Opero 本身免费、开源（Apache-2.0），可以随便 fork 二开。AI 用你自己的 Claude / ChatGPT 订阅或 API Key。" } },
+            { "@type": "Question", "name": "和手机遥控 Claude Code 的工具有什么不同？", "acceptedAnswer": { "@type": "Answer", "text": "Opero 是一组常驻员工（有角色、有记忆），能自己从日志里发现 bug，修复、检查、上线、回滚都在一个聊天里完成，并且用你已有的权限、AI 拿不到密码。" } }
+          ]
+        }
+      ]
+    }
+    </script>
+    <!--/site-meta-->
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><!--site-static 不跑 JS 的搜索引擎 / AI 爬虫读这一段；网页一加载就被替换。装在自己服务器上的 Opero 会去掉-->
+      <main style="max-width:880px;margin:0 auto;padding:32px 20px;font-family:system-ui,sans-serif;line-height:1.7;color:#14161F">
+        <h1>Opero：你自己部署的 AI 开发团队，装在一个聊天 App 里</h1>
+        <p>Opero 是开源（Apache-2.0）、装在你自己服务器上的 AI 开发团队。Claude Code / Codex 员工跑在你的服务器上，替你查 bug、改代码、发版本、盯日志、管运维；账号密码加密存在你自己的服务器上，AI 拿不到；你在手机上的聊天 App 里看结论、点卡片做决定。</p>
+        <p>Opero is an open-source, self-hosted AI dev team you run from a chat app. Claude Code and Codex employees work on your own servers: they catch bugs, fix code, ship releases, watch logs and run ops. Credentials stay encrypted on your server and never reach the AI; you make the calls from your phone.</p>
+        <h2>为什么用 Opero</h2>
+        <ul>
+          <li><b>会话不再乱</b>：每个员工一个会话，有角色、有记忆。</li>
+          <li><b>key 不交给 AI</b>：员工通过 Opero 连服务器、数据库、云，只看到结果；危险操作要你指纹确认。</li>
+          <li><b>一个 App 打通</b>：开发、测试、部署、上线、日志巡检、发现 bug、在线修复、发版，每一步都有员工负责。</li>
+          <li><b>你只管业务</b>：员工去查、去做；你看结论、点卡片。</li>
+        </ul>
+        <h2>能做什么</h2>
+        <ul>
+          <li>日志巡检：员工盯日志，自己发现 bug，写清原因、影响和建议。</li>
+          <li>修 bug：一句「修复」，员工在分支上改好、检查通过、发布上线，失败自动退回上一版。</li>
+          <li>运维：服务器负载、数据库查询、DNS、证书、安装包，都在聊天里完成。</li>
+          <li>多端：手机、电脑浏览器和安卓 App（苹果、Windows 原生 App 在做）。</li>
+        </ul>
+        <h2>安装</h2>
+        <ol>
+          <li>准备一台 Linux 服务器（2 核 4G 起，有 systemd）。</li>
+          <li>用 root 运行：<code>curl -fsSL https://raw.githubusercontent.com/yimaworks/opero/main/code/server/scripts/install.sh | sudo bash</code></li>
+          <li>打开它给的地址：设账号 → 一键安装 Claude Code → 登录 → 建员工。</li>
+        </ol>
+        <p>完整安装说明：<a href="https://github.com/yimaworks/opero/blob/main/INSTALL.md">INSTALL.md</a> · 源码：<a href="https://github.com/yimaworks/opero">github.com/yimaworks/opero</a> · <a href="/demo">在线试用（假数据）</a> · <a href="/llms.txt">llms.txt</a></p>
+      </main>
+    <!--/site-static--></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

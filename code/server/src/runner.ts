@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import { cfg, MCP_SCRIPT } from './config.ts'
-import { get, kvGet, kvSet, put, uid } from './db.ts'
+import { all, get, kvGet, kvSet, put, uid } from './db.ts'
 import { emit, push } from './bus.ts'
 import { addMsg, delMsg, empSays, getMsg, monthCost, monthCostOf, patchMsg, patchSession, recordRun, sessionFor, system } from './chat.ts'
 import { getSecret, scrub, setSecret } from './vault.ts'
@@ -17,6 +17,7 @@ import type { Card, CardAction, Credential, Employee, Server, Session, Workspace
 import * as hosts from './hosts.ts'
 import * as agents from './agents.ts'
 import * as tunnel from './tunnel.ts'
+import * as quota from './quota.ts'
 import * as memory from './memory.ts'
 import * as autogit from './autogit.ts'
 import { policyOf, policyText, shimBins, SHIM_SCRIPT, type Policy } from './policy.ts'
@@ -178,9 +179,75 @@ export function pickAccount(kind: 'claude' | 'codex', emp?: Employee): string | 
   const all = accountsOf(kind)
   if (!all.length) return undefined
   const mine = kind === 'claude' ? emp?.claudeAccount : emp?.codexAccount
-  const order = [...new Set([mine, defaultOf(kind), ...all].filter((x): x is string => !!x && all.includes(x)))]
   const lim = limitedUntil()
-  return order.find((id) => !(lim[id] > Date.now())) ?? order[0]
+  const left = (id: string) => (lim[id] > Date.now() ? 0 : quota.remaining(id))
+  // 员工指定的账号：还剩 5% 以上就用它；快用完了先用别的
+  if (mine && all.includes(mine) && (left(mine) ?? 100) >= 5) return mine
+  // 其它：剩得多的优先（没数据的当 50%），一样多按默认 → 原来的顺序；到上限的排最后
+  const order = [...new Set([defaultOf(kind), ...all].filter((x): x is string => !!x && all.includes(x)))]
+  const ranked = order.map((id, i) => ({ id, i, r: left(id) ?? 50 })).sort((a, b) => (b.r > 0 ? 1 : 0) - (a.r > 0 ? 1 : 0) || b.r - a.r || a.i - b.i)
+  return ranked.find((x) => !(lim[x.id] > Date.now()))?.id ?? (mine && all.includes(mine) ? mine : ranked[0]?.id)
+}
+
+/** 问一个 Codex 订阅账号还剩多少（本机的 codex app-server）；API Key 账号没有窗口，不问 */
+/** 在哪台问用量：Opero 这台装了就用它；没装就找一台在线、装了的 Agent 服务器（心跳里报的版本） */
+async function quotaHost(kind: 'claude' | 'codex'): Promise<string | undefined> {
+  const local = await hosts.runAiOn(hosts.LOCAL, hosts.execBin(kind, hosts.LOCAL), ['--version'], { timeoutMs: 15_000 })
+  if (local.code === 0) return hosts.LOCAL
+  return all<Server>('servers').find((sv) => sv.id !== hosts.LOCAL && sv.via === 'agent' && sv.online && sv.executors?.[kind])?.id
+}
+export async function pollCodexQuota(id: string) {
+  if (codexMode(id) !== 'chatgpt') return undefined
+  const host = await quotaHost('codex')
+  if (!host) return quota.noteError(id, 'codex', '没有哪台装了 Codex（Opero 这台和在线的服务器都没有）：到「AI 执行器」装一个')
+  const { env } = aiEnv('codex', host, undefined, id)
+  const q = await quota.pollCodex(id, env, codexCmd(hosts.codexBin(host), [], env), host)
+  void syncCodexAuth(host, id).catch(() => {})
+  return q
+}
+/** Claude 订阅账号的用量：先直接问官方的用量接口（quota.readClaude，不花额度）；
+ *  那个接口不认这个令牌（401 / 403 / 404）而且 probe = true（主人点了「刷新」）时，才退回发一条最小的（最便宜的模型、回一个词），用它报回来的 rate_limit_event。
+ *  Claude Code 只在用量有变化时才报 rate_limit_event，所以发了也可能没有——那就照实说，不说成登录失效 */
+export async function probeClaudeQuota(id: string, probe = true): Promise<string> {
+  if (!isOat(claudeKey(id), id)) return 'skip'
+  const direct = await quota.readClaude(id, claudeKey(id))
+  if (direct.ok) return 'ok'
+  if (!probe || ![401, 403, 404].includes(direct.status)) { if (direct.status !== 429) quota.noteError(id, 'claude', direct.why); return 'no-data' }
+  const q = quota.quotaOf(id)
+  if (q && q.src === 'probe' && Date.now() - q.at < 3 * 60_000) return 'recent'
+  const host = await quotaHost('claude')
+  if (!host) { quota.noteError(id, 'claude', '没有哪台装了 Claude Code：到「AI 执行器」装一个'); return 'no-host' }
+  const { env, secrets } = aiEnv('claude', host, undefined, id)
+  const r = await hosts.runAiOn(host, hosts.claudeBin(host), ['-p', '只回一个字：好', '--model', 'claude-haiku-5-5', '--max-turns', '1', '--output-format', 'stream-json', '--verbose'], { env, timeoutMs: 120_000 })
+  let got = false
+  let fail = ''
+  for (const line of r.out.split('\n')) {
+    try {
+      const ev = JSON.parse(line)
+      if (ev.type === 'rate_limit_event') { quota.noteClaude(id, ev.rate_limit_info, 'probe'); got = true }
+      // 出错的原因在 result 里（比如「Not logged in」、到上限、模型不能用）
+      if (ev.type === 'result' && ev.is_error) fail = String(ev.result ?? ev.subtype ?? '')
+    } catch { /* 不是 JSON */ }
+  }
+  if (!got) {
+    const plain = scrub(r.out, secrets).split('\n').filter((x) => x && !x.startsWith('{')).pop() ?? ''
+    const why = fail ? `测试请求失败：${scrub(fail, secrets).slice(0, 160)}`
+      : plain ? plain.slice(0, 160)
+      : r.code === 0 ? '测试请求成功了，但 Claude Code 这次没报用量（它只在用量有变化时才报）；员工下次用这个账号干活时会更新'
+      : `测试请求没跑完（退出码 ${r.code}）`
+    quota.noteError(id, 'claude', `官方用量接口不认这个令牌（${direct.why}）；${why}`)
+  }
+  return got ? 'ok' : 'no-data'
+}
+/** 每 10 分钟问一次所有订阅账号的用量（Codex 的 app-server、Claude 的官方用量接口，都不花额度） */
+export function startQuotaLoop() {
+  // Claude 订阅账号也问（只问官方用量接口，不花额度；接口不认的不发测试请求）
+  const tick = async () => {
+    for (const id of codexAccounts()) { try { await pollCodexQuota(id) } catch { /* 下次再问 */ } }
+    for (const id of claudeAccounts()) { try { await probeClaudeQuota(id, false) } catch { /* 下次再问 */ } }
+  }
+  setTimeout(tick, 20_000).unref()
+  setInterval(tick, 10 * 60_000).unref()
 }
 export const pickClaude = (emp?: Employee) => pickAccount('claude', emp)
 
@@ -245,13 +312,14 @@ export async function syncCodexAuth(host: string, id?: string) {
   await hosts.runAiOn(host, 'bash', ['-c', 'printf %s "$2" > "$HOME/.opero/codex/$1/.opero-gen"', '_', id, gen], { timeoutMs: 20_000 })
 }
 
-export function aiEnv(kind: ExecKind, host: string = hosts.LOCAL, emp?: Employee): { env: Record<string, string>; secrets: string[]; cred?: string } {
+/** force：指定用哪个账号（查用量时一个个问）；不给就按 pickAccount 挑 */
+export function aiEnv(kind: ExecKind, host: string = hosts.LOCAL, emp?: Employee, force?: string): { env: Record<string, string>; secrets: string[]; cred?: string } {
   const c = aiConf()
   const env: Record<string, string> = {}
   const secrets: string[] = []
   let cred: string | undefined
   if (kind === 'claude') {
-    cred = pickClaude(emp)
+    cred = force ?? pickClaude(emp)
     const k = cred ? claudeKey(cred) : ''
     const base = baseOf('claude', cred)
     if (k) { secrets.push(k); env[isOat(k, cred) ? 'CLAUDE_CODE_OAUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = k }
@@ -274,7 +342,7 @@ export function aiEnv(kind: ExecKind, host: string = hosts.LOCAL, emp?: Employee
     if (base) env.CODEBUDDY_BASE_URL = base
   } else {
     // Codex：员工指定的账号 → 默认 → 其它（到上限的往后排）。ChatGPT 订阅账号：auth.json 交给 codexCmd 写进这个账号的 CODEX_HOME；API Key 账号：环境变量
-    cred = pickAccount('codex', emp)
+    cred = force ?? pickAccount('codex', emp)
     const k = cred ? getSecret(cred)?.trim() : undefined
     if (k && codexMode(cred) === 'chatgpt') {
       secrets.push(k, ...codexAuthInfo(k).tokens)
@@ -429,6 +497,7 @@ function rules(emp: Employee, cwd: string, ws: Workspace | undefined, host: stri
 - Opero 给自己发版（发布目标就是 Opero 跑的那台、部署脚本会重启 Opero）：发布中途 Opero 会跟着重启，健康检查和回滚走不完——这种先告诉主人，用别的发布渠道或者在部署脚本里把重启放到最后、用 systemd-run 之类脱离出去。
 - 线上问题记进问题清单：issue_report（同一个问题用同一个 key），修好了 issue_update 标 fixed；issue_list 看现在有哪些。
 - 要主人在几个方案里选，用 ask_owner；做不可撤销或影响生产的事之前用 confirm；要给主人看结构化的结果用 send_card；要把文件或图片发给主人用 send_file。
+- 权限：my_permissions 看 Opero 里有哪些凭证 / 域名、哪些给了你；要用没给你的就 request_permission（写清楚为什么），别让主人自己去员工资料里勾。申请、确认这类卡片不过期：主人没回就先做别的，主人点了 Opero 会告诉你。
 - Opero 这边连不上外面的地址（邮箱、提醒渠道、AI Key、DNS、流水线、代码平台的接口报「连不上 / 超时」）：用 egress_manage 先 list 看最近连不上的，test 找一台能连上的服务器，再 set 让那个域名经它出去；别让主人自己去找设置。
 - 要图片（头像、插画、图标、配图、界面效果图）用 image_generate：主人存的 AI Key 由 Opero 去调（通义万相、OpenAI、豆包、智谱、硅基流动），图放进你目录的 images/ 并发到聊天；每张都花钱，先出 1 张给主人看风格，定了再批量。没有能用的 Key 它会告诉你找主人要哪个。
 - 按约定直接做，少问：只有删重要数据、影响生产（发生产、改生产服务器 / 生产库）这类不可撤销的事才用 confirm；同步代码、建临时文件、清理自己的临时目录、在测试 / 开发环境改东西这些都直接做，不要问主人。
@@ -524,15 +593,13 @@ export async function send(empId: string, text: string, files: Attachment[] = []
 }
 
 
-/** 员工 / 它的项目这个月的预算用满了：返回原因 */
+/** 员工这个月的预算用满了：返回原因。项目预算 2026-11-28 去掉了（主人定的：没意义，界面也不给设），老数据里的不再管 */
 export function budgetOver(emp: Employee): string {
   if (emp.budget && monthCostOf({ emp: emp.id }) >= emp.budget) return `「${emp.name}」这个月的预算（$${emp.budget}）用满了，先停下。到员工资料里调高预算再试。`
-  const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
-  if (ws?.budget && monthCostOf({ ws: ws.id }) >= ws.budget) return `项目「${ws.name}」这个月的预算（$${ws.budget}）用满了，先停下。到项目里调高预算再试。`
   return ''
 }
 
-/** 一轮做完：员工 / 项目预算到了 80% 提醒一次（每月一次） */
+/** 一轮做完：员工预算到了 80% 提醒一次（每月一次） */
 function budgetWarn(emp: Employee, sid: string) {
   const month = new Date().toISOString().slice(0, 7)
   const warned = kvGet<Record<string, string>>('budgetWarned', {})
@@ -544,8 +611,6 @@ function budgetWarn(emp: Employee, sid: string) {
     push({ kind: 'info', title: '预算快用完了', body: `${label}：$${used.toFixed(2)} / $${cap}`, route: `chat/${sid}` })
   }
   check(`e:${emp.id}`, monthCostOf({ emp: emp.id }), emp.budget, `「${emp.name}」`)
-  const ws = emp.workspace ? get<Workspace>('workspaces', emp.workspace) : undefined
-  if (ws) check(`w:${ws.id}`, monthCostOf({ ws: ws.id }), ws.budget, `项目「${ws.name}」`)
 }
 
 function writeUser(l: Live, text: string, files: Attachment[]) {
@@ -787,6 +852,10 @@ function onClaude(l: Live, emp: Employee, ev: any) {
     case 'system':
       if (ev.subtype === 'init' && ev.session_id && ev.session_id !== emp.resumeId) saveEmp(emp.id, { resumeId: ev.session_id })
       return
+    case 'rate_limit_event':
+      // 订阅账号的 5 小时 / 本周用量（有变化才报）：记到这个账号上，左边的用量框、挑账号都看它
+      if (l.exec === 'claude') quota.noteClaude(l.cred, ev.rate_limit_info)
+      return
     case 'assistant': {
       const m = ev.message
       const u = m?.usage
@@ -991,11 +1060,35 @@ export function newTopic(empId: string, note = '—— 新话题：上下文已�
 export interface PendingAnswer { action: string; answer?: string; verified?: boolean }
 const pending = new Map<string, { runId: string; resolve: (a: PendingAnswer) => void }>()
 
-export function waitCard(msgId: string, runId: string, timeoutMs = 30 * 60_000): Promise<PendingAnswer> {
+/** 预先同意：主人在员工没等到的确认卡上点了「同意」，同一个员工同一件事 30 分钟内再做直接放行（key = 员工 + 标题 + 内容） */
+export const preKey = (emp: string, title: string, detail: string) => crypto.createHash('sha1').update(`${emp}\n${title}\n${detail}`).digest('hex')
+export function preApprove(key: string, verified: boolean) {
+  const all = kvGet<Record<string, { exp: number; verified: boolean }>>('preApproved', {})
+  for (const [k, v] of Object.entries(all)) if (v.exp < Date.now()) delete all[k]
+  all[key] = { exp: Date.now() + 30 * 60_000, verified }
+  kvSet('preApproved', all)
+}
+/** 有没有预先同意（有就用掉） */
+export function takePreApproved(key: string): { verified: boolean } | undefined {
+  const all = kvGet<Record<string, { exp: number; verified: boolean }>>('preApproved', {})
+  const v = all[key]
+  if (!v) return
+  delete all[key]
+  kvSet('preApproved', all)
+  return v.exp > Date.now() ? { verified: v.verified } : undefined
+}
+
+/** 卡片等不到了（员工那边的工具最多等半小时左右——Claude Code / Codex 的限制；这一轮结束了；Opero 重启了）：
+ *  卡片不关，标 late 留着（红点照旧），主人什么时候点都行，点了再告诉员工（api.ts 的卡片按钮）。2026-11-28 主人定的：申请一直在 */
+export function markLate(msgId: string) {
+  const c = getCard(msgId)
+  if (c && c.state === 'open') patchMsg(msgId, { card: { ...c, data: { ...c.data, pending: false, late: true } } })
+}
+export function waitCard(msgId: string, runId: string, timeoutMs = 25 * 60_000): Promise<PendingAnswer> {
   return new Promise((resolve) => {
     const t = setTimeout(() => {
       pending.delete(msgId)
-      patchMsg(msgId, { card: { ...(getCard(msgId) as any), state: 'done', result: '30 分钟没人点，已当作不同意' } })
+      markLate(msgId)
       resolve({ action: 'timeout' })
     }, timeoutMs)
     pending.set(msgId, { runId, resolve: (a) => { clearTimeout(t); pending.delete(msgId); resolve(a) } })
@@ -1010,12 +1103,11 @@ export const answerCard = (msgId: string, a: PendingAnswer) => {
 }
 export const isPending = (msgId: string) => pending.has(msgId)
 
-function cancelPending(runId: string, why: string) {
+export function cancelPending(runId: string, _why: string) {
   for (const [id, p] of [...pending]) {
     if (p.runId !== runId) continue
     p.resolve({ action: 'cancel' })
-    const c = getCard(id)
-    if (c) patchMsg(id, { card: { ...c, state: 'done', result: why } })
+    markLate(id) // 这一轮结束 / 停下了：卡片留着，主人点了再告诉员工
   }
 }
 

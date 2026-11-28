@@ -1,0 +1,26 @@
+# Opero 官网（opero.yimakeji.cn / opero.yimaworks.com）。装在自己服务器上的 Opero 由后台回 Disallow，不会被收录。
+User-agent: *
+Allow: /
+
+# AI 搜索 / 大模型爬虫：欢迎（GEO）
+User-agent: GPTBot
+Allow: /
+User-agent: OAI-SearchBot
+Allow: /
+User-agent: ChatGPT-User
+Allow: /
+User-agent: ClaudeBot
+Allow: /
+User-agent: Claude-SearchBot
+Allow: /
+User-agent: PerplexityBot
+Allow: /
+User-agent: Google-Extended
+Allow: /
+User-agent: Bytespider
+Allow: /
+User-agent: Baiduspider
+Allow: /
+
+Sitemap: https://opero.yimakeji.cn/sitemap.xml
+Sitemap: https://opero.yimaworks.com/sitemap.xml

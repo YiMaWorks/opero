@@ -13,6 +13,8 @@ import { ImageEditHost } from './components/ImageEditor'
 import { NewChatSheet, ReplySuggestSheet, SearchOverlay, Toast, VerifyModal } from './components/overlays'
 import { UpgradeToast } from './components/UpgradeToast'
 import { IconGlobe, IconPalette, TabIcon } from './components/icons'
+import { QuotaBox, useLowestLeft } from './components/Quota'
+import { Gauge } from 'lucide-react'
 import { LangSheet } from './components/LangPicker'
 import { PageView } from './pages'
 import { menuRoute } from './menus'
@@ -79,6 +81,8 @@ export default function App() {
   const [newChat, setNewChat] = useState(false)
   const [themeSheet, setThemeSheet] = useState(false)
   const [langSheet, setLangSheet] = useState(false)
+  // 订阅用量：左边图标栏「用量」按钮点了才弹出，随时关（不再固定占着侧边栏左下角）
+  const [quotaOpen, setQuotaOpen] = useState(false)
   const [suggest, setSuggest] = useState<{ title: string; ch: string; original?: string } | null>(null)
 
   // 风格：跟随系统（浅色 / 深色各用一套）/ 固定一套 / 自己挑的三个颜色（themes.ts）
@@ -236,6 +240,7 @@ export default function App() {
   const closeTop = useRef<() => void>(() => {})
   closeTop.current = () => {
     if (verify) set({ verify: null })
+    else if (quotaOpen) setQuotaOpen(false)
     else if (langSheet) setLangSheet(false)
     else if (themeSheet) setThemeSheet(false)
     else if (suggest) setSuggest(null)
@@ -369,6 +374,7 @@ export default function App() {
             </button>
           ))}
           <span className="grow" />
+          {LIVE && <QuotaNavBtn open={quotaOpen} onToggle={() => setQuotaOpen((x) => !x)} />}
           <button className={'nav-btn' + (langSheet ? ' on' : '')} onClick={() => setLangSheet(true)} title="界面语言"><IconGlobe /><span>语言</span></button>
           <button className="nav-btn" onClick={() => setThemeSheet(true)} title="换风格"><IconPalette /><span>风格</span></button>
           <button className={'nav-btn' + (tab === 'me' ? ' on' : '')} onClick={() => switchTab('me')}>
@@ -412,6 +418,15 @@ export default function App() {
           }} />
       )}
       {langSheet && <LangSheet onClose={() => setLangSheet(false)} />}
+      {quotaOpen && !mobile && (
+        <div className="qt-pop-mask" onClick={() => setQuotaOpen(false)}>
+          <div className="qt-pop" role="dialog" aria-label="订阅用量" onClick={(e) => e.stopPropagation()}>
+            <QuotaBox onClose={() => setQuotaOpen(false)}
+              onOpen={() => { setQuotaOpen(false); setPanel(null); setTab('apps'); setStacks((st) => ({ ...st, apps: [{ page: 'usage' }] })) }}
+              onConnect={() => { setQuotaOpen(false); setPanel(null); setTab('apps'); setStacks((st) => ({ ...st, apps: [{ page: 'executors' }] })) }} />
+          </div>
+        </div>
+      )}
       {themeSheet && (
         <ThemeQuick onClose={() => setThemeSheet(false)}
           onMore={() => {
@@ -429,5 +444,16 @@ export default function App() {
       <UpgradeToast />
       {splash && <Splash onDone={hideSplash} />}
     </>
+  )
+}
+
+/** 左边图标栏的「用量」按钮：剩得最少的账号 ≤ 10% 时变橙（只是颜色，按真实数字，用量回来了就恢复，不是要消的红点） */
+function QuotaNavBtn({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const low = useLowestLeft()
+  const warn = low !== undefined && low <= 10
+  return (
+    <button className={'nav-btn' + (open ? ' on' : '') + (warn ? ' warn' : '')} onClick={onToggle} title={low === undefined ? '订阅用量' : `订阅用量：剩得最少的还剩 ${low}%`}>
+      <Gauge size={20} strokeWidth={1.8} /><span>用量</span>
+    </button>
   )
 }

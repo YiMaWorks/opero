@@ -28,6 +28,10 @@ open class Bridge(protected val host: Host) {
         fun open(route: String)
         /** 嵌入页最外层点了关闭：退回 App 上一层 */
         fun close()
+        /** 把文件存到手机（图片进相册，别的进「下载」） */
+        fun download(url: String, name: String)
+        /** 把文件交给系统分享 */
+        fun share(url: String, name: String)
     }
 
     @JavascriptInterface fun version(): String = BuildConfig.VERSION_NAME
@@ -44,7 +48,7 @@ open class Bridge(protected val host: Host) {
         host.setBars(dark, android.graphics.Color.parseColor(bg), android.graphics.Color.parseColor(panel))
     }
 
-    /** 角标：原生的会话页签自己算，这里不用了（网页还会调，留着不报错） */
+    /** 角标：安卓桌面跟着通知走，不用单独设（网页会调，留着不报错） */
     @JavascriptInterface fun setBadge(n: Int) { }
 
     @JavascriptInterface fun openExternal(url: String) { if (host.trusted() && (url.startsWith("http") || url.startsWith("mailto:") || url.startsWith("tg:") || url.startsWith("slack:"))) host.openExternal(url) }
@@ -53,8 +57,14 @@ open class Bridge(protected val host: Host) {
 
     @JavascriptInterface fun voice(lang: String) { if (host.trusted()) host.voice(lang) }
 
-    /** 网页正在看的会话：嵌入页里没有会话，原生聊天页自己记（push/VisibleRoute） */
-    @JavascriptInterface fun setRoute(route: String?) { }
+    /** 网页正在看的会话（chat/<编号>）：推送的就是它时不弹通知 */
+    @JavascriptInterface fun setRoute(route: String?) { cn.yimakeji.opero.push.VisibleRoute.route = route?.ifBlank { null } }
+
+    /** 下载：url 是文件地址（相对 / 绝对 / data:），name 是文件名；外壳带登录取下来存到手机 */
+    @JavascriptInterface fun download(url: String, name: String) { if (host.trusted() && url.length <= 4_000_000) host.download(url, name) }
+
+    /** 分享：同上，取下来交给系统分享面板（发微信、邮件…） */
+    @JavascriptInterface fun share(url: String, name: String) { if (host.trusted() && url.length <= 4_000_000) host.share(url, name) }
 
     @JavascriptInterface fun unpair() { if (host.trusted()) host.unpair() }
 

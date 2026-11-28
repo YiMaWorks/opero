@@ -113,9 +113,7 @@ export function card(r: Release, w: Workspace): Card {
   const env = d?.env || [...new Set(svs.map((x) => x.env).filter(Boolean))].join(' / ')
   const same = all<Release>('releases').filter((x) => x.ws === r.ws && x.target === r.target && x.id !== r.id).sort((a, b) => b.started - a.started)
   // 估计：上次成功（不算回滚）的那次每一步用了多久
-  const lastOk = same.find((x) => x.status === 'success' && !x.rollbackOf && x.started < r.started)
-  const est: Partial<Record<ReleaseStep['k'], number>> = {}
-  for (const s of lastOk?.steps ?? []) if (s.t0 && s.t1 && s.s === 'done') est[s.k] = s.t1 - s.t0
+  const est = estimate(same.filter((x) => x.status === 'success' && !x.rollbackOf && x.started < r.started).slice(0, 5))
   // 成功了能回滚到的：这次之前最近一个成功、包还留着（或者不用编译）的版本
   const back = r.status === 'success' ? same.find((x) => x.status === 'success' && x.started < r.started && x.version !== r.version && (x.kept || !r.build)) : undefined
   const autoFix = r.status === 'failed' && !!r.emp && (d?.ai ?? 'ask') === 'auto' && !r.rollbackOf
@@ -182,6 +180,20 @@ function step(r: Release, w: Workspace, k: ReleaseStep['k'], s: ReleaseStep['s']
 }
 const tail = (s: string, n = 8000) => (s.length > n ? '…' + s.slice(-n) : s)
 const addTail = (r: Release, head: string, out: string) => { r.tail = tail(`${r.tail ? r.tail + '\n\n' : ''}—— ${head} ——\n${out}`) }
+
+/** 每一步大概要多久：最近几次成功（不算回滚）的中位数。编译里秒完的（同一个提交编过、流水线命中缓存）不算，
+ *  除非全都是秒完的——不然上次碰巧命中缓存，这次就会显示「约 1 秒」（主人 2026-11-28 看到的） */
+export function estimate(oks: Pick<Release, 'steps'>[]): Partial<Record<ReleaseStep['k'], number>> {
+  const by: Partial<Record<ReleaseStep['k'], number[]>> = {}
+  for (const r of oks) for (const s of r.steps) if (s.t0 && s.t1 && s.s === 'done') (by[s.k] ??= []).push(s.t1 - s.t0)
+  const est: Partial<Record<ReleaseStep['k'], number>> = {}
+  for (const [k, l0] of Object.entries(by) as [ReleaseStep['k'], number[]][]) {
+    const real = k === 'build' ? l0.filter((x) => x >= 3000) : l0
+    const l = (real.length ? real : l0).sort((a, b) => a - b)
+    est[k] = l[Math.floor((l.length - 1) / 2)]
+  }
+  return est
+}
 
 /** 产物里挑要发的那个文件（*.tgz / *.apk / 文件名） */
 function pickFile(files: string[], pattern: string): string | undefined {

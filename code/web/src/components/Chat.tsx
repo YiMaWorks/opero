@@ -313,13 +313,13 @@ export function Chat({ session, mobile, onBack, onCardAction, onMenu, onProfile,
           {mobile
             ? (
               <span className={'m-sub' + (session.working ? ' run-sub' : '')}>
-                <em>{session.working ?? emp.title}</em>
+                {/* 员工职责那句不放顶栏（主人 2026-11-28：占地方、没用）；在干活时显示在干什么 */}
+                {session.working && <em>{session.working}</em>}
                 {server && !session.working && <ServerLoad cpu={server.cpu} mem={server.mem} online={server.online} compact />}
               </span>
             )
             : (
               <span className="meta-chips">
-                <span className="meta-chip">{emp.title}</span>
                 <span className="meta-chip">{emp.executor}</span>
                 <span className="meta-chip">{server ? (server.id === 'local' && server.name === '本机' ? 'Opero 这台' : server.name) : emp.host}</span>
                 {ws && <span className="meta-chip branch" title={`${ws.name} · ${ws.branch || ''}`}>⎇ {ws.branch || '…'}</span>}

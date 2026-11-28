@@ -140,6 +140,10 @@ export interface Server {
   agentKeyHash?: string
   machineId?: string
   agentVersion?: string
+  /** Agent 自动升级：默认开，false = 不自动升（agentupgrade.ts） */
+  autoUpgrade?: boolean
+  /** 最近一次自动升级：升到哪个版本、什么时候、running / ok / failed / waiting（等那台空闲）、说明 */
+  agentUpgrade?: { target: string; at: number; status: 'running' | 'ok' | 'failed' | 'waiting'; msg?: string }
   /** 最近一次接入（用令牌注册 / 你接受）的时间：网页「已接入」按它认，不按心跳 */
   joinedAt?: number
   lastSeen?: number

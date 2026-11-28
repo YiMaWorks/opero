@@ -172,3 +172,49 @@
   .hero2-bg i, .phone, .hero2-stage .chip, .hero2 h1 .grad { animation: none; }
   .phone .m { animation: none; opacity: 1; }
 }
+
+/* ================= 手机（2026-11-28 主人截图：顶栏字竖着、手机图出界、表格挤、命令被截）================= */
+.site-btn { white-space: nowrap; flex: none; }
+.site-lang-wrap { position: relative; display: inline-flex; align-items: center; flex: none; }
+.site-lang-ico { display: none; }
+.hero2-cmd em { white-space: nowrap; flex: none; }
+.site-zoom { position: relative; display: block; }
+.site-zoom span { display: none; }
+.site-cmp-cards { display: none; }
+.site-codebox { position: relative; margin-bottom: 16px; }
+.site-codebox button { position: absolute; top: 8px; right: 8px; height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,.18); background: rgba(255,255,255,.08); color: #C9F7E4; font-size: 12px; cursor: pointer; }
+.site-codebox .site-code { padding-right: 70px; }
+.hero2 h1 span { overflow-wrap: anywhere; }
+.hero2-copy, .hero2-stage { min-width: 0; }
+@media (max-width: 640px) {
+  .site-table-wrap { display: none; }
+  .site-cmp-cards { display: flex; flex-direction: column; gap: 10px; }
+  .site-cmp-card { background: #fff; border: 1px solid #EEEFF3; border-radius: 14px; padding: 12px 14px; }
+  .site-cmp-card b { display: block; font-size: 15px; line-height: 1.45; margin-bottom: 8px; }
+  .site-cmp-vals { display: flex; flex-wrap: wrap; gap: 6px; }
+  .site-cmp-vals span { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 12.5px; background: #F4F5F8; color: #7A8091; }
+  .site-cmp-vals i { font-style: normal; font-weight: 800; }
+  .site-cmp-vals .yes i { color: #12A150; } .site-cmp-vals .part i { color: #C26A00; } .site-cmp-vals .no i { color: #B4B8C4; }
+  .site-cmp-vals span.me { background: #EEECFE; color: #5B4FE9; font-weight: 700; }
+  .site-cmp-vals span.me i { color: #5B4FE9; }
+  .site-cmp-note { margin: 2px 0 0; font-size: 12px; color: #7A8091; }
+  .site-zoom span { display: inline-flex; position: absolute; right: 10px; bottom: 10px; padding: 4px 10px; border-radius: 999px; font-size: 12px; color: #fff; background: rgba(20,22,31,.6); backdrop-filter: blur(6px); }
+}
+@media (max-width: 520px) {
+  /* 顶栏：logo · 地球 · 在线试用（GitHub 首屏里有） */
+  .site-nav .site-btn.ghost { display: none; }
+  .site-lang-ico { display: block; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; color: #4E5465; }
+  .site-nav.on-dark .site-lang-ico { color: #E4E1FF; }
+  .site-lang { width: 40px; max-width: 40px; height: 34px; color: transparent !important; padding: 0; appearance: none; -webkit-appearance: none; background: transparent; border-color: transparent; }
+  /* 首屏 */
+  .hero2 h1 { font-size: 30px; }
+  .hero2-cmd code { white-space: nowrap; }
+  .hero2-works b { font-size: 12px; }
+  .hero2-stage { height: 440px; overflow: visible; }
+  .phone { width: 250px; height: 440px; border-radius: 38px; }
+  .phone-head { padding-top: 26px; }
+  .hero2-glow { width: 300px; height: 300px; }
+  .hero2-stage .c1, .hero2-stage .c2 { display: none; } /* 手机上会压住手机图，只留一张 */
+  .hero2-stage .c3 { left: auto; right: 0; bottom: 14px; }
+  .site-codebox button { top: 6px; right: 6px; }
+}

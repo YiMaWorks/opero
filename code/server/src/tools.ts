@@ -36,6 +36,7 @@ import { fillSecrets } from './secrets.ts'
 import { getSecret, scrub } from './vault.ts'
 import * as packages from './packages.ts'
 import * as egress from './egress.ts'
+import * as permissions from './permissions.ts'
 import crypto from 'node:crypto'
 import { IMAGE_PROVIDERS, canDraw, generate, parseSize } from './imagegen.ts'
 
@@ -65,6 +66,8 @@ export const TOOLS = [
   { name: 'delegate', description: 'Hand a task to another employee. It shows up in that employee\'s chat and it starts working on it.', inputSchema: S({ employee: str('employee id, name, or position tag (role)'), message: str('the task, with all context it needs') }, ['employee', 'message']) },
   { name: 'log_scan', description: 'Analyse logs on a server without dumping them. mode: hist = matching lines per minute/10 min/hour (when did it start, is it still happening); first = first occurrences with following lines (stack traces); last = latest occurrences; top = error kinds and failing lines, counted (numbers/ids folded); grep = matching lines. Default pattern matches ERROR/Exception/FATAL/Traceback. Give neither file nor service to scan every log the owner registered on that server (list_servers shows them). Read-only.', inputSchema: S({ server: str('server name or id'), file: str('absolute log file path (may contain *)'), service: str('or a systemd service name (journalctl)'), mode: { type: 'string', enum: ['top', 'hist', 'first', 'last', 'grep'] }, grep: str('extended regex to match (optional)'), since_min: { type: 'integer', description: 'journalctl only: last N minutes (default 60)' }, bucket: { type: 'string', enum: ['1m', '10m', '1h'] }, limit: { type: 'integer' }, before: { type: 'integer' }, after: { type: 'integer' }, rotated: { type: 'boolean', description: 'also read rotated files (.1, .gz)' } }, ['server']) },
   { name: 'file_write', description: 'Write a file on one of the owner\'s servers (config files etc.). The old file is backed up next to it first (<path>.bak-<time>). Always needs the owner to approve a card. Use {{secret:<credential name>}} for passwords/keys — Opero fills them in, you never see them.', inputSchema: S({ server: str('server name or id'), path: str('absolute path'), content: str('full new content'), reason: str('one line: why') }, ['server', 'path', 'content', 'reason']) },
+  { name: 'my_permissions', description: 'See every permission in Opero and whether you have it: all credentials (name, group, kind, environment, scope — never values) marked granted / not-granted / owner-only, the domains whose DNS you may change, and your review mode. Knowing is not having: to use one you do not have, call request_permission.', inputSchema: S({}) },
+  { name: 'request_permission', description: 'Ask the owner for a permission you do not have yet (see my_permissions): kind credential (an existing credential, by name) or domain (change that domain\'s DNS). Posts a card the owner approves with one tap; it never expires. Does NOT wait: keep doing work that does not need it; when the owner decides, Opero tells you in the chat. For a brand-new credential that does not exist yet use request_credential.', inputSchema: S({ kind: { type: 'string', enum: ['credential', 'domain'] }, name: str('credential name or domain'), why: str('what you need it for (shown to the owner)') }, ['kind', 'name', 'why']) },
   { name: 'list_credentials', description: 'List the credentials the owner allowed employees to use (names only, never values). Put {{secret:<name>}} in a server_exec command or file_write content and Opero fills in the value; output is masked.', inputSchema: S({}) },
   { name: 'issue_list', description: 'List the issue list (production problems found in logs): id, title, status new/fixing/fixed/known/ignored, severity, count, where.', inputSchema: S({ status: { type: 'string', enum: ['new', 'fixing', 'fixed', 'known', 'ignored'] } }) },
   { name: 'issue_report', description: 'Record a production problem you found (e.g. with log_scan) in the issue list. Same key = same problem: the count goes up instead of a new entry. A new high-severity problem is shown to the owner as a card (fix / known / ignore). Report each distinct problem once per scan.', inputSchema: S({ title: str('short title, e.g. "支付回调签名失败"'), key: str('stable identity: exception type + failing class/line'), severity: { type: 'string', enum: ['high', 'mid', 'low'] }, server: str('server name or id'), workspace: str('workspace (project) name or id, if known'), sample: str('a short log sample / stack trace'), cause: str('likely cause, if you know'), count: { type: 'integer', description: 'occurrences seen in this scan' } }, ['title', 'key', 'severity']) },
@@ -77,7 +80,7 @@ export const TOOLS = [
   { name: 'dns_set', description: 'Add or update a DNS record (same rr + type is updated). Check the current records first with dns_list; after changing, verify with dig. Only domains the owner granted you.', inputSchema: S({ domain: str('domain'), rr: str('host record: @ for the root, www, api, *.app …'), type: { type: 'string', enum: ['A', 'AAAA', 'CNAME', 'TXT', 'MX', 'NS', 'SRV', 'CAA'] }, value: str('record value'), ttl: { type: 'integer', description: 'seconds (Aliyun: 600/1800/3600/43200/86400)' }, priority: { type: 'integer', description: 'MX only' }, why: str('one line: why') }, ['domain', 'rr', 'type', 'value', 'why']) },
   { name: 'dns_delete', description: 'Delete a DNS record by id (dns_list shows ids). Only domains the owner granted you.', inputSchema: S({ domain: str('domain'), id: str('record id'), why: str('one line: why') }, ['domain', 'id', 'why']) },
   // ---- 应用里的功能（网页那套接口；read 直接做、write 按审核方式、owner 一律主人本人确认）----
-  { name: 'server_update', description: 'Rename a server or change its environment tag / production protection. Turning protection OFF (or moving a protected server to a non-production tag) always needs the owner to confirm in person.', inputSchema: S({ server: str('server name or id'), name: str('new name'), env: str('environment tag, e.g. 生产 / 测试 / 开发'), protect: { type: 'boolean', description: 'ask before changing things on it' } }, ['server']) },
+  { name: 'server_update', description: 'Rename a server, change its environment tag / production protection, or turn its Agent auto-upgrade on / off. Turning protection OFF (or moving a protected server to a non-production tag) always needs the owner to confirm in person.', inputSchema: S({ server: str('server name or id'), name: str('new name'), env: str('environment tag, e.g. 生产 / 测试 / 开发'), protect: { type: 'boolean', description: 'ask before changing things on it' }, autoUpgrade: { type: 'boolean', description: 'upgrade its Agent automatically when it is older than Opero, at a time nobody works on it (default on)' } }, ['server']) },
   { name: 'server_check', description: 'Re-check a server now: online, CPU / memory / disk, OS, Agent version.', inputSchema: S({ server: str('server name or id') }, ['server']) },
   { name: 'database_update', description: 'Rename a database or change its environment tag, protection, or whether employees may write to it. Allowing writes or removing protection always needs the owner in person.', inputSchema: S({ database: str('database name or id (list_databases)'), name: str('new name'), env: str('environment tag'), protect: { type: 'boolean' }, writable: { type: 'boolean', description: 'employees may run INSERT / UPDATE / DELETE' } }, ['database']) },
   { name: 'database_schema', description: 'Refresh a database\'s table / column list (after migrations).', inputSchema: S({ database: str('database name or id') }, ['database']) },
@@ -88,11 +91,11 @@ export const TOOLS = [
   { name: 'credential_manage', description: 'Manage existing credentials without seeing their values: rename; grant / revoke an employee\'s use of one (granting always needs the owner in person); delete (owner in person). To get a NEW credential use request_credential.', inputSchema: S({ action: { type: 'string', enum: ['rename', 'grant', 'revoke', 'delete'] }, credential: str('credential name or id'), name: str('new name (rename)'), employee: str('employee name / role / id (grant, revoke; default: you)') }, ['action', 'credential']) },
   { name: 'audit_search', description: 'Search the operation log (who did what, when; employees and the owner).', inputSchema: S({ q: str('keyword (server, file, action…)'), who: str('employee name'), limit: { type: 'integer' } }) },
   { name: 'usage_get', description: 'Cost and usage: per employee, per project, this month vs budget.', inputSchema: S({}) },
-  { name: 'budget_set', description: 'Monthly budget (USD) of an employee or a project; 0 = no own limit. Raising or removing a budget needs the owner in person; lowering follows your review mode.', inputSchema: S({ employee: str('employee name / role / id'), workspace: str('or a project'), usd: { type: 'number' } }, ['usd']) },
+  { name: 'budget_set', description: 'Monthly budget (USD) of an employee; 0 = no own limit. (Projects have no budget.) Raising or removing a budget needs the owner in person; lowering follows your review mode.', inputSchema: S({ employee: str('employee name / role / id'), usd: { type: 'number' } }, ['usd']) },
   { name: 'settings_get', description: 'Read the system settings (run summary, production protection, theme, language, reminder level, global budget, quick phrases, the owner\'s habits).', inputSchema: S({}) },
   { name: 'settings_set', description: 'Change system settings. Turning production protection off, raising / removing the global budget, turning off budget stop, or changing the owner\'s habits (the rules all employees follow) needs the owner in person.', inputSchema: S({ runSummary: { type: 'boolean' }, prodProtect: { type: 'boolean' }, theme: { type: 'string', enum: ['system', 'light', 'dark'] }, lang: str('auto / zh-CN / zh-TW / en / ja / de / fr / ar'), notify: { type: 'string', enum: ['decide', 'all', 'none'] }, budget: { type: 'number' }, budgetStop: { type: 'boolean' }, phrases: { type: 'array', items: { type: 'string' } }, habits: str('the owner\'s habits, one per line') }) },
-  { name: 'workspace_update', description: 'Change a project\'s settings: rename, auto commit & push after each round (autoSync), preview URL. (Budget: budget_set; builds: build_set; release targets: release_target_set.)', inputSchema: S({ workspace: str('project (default: yours)'), name: str('new name'), autoSync: { type: 'boolean' }, preview: str('preview URL') }) },
-  { name: 'ai_status', description: 'AI executors: which are installed (Claude Code, Codex, Qwen Code, CodeBuddy Code) and which accounts exist (names only), default, usage limits. Adding accounts / logging in is the owner\'s job.', inputSchema: S({}) },
+  { name: 'workspace_update', description: 'Change a project\'s settings: rename, preview URL. (Projects always auto commit & push after each round — that is the standard, not a setting. Builds: build_set; release targets: release_target_set.)', inputSchema: S({ workspace: str('project (default: yours)'), name: str('new name'), preview: str('preview URL') }) },
+  { name: 'ai_status', description: 'Subscription accounts include remaining usage (5-hour window and week, % left and reset time). AI executors: which are installed (Claude Code, Codex, Qwen Code, CodeBuddy Code) and which accounts exist (names only), default, usage limits. Adding accounts / logging in is the owner\'s job.', inputSchema: S({}) },
   { name: 'ai_install', description: 'Install an AI executor (as the AI user, via the official script / npm) on Opero\'s machine or an Agent server.', inputSchema: S({ executor: { type: 'string', enum: ['Claude Code', 'Codex', 'Qwen Code', 'CodeBuddy Code'] }, server: str('server name (default: Opero itself)') }, ['executor']) },
   { name: 'egress_manage', description: 'Network egress rules: when Opero itself cannot reach an address (mailbox IMAP/SMTP, notification channels like Telegram/Slack, AI keys, image generation, DNS, pipelines, code hosting APIs…), route connections to that domain (and its subdomains) through another server\'s Agent that can. action=list: rules + recent connection failures (start here when something "can\'t connect"); test: try host[:port] directly and via a server; set: add/change a rule (tests first, saves only if it connects through that server; force=true saves anyway); delete. via = server name/id with an Agent, or "direct" for an exception. lan=true (allow private/intranet addresses) needs the owner in person.', inputSchema: S({ action: { type: 'string', enum: ['list', 'test', 'set', 'delete'] }, host: str('domain, IP, URL or email address, optionally with :port (e.g. imap.gmail.com:993)'), via: str('server name or id (must have an Agent), or "direct"'), port: { type: 'integer', description: 'port to test with (default from host, else 443)' }, lan: { type: 'boolean' }, note: str('what it is for (optional)'), force: { type: 'boolean' } }, ['action']) },
   { name: 'domain_manage', description: 'Register a domain in Opero (with a DNS credential: Cloudflare API token or Aliyun AccessKey) or remove one (owner in person). Records: dns_list / dns_set / dns_delete.', inputSchema: S({ action: { type: 'string', enum: ['add', 'remove'] }, domain: str('example.com'), provider: { type: 'string', enum: ['cloudflare', 'aliyun'] }, credential: str('credential name or id (add)') }, ['action', 'domain']) },
@@ -113,7 +116,7 @@ export const TOOLS = [
   { name: 'build_status', description: 'Show the current / last test build of a build component: status, where it ran, output files, and the log.', inputSchema: S({ workspace: str('project name or id (default: your project)'), component: str('build component name or id, e.g. 网页 / 安卓 (needed when the project has more than one)') }) },
   { name: 'setup_info', description: 'Everything you need to set up building and releasing a project yourself: repo platform and token, which credentials the owner has (names only, and whether you may use them), existing pipelines on Yunxiao / Jenkins (read them with pipeline_read and reuse their build steps), Opero build settings, release targets, servers with their environment and registered deploy dirs, and what is still missing. Call this first when asked to set up build / release / deploy.', inputSchema: S({ workspace: str('project name or id (default: your project)') }) },
   { name: 'pipeline_read', description: 'Read an existing pipeline the owner already has (Yunxiao pipeline YAML or Jenkins job config.xml) so you can reuse its build / deploy steps in Opero (build_set cmd, release_target_set command). Ids come from setup_info.', inputSchema: S({ tool: { type: 'string', enum: ['yunxiao', 'jenkins'] }, id: str('Yunxiao pipeline id or Jenkins job name'), workspace: str('project (default: yours)') }, ['tool', 'id']) },
-  { name: 'release_target_set', description: 'Create or update a release target (environment) of your project: which build component it ships (build; required when the project has more than one; "none" = no build, just run the deploy command), which servers, deploy dir (registered as deployable on those servers automatically), the deploy script inside the package (default deploy.sh) or a deploy command, health-check URL, versions to keep. Targets on production (protected) servers always ask the owner before each release; you cannot loosen a permission the owner set. Then build_try and release_publish.', inputSchema: S({ workspace: str('project (default: yours)'), name: str('target name, e.g. 测试 / 生产'), env: str('which environment this is: 生产 / 预发 / 测试 / 开发 (optional; default = the servers\' environment tag). Marking it 生产 makes every release ask the owner'), build: str('build component name or id to ship, or "none"'), servers: { type: 'array', items: { type: 'string' }, description: 'server names or ids (list_servers)' }, dir: str('absolute deploy dir on the servers'), script: str('deploy script inside the package (default deploy.sh)'), command: str('or: command run in the deploy dir when the package has no script / nothing is built'), health: str('http(s) URL that should answer after deploy'), keep: { type: 'integer', description: 'packages kept per server for rollback (default 5)' }, package: str('instead of servers: store the built (and signed) package into the project\'s package slot, as "platform:channel", e.g. "android:test" / "ios:prod" (platform android / ios / mac / windows / linux, channel test / prod). Use this for apps: no servers, dir or deploy script needed; "none" turns it back into a server target'), permission: { type: 'string', enum: ['auto', 'ask'], description: 'auto = you may release directly (non-production only); ask = owner approves each release' } }, ['name']) },
+  { name: 'release_target_set', description: 'Create or update a release target (environment) of your project: which build component it ships (build; required when the project has more than one; "none" = no build, just run the deploy command), which servers, deploy dir (registered as deployable on those servers automatically), the deploy script inside the package (default deploy.sh) or a deploy command, health-check URL, versions to keep. Targets on production (protected) servers always ask the owner before each release; you cannot loosen a permission the owner set. Then build_try and release_publish.', inputSchema: S({ workspace: str('project (default: yours)'), name: str('target name, e.g. 测试 / 生产'), env: str('which environment this is: 生产 / 预发 / 测试 / 开发 (optional; default = the servers\' environment tag). Marking it 生产 makes every release ask the owner'), build: str('build component name or id to ship, or "none"'), servers: { type: 'array', items: { type: 'string' }, description: 'server names or ids (list_servers)' }, dir: str('absolute deploy dir on the servers'), script: str('deploy script inside the package (default deploy.sh)'), command: str('or: command run in the deploy dir when the package has no script / nothing is built'), health: str('http(s) URL that should answer after deploy'), keep: { type: 'integer', description: 'packages kept per server for rollback (default 5)' }, package: str('instead of servers: store the built (and signed) package into the project\'s package slot, as "platform:channel", e.g. "android:test" / "ios:prod" (platform android / ios / mac / windows / linux, channel test / prod). Use this for apps: no servers, dir or deploy script needed; "none" turns it back into a server target'), permission: { type: 'string', enum: ['auto', 'ask'], description: 'auto = you may release directly (non-production only); ask = owner approves each release' }, sign: str('Android packages must be signed to install: name of an Android signing certificate you may use (build_info lists them), or "none"') }, ['name']) },
   { name: 'request_credential', description: 'Ask the owner for a key / token / account you need and cannot get yourself (e.g. a Codeup token with pipeline permission, a Jenkins API token, a GitHub token with workflow scope, a database account). Posts a card with a button that opens the right "new credential" page with step-by-step instructions; when the owner saves it, it is granted to you and you get a message to continue. Say exactly which permissions are needed and why. Before asking, check setup_info / list_credentials: if the owner already has it but did not grant it to you, say so instead.', inputSchema: S({ group: { type: 'string', enum: ['代码仓库', '数据库', '服务器', '云账号', '签名证书', '其它'] }, kind: str('type inside the group, e.g. Codeup / GitHub / GitLab / MySQL / Jenkins / 阿里云'), why: str('one or two lines: what you will do with it'), perms: str('exact permissions to tick') }, ['group', 'why']) },
   { name: 'schedule_list', description: 'List the scheduled / webhook tasks (triggers): id, name, when, which employee, what it is told, enabled, last run, webhook path.', inputSchema: S({}) },
   { name: 'schedule_set', description: 'Create or change a scheduled task (trigger) that hands an employee a message on a schedule or when a webhook is called. The owner just says it in chat ("每天 18:00 给我发小结") — you set it up. when: 每 N 分钟 (≥5) / 每 N 小时 / 每天 HH:MM / 工作日 HH:MM / 每周一 HH:MM / webhook. Default employee: you. Write prompt as the full instruction the employee gets each time.', inputSchema: S({ id: str('existing trigger id to change (schedule_list); omit to create'), when: str('schedule rule (see description) or "webhook"'), prompt: str('what the employee is told each time'), employee: str('employee name or id (default: you)'), name: str('short name (optional, auto)'), enabled: { type: 'boolean' } }) },
@@ -129,7 +132,15 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 const ok = (text: string): ToolResult => ({ text })
 const fail = (text: string): ToolResult => ({ text, isError: true })
 
+const WAITING = (t: string) => `主人还没回「${t}」。卡片一直留在聊天里（不会过期），主人点了 Opero 会在聊天里告诉你；那时同一件事再做一次就直接放行。现在别等、也别重复发：不依赖它的先做，做不了就把这一轮停下，说清楚卡在哪。`
 export async function callTool(run: Run, name: string, args: any): Promise<ToolResult> {
+  try { return await callTool0(run, name, args) } catch (e) {
+    if (!(e instanceof StillWaiting)) throw e
+    // Claude Code 的权限提问工具要回固定格式
+    return name === 'approve' ? ok(JSON.stringify({ behavior: 'deny', message: WAITING(e.message) })) : ok(WAITING(e.message))
+  }
+}
+async function callTool0(run: Run, name: string, args: any): Promise<ToolResult> {
   const emp = get<Employee>('employees', run.emp)
   if (!emp) return fail('员工不在了')
   args = args ?? {}
@@ -151,6 +162,11 @@ export async function callTool(run: Run, name: string, args: any): Promise<ToolR
     case 'confirm': {
       const a = await confirmCard(run, emp, { title: String(args.title ?? ''), detail: String(args.detail ?? ''), why: String(args.why ?? ''), danger: !!args.danger })
       return ok(a ? 'approved' : 'denied')
+    }
+    case 'my_permissions': return ok(JSON.stringify(permissions.catalog(emp), null, 1))
+    case 'request_permission': {
+      const r = permissions.request(emp, args.kind, String(args.name ?? ''), String(args.why ?? ''))
+      return /^已经发给主人/.test(r) ? ok(r) : fail(r)
     }
     case 'send_card': return sendCard(emp, args)
     case 'send_file': return await sendFile(emp, args)
@@ -285,15 +301,25 @@ async function approve(run: Run, emp: Employee, a: { tool_name?: string; input?:
   return yes ? allow : deny('主人没同意，换个办法或者问问主人')
 }
 
+/** 主人还没回（员工这边等不了更久 / 这一轮结束了）：卡片留着，callTool 接住，告诉员工别等 */
+export class StillWaiting extends Error {}
 export async function confirmCard(run: Run, emp: Employee, o: { title: string; detail: string; why: string; danger?: boolean; note?: string }): Promise<boolean> {
+  // 主人之前在一张没等到的卡片上同意过同一件事（30 分钟内）：直接放行
+  const key = runner.preKey(emp.id, o.title, o.detail)
+  const pre = runner.takePreApproved(key)
+  if (pre) {
+    audit({ via: emp.name, action: 'confirm', target: `${o.title} · ${o.detail.slice(0, 80)}`, level: o.danger ? '危险' : '写', result: '成功', how: pre.verified ? '主人之前验证本人后同意过（那时员工没等到）' : '主人之前同意过（那时员工没等到）' })
+    return true
+  }
   const card: Card = {
     id: uid('c'), type: 'confirm', v: 1, state: 'open', level: o.danger ? 'danger' : 'warn',
-    data: { title: o.title, tag: o.danger ? '危险' : '要你确认', detail: o.detail, why: o.why, note: o.note ?? '', pending: true },
+    data: { title: o.title, tag: o.danger ? '危险' : '要你确认', detail: o.detail, why: o.why, note: o.note ?? '', pending: true, preKey: key },
     actions: [{ id: 'deny', label: '不行', style: 'ghost' }, { id: 'allow', label: o.danger ? '确认执行' : '同意', style: o.danger ? 'danger' : 'primary' }],
   }
   const m = empSays(emp.id, { kind: 'card', card }, `要你确认：${o.title}`, true)
   const a = await runner.waitCard(m.id, run.runId)
   syncWaiting(run.sid)
+  if (a.action === 'timeout' || a.action === 'cancel') throw new StillWaiting(o.title)
   const yes = a.action === 'allow'
   audit({ via: emp.name, action: 'confirm', target: `${o.title} · ${o.detail.slice(0, 80)}`, level: o.danger ? '危险' : '写', result: yes ? '成功' : '拒绝', how: yes ? (a.verified ? '本人验证后同意' : '本人点「同意」') : a.action === 'deny' ? '本人点「不行」' : '没人点 / 已停下' })
   return yes
@@ -307,7 +333,8 @@ async function askOwner(run: Run, emp: Employee, a: { question?: string; options
   const r = await runner.waitCard(m.id, run.runId)
   syncWaiting(run.sid)
   if (r.action === 'later') return ok('主人点了「以后再说」：先不决定。不要等、也不要马上再问；不依赖这个决定的先做，做不了就停下说清楚卡在哪')
-  return r.action === 'ok' && r.answer ? ok(`主人选了：${r.answer}`) : fail('主人没选（超时或已停下）')
+  if (r.action === 'timeout' || r.action === 'cancel') throw new StillWaiting(String(card.data.title ?? ''))
+  return r.action === 'ok' && r.answer ? ok(`主人选了：${r.answer}`) : fail('主人没选')
 }
 
 function sendCard(emp: Employee, a: { title?: string; tag?: string; rows?: string[][]; buttons?: string[] }): ToolResult {
@@ -603,14 +630,15 @@ const findCred = (k?: string) => all<Credential>('credentials').find((c) => c.id
 const findEmpAny = (k?: string) => all<Employee>('employees').find((e) => e.id === k || e.name === k) ?? all<Employee>('employees').find((e) => e.role === k)
 const PROD_WORD = /生产|正式|線上|线上|prod|production|live/i
 
-async function serverUpdate(run: Run, emp: Employee, a: { server?: string; name?: string; env?: string; protect?: boolean }): Promise<ToolResult> {
+async function serverUpdate(run: Run, emp: Employee, a: { server?: string; name?: string; env?: string; protect?: boolean; autoUpgrade?: boolean }): Promise<ToolResult> {
   const sv = findSv(a.server)
   if (!sv) return fail('没有这台服务器（list_servers 看）')
   const body: Record<string, unknown> = {}
   if (a.name !== undefined) body.name = a.name
   if (a.env !== undefined) body.env = a.env
   if (typeof a.protect === 'boolean') body.protect = a.protect
-  if (!Object.keys(body).length) return fail('要改什么：name / env / protect')
+  if (typeof a.autoUpgrade === 'boolean') body.autoUpgrade = a.autoUpgrade
+  if (!Object.keys(body).length) return fail('要改什么：name / env / protect / autoUpgrade')
   // 放宽：本来受保护，改完不受保护了
   const after = { env: a.env ?? sv.env, protect: typeof a.protect === 'boolean' ? a.protect : sv.protect }
   const loosen = isProtected(sv) && !isProtected(after)
@@ -702,12 +730,7 @@ function auditSearch(a: { q?: string; who?: string; limit?: number }): ToolResul
 }
 async function budgetSet(run: Run, emp: Employee, a: { employee?: string; workspace?: string; usd?: number }): Promise<ToolResult> {
   const usd = Math.max(0, Number(a.usd) || 0)
-  if (a.workspace) {
-    const w = findWs(a.workspace)
-    if (!w) return fail('没有这个项目')
-    const raise = !usd || usd > (w.budget ?? 0) && (w.budget ?? 0) > 0 || !w.budget
-    return gated(run, emp, { lvl: raise ? 'owner' : 'write', title: `项目「${w.name}」每月预算 → ${usd ? `$${usd}` : '不单独限'}`, detail: `现在：${w.budget ? `$${w.budget}` : '不单独限'}` }, (v) => callApi('PUT', `/api/workspaces/${w.id}`, { budget: usd }, v))
-  }
+  if (a.workspace) return fail('项目没有预算了（2026-11-28 去掉的）：要限就给员工设，或者设全局预算（settings_set budget）')
   const e = a.employee ? findEmpAny(a.employee) : emp
   if (!e) return fail('没有这个员工')
   const raise = !usd || !e.budget || usd > e.budget
@@ -722,19 +745,21 @@ async function settingsSet(run: Run, emp: Employee, a: Record<string, unknown>):
   const loosen = body.prodProtect === false || body.budgetStop === false || body.habits !== undefined || (body.budget !== undefined && (!Number(body.budget) || Number(body.budget) > Number(cur.budget || 0)))
   return gated(run, emp, { lvl: loosen ? 'owner' : 'write', title: '改系统设置', detail: Object.entries(body).map(([k, v]) => `${k}：${JSON.stringify(cur[k])} → ${JSON.stringify(v)}`).join('\n').slice(0, 1500) }, (v) => callApi('PUT', '/api/settings', body, v))
 }
-async function workspaceUpdate(run: Run, emp: Employee, a: { workspace?: string; name?: string; autoSync?: boolean; preview?: string }): Promise<ToolResult> {
+async function workspaceUpdate(run: Run, emp: Employee, a: { workspace?: string; name?: string; preview?: string }): Promise<ToolResult> {
   const w = findWs(String(a.workspace ?? '') || emp.workspace)
   if (!w) return fail('没有这个项目')
   if (w.id !== emp.workspace && !emp.canManage) return fail('只能改自己的项目')
-  const body = { ...(a.name ? { name: a.name } : {}), ...(typeof a.autoSync === 'boolean' ? { autoSync: a.autoSync } : {}), ...(a.preview !== undefined ? { preview: a.preview } : {}) }
-  if (!Object.keys(body).length) return fail('要改什么：name / autoSync / preview（预算用 budget_set，编译用 build_set，发布目标用 release_target_set）')
+  const body = { ...(a.name ? { name: a.name } : {}), ...(a.preview !== undefined ? { preview: a.preview } : {}) }
+  if (!Object.keys(body).length) return fail('要改什么：name / preview（项目一定自动同步，不是设置；编译用 build_set，发布目标用 release_target_set）')
   return gated(run, emp, { lvl: 'write', title: `改项目「${w.name}」`, detail: JSON.stringify(body) }, (v) => callApi('PUT', `/api/workspaces/${w.id}`, body, v))
 }
 async function aiStatus(): Promise<ToolResult> {
   const r = await callApi('GET', '/api/ai')
   if (!r.ok) return fail(r.msg)
   const d = r.data
-  const acc = (l?: any[]) => (l ?? []).map((x) => ({ name: x.name, isDefault: x.isDefault, subscription: x.sub, limitedUntil: x.limitedUntil || undefined, plan: x.plan || undefined }))
+  const w = (x?: { used: number; resetsAt?: number }) => (x ? { usedPercent: x.used, leftPercent: Math.max(0, 100 - x.used), resetsAt: x.resetsAt ? new Date(x.resetsAt).toLocaleString('zh-CN') : undefined } : undefined)
+  const acc = (l?: any[]) => (l ?? []).map((x) => ({ name: x.name, isDefault: x.isDefault, subscription: x.sub, limitedUntil: x.limitedUntil || undefined, plan: x.plan || undefined,
+    ...(x.quota ? { fiveHour: w(x.quota.five), week: w(x.quota.week), quotaUpdated: x.quota.at ? new Date(x.quota.at).toLocaleString('zh-CN') : undefined, quotaError: x.quota.err } : {}) }))
   return ok(JSON.stringify({ installed: { claude: d.claude, codex: d.codex, qwen: d.qwen, codebuddy: d.codebuddy }, accounts: { claude: acc(d.claudeAccounts), codex: acc(d.codexAccounts), qwen: acc(d.qwenAccounts), codebuddy: acc(d.codebuddyAccounts) }, note: '加账号 / 登录要主人在「应用 → AI 执行器」里做（令牌员工拿不到）' }, null, 1))
 }
 async function aiInstall(run: Run, emp: Employee, a: { executor?: string; server?: string }): Promise<ToolResult> {
@@ -899,6 +924,7 @@ async function buildTool(name: string, emp: Employee, a: any): Promise<ToolResul
     if (key && !b) return fail(`「${w.name}」没有叫「${key}」的编译组件（有：${names}）`)
     return ok(JSON.stringify({
       project: w.name, repo: w.repo, branch: w.branch,
+      signingCerts: myCerts(emp).map((c) => ({ name: c.name, type: CERT_TYPES[certType(c.id)], androidSign: certType(c.id) === 'android' })),
       contract: '一个项目可以有好几个编译组件（网页、安卓、后台…），各自的模板、命令、在哪编、流水线；发布目标选发哪个组件。编译脚本把要发的东西放进 out/（node / go 模板会打成 <名字>-<版本>.tgz，包里带 deploy.sh）；Opero 补 SHA256SUMS / VERSION / COMMIT。部署时 Agent 以 root 跑包里的 deploy.sh，OPERO_DIR（= KL_DIR）是部署目录。本地编和流水线跑同一个脚本。',
       components: (b ? [b] : list).map(info),
     }, null, 1))
@@ -1093,7 +1119,7 @@ async function pipelineRead(emp: Employee, a: { tool?: string; id?: string; work
   } catch (e) { return fail(`读不到：${(e as Error).message}`) }
 }
 
-function releaseTargetSet(emp: Employee, a: { workspace?: string; name?: string; env?: string; package?: string; build?: string; servers?: string[]; dir?: string; script?: string; command?: string; health?: string; keep?: number; permission?: string }): ToolResult {
+function releaseTargetSet(emp: Employee, a: { workspace?: string; name?: string; env?: string; package?: string; build?: string; servers?: string[]; dir?: string; script?: string; command?: string; health?: string; keep?: number; permission?: string; sign?: string }): ToolResult {
   const w = findWs(String(a.workspace ?? '') || emp.workspace)
   if (!w) return fail('没有这个项目')
   if (w.id !== emp.workspace) return fail('只能配自己项目的发布目标')
@@ -1129,6 +1155,17 @@ function releaseTargetSet(emp: Employee, a: { workspace?: string; name?: string;
   }
   if (!bid && comps.length > 1) return fail(`「${w.name}」有好几个编译组件（${comps.map((x) => `「${x.name}」`).join('、')}）：用 build 说这个目标发哪个`)
   if (pkg && (bid === 'none' || !comps.length)) return fail('存进安装包要先有编译组件（编出 apk / ipa / msix 这些的）：先 build_set')
+  // 签名（安卓 apk / aab）：只认这个员工能用的安卓签名证书；none = 不签
+  let sign = old?.sign
+  if (a.sign !== undefined) {
+    const k = String(a.sign).trim()
+    if (!k || k === 'none') sign = undefined
+    else {
+      const c = findAndroidCert(emp, k)
+      if (typeof c === 'string') return fail(c)
+      sign = c.id
+    }
+  }
   const env = a.env !== undefined ? String(a.env).trim().slice(0, 20) || undefined : old?.env
   const prod = deployProtected({ env, servers: svs.map((s) => s!.id) }, (id) => get<Server>('servers', id))
   // 权限：生产一律「发前问主人」；主人设过的不能往松了改
@@ -1139,7 +1176,7 @@ function releaseTargetSet(emp: Employee, a: { workspace?: string; name?: string;
     ...(old ?? { id: uid('dp'), keep: 5, autoRollback: true }), name, env, build: bid, servers: svs.map((s) => s!.id), package: pkg, dir: pkg ? undefined : dir || undefined,
     script: a.script !== undefined ? String(a.script).trim().replace(/[^\w./-]/g, '') || undefined : old?.script,
     command: a.command !== undefined ? String(a.command).trim().slice(0, 4000) || undefined : old?.command,
-    health: health || undefined, keep: a.keep ? Math.max(1, Math.min(Number(a.keep) || 5, 30)) : old?.keep ?? 5, ai,
+    health: health || undefined, keep: a.keep ? Math.max(1, Math.min(Number(a.keep) || 5, 30)) : old?.keep ?? 5, ai, sign,
   }
   // 部署目录登记成「能部署」（发布要求的）：没登记的补上
   const added: string[] = []
@@ -1153,8 +1190,20 @@ function releaseTargetSet(emp: Employee, a: { workspace?: string; name?: string;
   const w2 = { ...cur, deploys }
   put('workspaces', w2); emit({ t: 'put', coll: 'workspaces', item: w2 })
   audit({ via: emp.name, action: old ? 'release.target.update' : 'release.target.create', target: `${w.name} → ${name}（${svs.map((s) => s!.name).join('、')}${next.dir ? ` ${next.dir}` : ''}）`, level: '写', result: '成功', how: '员工' })
-  if (pkg) return ok(`${old ? '已改' : '已建'}发布目标「${name}」：编 ${buildLabel(w, next)}${next.sign ? '、签名' : ''}，存进安装包 ${packages.PLATFORMS[pkg.platform].label} · ${packages.CHANNELS[pkg.channel]}（那一格只留最新）；${ai === 'auto' ? '你可以直接发' : '每次发之前会问主人'}。先 build_try 编通，再 release_publish。`)
-  return ok(`${old ? '已改' : '已建'}发布目标「${name}」：发 ${buildLabel(w, next)}，发到 ${svs.map((s) => s!.name).join('、')}${next.dir ? `，目录 ${next.dir}` : ''}${added.length ? `（已在 ${added.join('、')} 上把它登记成能部署）` : ''}；${ai === 'auto' ? '你可以直接发' : '每次发之前会问主人'}${prod && a.permission === 'auto' ? '（有生产服务器，只能「发前问主人」）' : ''}。先 build_try 编通，再 release_publish。`)
+  const signText = next.sign ? `、用证书「${get<Credential>('credentials', next.sign)?.name ?? next.sign}」签名` : ''
+  if (pkg) return ok(`${old ? '已改' : '已建'}发布目标「${name}」：编 ${buildLabel(w, next)}${signText}${!next.sign && pkg.platform === 'android' ? '（没签名：安卓包没签名装不上，用 sign 选一张证书）' : ''}，存进安装包 ${packages.PLATFORMS[pkg.platform].label} · ${packages.CHANNELS[pkg.channel]}（那一格只留最新）；${ai === 'auto' ? '你可以直接发' : '每次发之前会问主人'}。先 build_try 编通，再 release_publish。`)
+  return ok(`${old ? '已改' : '已建'}发布目标「${name}」：发 ${buildLabel(w, next)}${signText}，发到 ${svs.map((s) => s!.name).join('、')}${next.dir ? `，目录 ${next.dir}` : ''}${added.length ? `（已在 ${added.join('、')} 上把它登记成能部署）` : ''}；${ai === 'auto' ? '你可以直接发' : '每次发之前会问主人'}${prod && a.permission === 'auto' ? '（有生产服务器，只能「发前问主人」）' : ''}。先 build_try 编通，再 release_publish。`)
+}
+
+/** 员工能用的签名证书（主人允许员工用、给这个员工开了） */
+function myCerts(emp: Employee) { return all<Credential>('credentials').filter((c) => c.group === '签名证书' && c.aiAllowed && emp.creds?.includes(c.id)) }
+/** 按名字找能签安卓的证书；找不到 / 不是安卓的 / 没给这个员工开，说清楚为什么 */
+function findAndroidCert(emp: Employee, key: string): Credential | string {
+  const any = all<Credential>('credentials').find((c) => c.group === '签名证书' && (c.name === key || c.id === key))
+  const list = myCerts(emp).filter((c) => certType(c.id) === 'android').map((c) => `「${c.name}」`).join('、') || '没有'
+  if (!any) return `没有叫「${key}」的签名证书（你能用的安卓证书：${list}）`
+  if (certType(any.id) !== 'android') return `「${any.name}」是${CERT_TYPES[certType(any.id)]}，不能签安卓包（你能用的安卓证书：${list}）`
+  return credBlock(emp, any.id, '签名') || any
 }
 
 function requestCredential(emp: Employee, a: { group?: string; kind?: string; why?: string; perms?: string }): ToolResult {

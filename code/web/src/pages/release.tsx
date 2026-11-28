@@ -1,14 +1,13 @@
 // 发布（照 KidLock「研发 → 发布」）：看板（每个项目一张卡、每个环境一行）→ 项目的发布页（每个环境一张卡：线上版本、最近一次、发到哪、发布 / 回滚）
 // → 发布 / 回滚弹窗（这次带上哪些提交、说明）→ 发布详情（步骤时间线、失败原因、输出）。员工能发的它也能发，发生产照旧要你验证本人。
 import { useEffect, useState } from 'react'
-import type { BuildComp, Deploy, LiveRelease, ReleaseStep, Server, Workspace } from '../types'
-import { useStore } from '../store'
+import type { BuildComp, Deploy, LiveRelease, PkgPlatform, ReleaseStep, Server, Workspace } from '../types'
+import { toast, useStore } from '../store'
 import { call } from '../live'
 import { Empty, PageHeader, Segmented, Sheet, Tag } from '../components/ui'
 import { IconCheck } from '../components/icons'
 import { headNav, type PageProps } from './nav'
-import { DeployForm } from './live2'
-import { PLATS } from '../components/Packages'
+import { PackagesSection, PLATS } from '../components/Packages'
 
 type Nav = PageProps['nav']
 const STEP: Record<ReleaseStep['k'], string> = { build: '编译', checkout: '核对产物', transfer: '发到服务器', sign: '签名', deploy: '部署', health: '检查', rollback: '退回上一版', store: '存进安装包' }
@@ -142,77 +141,124 @@ function HistoryTable({ rows, nav, wss }: { rows: LiveRelease[]; nav: Nav; wss?:
 }
 
 // ======================= 一个项目的发布 =======================
-/** 项目页最上面的「发布」：各环境（线上版本、发布、回滚、编辑）+ 这个项目的发布记录 */
+// ======================= 项目页最上面的「发布」 =======================
+// 2026-11-28 主人定的（docs/规范/界面.md 原则 11–14）：按端分开（Web / 安卓 / iPhone…，系统自己认，不让人填），
+// 每个端一个选项卡：它的环境（线上版本、发布、回滚）、最近 3 条发布（日期、端、版本号）、它的安装包。编译、环境怎么配都交给员工，这里不摆。
+type Plat = 'web' | PkgPlatform
+const PLAT_ORDER: Plat[] = ['web', 'android', 'ios', 'mac', 'windows', 'linux']
+const platLabel = (p: Plat) => (p === 'web' ? 'Web' : PLATS.find((x) => x.p === p)?.label ?? p)
+/** 这个发布环境属于哪个端：存进安装包的看格子；编译组件是安卓的就是安卓；名字里写了的认名字；其它是 Web（发到服务器的） */
+export function platformOf(w: Workspace, d?: Deploy): Plat {
+  if (!d) return 'web'
+  if (d.package) return d.package.platform
+  const b = compOfDeploy(w, d)
+  if (b?.kind === 'android') return 'android'
+  const t = `${d.name} ${b?.name ?? ''}`.toLowerCase()
+  if (/安卓|android|\bapk\b/.test(t)) return 'android'
+  if (/iphone|ipad|\bios\b|苹果/.test(t)) return 'ios'
+  if (/\bmac\b|macos/.test(t)) return 'mac'
+  if (/windows|\bwin\b/.test(t)) return 'windows'
+  return 'web'
+}
+
 export function ReleaseSection({ w, nav }: { w: Workspace; nav: Nav }) {
   const list = useStore((s) => s.liveReleases)
   const servers = useStore((s) => s.servers)
+  const pkgs = useStore((s) => s.packages)
+  const emp = useStore((s) => s.employees.find((e) => e.workspace === w.id))
   const [dlg, setDlg] = useState<{ d: Deploy; mode: 'release' | 'rollback' } | null>(null)
-  const [edit, setEdit] = useState<Deploy | null>(null)
   const [allRows, setAllRows] = useState(false)
-  const saveDeploy = async (x: Deploy) => { if (await call('PUT', `/api/workspaces/${w.id}`, { deploys: (w.deploys ?? []).map((y) => (y.id === x.id ? x : y)) }, '已保存')) setEdit(null) }
-  const rows = releasesOf(list, w.id)
+  const deploys = w.deploys ?? []
+  // 有哪些端：有发布环境的、有安装包的
+  const plats = PLAT_ORDER.filter((p) => deploys.some((d) => platformOf(w, d) === p) || pkgs.some((x) => x.ws === w.id && x.platform === p))
+  const [tab, setTab] = useState<Plat | null>(null)
+  const cur: Plat | undefined = tab && plats.includes(tab) ? tab : plats[0]
+  const mine = deploys.filter((d) => platformOf(w, d) === cur)
+  const rows = releasesOf(list, w.id).filter((r) => platformOf(w, deploys.find((d) => d.id === r.target)) === cur)
   const sv = (id: string) => servers.find((x) => x.id === id)
+  // 没配发布：一句话交给员工（编译、发布怎么配是员工的活）
+  const askEmp = async () => {
+    if (!emp) { toast('这个项目还没有员工：先在下面「员工」里加一个'); return }
+    const r = await call<{ sid: string }>('POST', `/api/employees/${emp.id}/ask`, { text: `把项目「${w.name}」的编译和发布配好：已有流水线或部署脚本就照着配，没有就自己建；试编通过、建好发布目标后告诉我。` })
+    if (r) nav.openChat(emp.id)
+  }
   return (
     <div className="rel-section">
-      <div className="rel-h3"><h3>{`发布 · ${(w.deploys ?? []).length} 个环境`}</h3><span className="rel-sec-sub">{`发布分支 ${w.branch} · ${buildText(w)}`}</span></div>
-      <div>
-        {(w.deploys ?? []).length === 0 && <Empty>还没有发布环境：跟这个项目的员工说一句「加一个测试环境」，它会看好服务器和目录配好</Empty>}
-        <div className="rel-envs">
-          {(w.deploys ?? []).map((d) => {
-            const rs = releasesOf(list, w.id, d.id)
-            const last = rs[0]
-            const online = rs.find((r) => r.status === 'success')
-            const canRollback = rs.some((r) => r.status === 'success' && r.version !== online?.version)
-            const env = envLabel(d, servers)
-            const running = last?.status === 'running'
-            return (
-              <div key={d.id} className={'rel-env-card' + (env.prod ? ' prod' : '')}>
-                <div className="rel-env-head">
-                  <span className={'rel-env-tag' + (env.prod ? ' prod' : '')}>{env.text}</span>
-                  <b>{d.name}</b>
-                  <span className="rel-env-ai">{AI[d.ai ?? 'ask']}</span>
-                  <button className="btn ghost sm rel-env-edit" onClick={() => setEdit(d)}>编辑</button>
-                </div>
-                <div className="rel-cur">
-                  <small>线上版本</small>
-                  {online ? <><span className="rel-cur-ver mono" data-no-i18n="">{online.version}</span><span className="rel-cur-sub">{at(online.started)} · {online.by}{online.sha ? <span className="mono" data-no-i18n=""> · {online.sha.slice(0, 7)}</span> : null}</span></>
-                    : <span className="rel-cur-none">还没发布过</span>}
-                </div>
-                {last && last.id !== online?.id && (
-                  <button className="rel-last" onClick={() => nav.push({ page: 'release', params: { id: last.id } })}>
-                    <small>最近一次</small><span className="mono" data-no-i18n="">{last.version || '…'}</span><Tag tone={ST[last.status].tone}>{ST[last.status].label}</Tag><span className="rel-cur-sub">{at(last.started)}</span>
-                  </button>
-                )}
-                <dl className="rel-kv">
-                  {d.package
-                    ? <div><dt>存进</dt><dd>{`安装包 · ${PLATS.find((x) => x.p === d.package!.platform)?.label} · ${d.package.channel === 'prod' ? '正式' : '测试'}（只留最新）`}</dd></div>
-                    : <div><dt>服务器</dt><dd>{d.servers.map((id) => <span key={id} className={'rel-chip' + (sv(id) ? '' : ' bad')} onClick={() => sv(id) && nav.push({ page: 'server', params: { id } })}>{sv(id)?.name ?? `${id}（不在了）`}</span>)}</dd></div>}
-                  {((w.builds?.length ?? 0) > 1 || d.build === 'none') && <div><dt>编译组件</dt><dd>{compOfDeploy(w, d)?.name ?? (d.build === 'none' ? '不编译' : '还没选')}</dd></div>}
-                  {d.dir && <div><dt>部署目录</dt><dd className="mono" data-no-i18n="">{d.dir}</dd></div>}
-                  {!d.package && <div><dt>怎么部署</dt><dd>{d.command ? <span className="mono" data-no-i18n="">{d.command.length > 60 ? d.command.slice(0, 60) + '…' : d.command}</span> : compOfDeploy(w, d) ? <>包里的 <span className="mono">{d.script || 'deploy.sh'}</span></> : '把包里的东西放进部署目录'}</dd></div>}
-                  {d.health && <div><dt>发完检查</dt><dd className="mono" data-no-i18n="">{d.health}</dd></div>}
-                  <div><dt>其它</dt><dd>{(d.package ? [d.sign && '编完签名'] : [d.sign && '签名', `留 ${d.keep ?? 5} 个版本能回滚`, d.autoRollback !== false && '失败自动退回']).filter(Boolean).join(' · ') || '—'}</dd></div>
-                </dl>
-                <div className="rel-env-foot">
-                  <button className="btn primary sm" disabled={running} onClick={() => setDlg({ d, mode: 'release' })}>{running ? '发布中…' : '发布'}</button>
-                  {!d.package && <button className="btn default sm" disabled={!canRollback || running} onClick={() => setDlg({ d, mode: 'rollback' })}>回滚</button>}
-                  <span className="rel-env-count">{rs.length ? `发过 ${rs.length} 次` : ''}</span>
-                </div>
-              </div>
-            )
-          })}
+      <div className="rel-h3"><h3>发布</h3>{plats.length > 0 && <span className="rel-sec-sub">{`${deploys.length} 个环境 · 分支 ${w.branch}`}</span>}</div>
+      {plats.length === 0 ? (
+        <div className="rel-empty">
+          <span>还没有发布：编译、发到哪，交给员工配就行</span>
+          <button className="btn primary sm" onClick={askEmp}>让员工配好</button>
         </div>
-        {rows.length > 0 && (
-          <>
-            <div className="rel-h3 rel-hist"><h3>{`发布记录 · ${rows.length}`}</h3>{rows.length > 5 && <button className="btn ghost sm" onClick={() => setAllRows(!allRows)}>{allRows ? '收起' : '全部'}</button>}</div>
-            <HistoryTable rows={rows.slice(0, allRows ? 50 : 5)} nav={nav} />
-          </>
-        )}
-      </div>
-      {edit && (
-        <Sheet title={`编辑发布环境 · ${edit.name}`} onClose={() => setEdit(null)} size="lg">
-          <DeployForm bare init={edit} servers={servers} builds={w.builds ?? []} onCancel={() => setEdit(null)} onSave={saveDeploy} />
-        </Sheet>
+      ) : (
+        <>
+          {plats.length > 1 && (
+            <div className="plat-tabs" role="tablist">
+              {plats.map((p) => {
+                const n = deploys.filter((d) => platformOf(w, d) === p).length
+                const running = list.some((r) => r.ws === w.id && r.status === 'running' && platformOf(w, deploys.find((d) => d.id === r.target)) === p)
+                return (
+                  <button key={p} role="tab" aria-selected={cur === p} className={'plat-tab' + (cur === p ? ' on' : '')} onClick={() => setTab(p)}>
+                    {platLabel(p)}{n > 0 && <small>{n}</small>}{running && <i className="plat-run" title="发布中" />}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {mine.length > 0 && (
+            <div className="rel-envs">
+              {mine.map((d) => {
+                const rs = releasesOf(list, w.id, d.id)
+                const last = rs[0]
+                const online = rs.find((r) => r.status === 'success')
+                const canRollback = rs.some((r) => r.status === 'success' && r.version !== online?.version)
+                const env = envLabel(d, servers)
+                const running = last?.status === 'running'
+                const where = d.package ? `存进安装包 · ${d.package.channel === 'prod' ? '正式' : '测试'}` : d.servers.map((id) => sv(id)?.name ?? `${id}（不在了）`).join('、')
+                return (
+                  <div key={d.id} className={'rel-env-card' + (env.prod ? ' prod' : '')}>
+                    <div className="rel-env-head">
+                      <span className={'rel-env-tag' + (env.prod ? ' prod' : '')}>{env.text}</span>
+                      <b>{d.name}</b>
+                      {/* 属于哪个端：卡片上直接写（主人 2026-11-28：多个时一眼分得清） */}
+                      <span className={'rel-env-plat p-' + platformOf(w, d)}>{platLabel(platformOf(w, d))}</span>
+                    </div>
+                    <div className="rel-cur">
+                      <small>{d.package ? '最新的包' : '线上版本'}</small>
+                      {online ? <><span className="rel-cur-ver mono" data-no-i18n="">{online.version}</span><span className="rel-cur-sub">{`${at(online.started)} · ${online.by}`}</span></>
+                        : <span className="rel-cur-none">还没发布过</span>}
+                    </div>
+                    {last && last.id !== online?.id && (
+                      <button className="rel-last" onClick={() => nav.push({ page: 'release', params: { id: last.id } })}>
+                        <small>最近一次</small><span className="mono" data-no-i18n="">{last.version || '…'}</span><Tag tone={ST[last.status].tone}>{ST[last.status].label}</Tag><span className="rel-cur-sub">{at(last.started)}</span>
+                      </button>
+                    )}
+                    <div className="rel-env-foot">
+                      <button className="btn primary sm" disabled={running} onClick={() => setDlg({ d, mode: 'release' })}>{running ? '发布中…' : '发布'}</button>
+                      {!d.package && <button className="btn default sm" disabled={!canRollback || running} onClick={() => setDlg({ d, mode: 'rollback' })}>回滚</button>}
+                      <span className="rel-env-where" title={AI[d.ai ?? 'ask']}>{where}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {rows.length > 0 && (
+            <div className="rel-recent">
+              <div className="rel-recent-head"><b>最近发布</b>{rows.length > 3 && <button className="btn ghost sm" onClick={() => setAllRows(!allRows)}>{allRows ? '收起' : `全部 ${rows.length}`}</button>}</div>
+              {rows.slice(0, allRows ? 30 : 3).map((r) => (
+                <button key={r.id} className="rel-rec" onClick={() => nav.push({ page: 'release', params: { id: r.id } })}>
+                  <span className="rel-rec-when mono">{at(r.started)}</span>
+                  <span className="rel-rec-plat">{platLabel(cur!)}</span>
+                  <span className="rel-rec-env">{r.targetName}</span>
+                  <span className="rel-rec-ver mono" data-no-i18n="">{r.version || '…'}</span>
+                  <span className="rel-rec-st"><Tag tone={ST[r.status].tone}>{r.rollbackOf ? '回滚' : ST[r.status].label}</Tag></span>
+                </button>
+              ))}
+            </div>
+          )}
+          {cur && cur !== 'web' && <PackagesSection w={w} platform={cur} />}
+        </>
       )}
       {dlg && <ReleaseSheet w={w} d={dlg.d} mode={dlg.mode} servers={servers} nav={nav} onClose={() => setDlg(null)} />}
     </div>

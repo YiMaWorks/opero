@@ -61,7 +61,7 @@ fun PhraseChips(sid: String, phrases: List<String>, editing: Boolean, gap: Dp) {
         dragging = null
         moved = 0f
         val now = order.toList()
-        if (now != phrases) Live.setPhrases(now)
+        if (now != phrases) Live.savePhrases(now)
     }
 
     for (p in order) key(p) {
@@ -109,7 +109,7 @@ fun PhraseChips(sid: String, phrases: List<String>, editing: Boolean, gap: Dp) {
             Text(if (sending == p) "$short…" else short, color = c.sub, fontSize = 13.sp, maxLines = 1)
             if (editing) Text(
                 "×", color = c.faint, fontSize = 15.sp,
-                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { Live.setPhrases(order.filter { it != p }) }.padding(horizontal = 6.dp),
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { Live.savePhrases(order.filter { it != p }) }.padding(horizontal = 6.dp),
             )
         }
     }

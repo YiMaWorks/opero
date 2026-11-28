@@ -30,6 +30,10 @@ interface OperoNativeApi {
   open?(route: string): void
   /** 嵌入页最外层点了关闭：App 退回上一层 */
   close?(): void
+  /** 把文件存到手机（安卓 0.5.0）：外壳带登录取 url（相对 / 绝对 / data:），图片进相册、别的进「下载」 */
+  download?(url: string, name: string): void
+  /** 把文件交给系统分享面板（安卓 0.5.0）：WebView 没有 navigator.share */
+  share?(url: string, name: string): void
 }
 
 /** 这台手机（外壳）自己的设置，存在手机上 */
@@ -95,6 +99,21 @@ export function nativeClose(): boolean {
   const n = native()
   if (!inApp || !n?.close) return false
   return safe(() => { n.close!(); return true }, false)
+}
+
+/** App 里存文件：外壳支持就交给它（回 true，文件名准、带登录），浏览器 / 老外壳回 false，网页自己下 */
+export function nativeDownload(url: string, name: string): boolean {
+  const n = native()
+  if (!inApp || !n?.download) return false
+  return safe(() => { n.download!(url, name); return true }, false)
+}
+/** App 里能不能把文件交给系统分享 */
+export const canNativeShare = () => inApp && !!native()?.share
+/** App 里分享文件（发微信、邮件…）；不支持回 false */
+export function nativeShare(url: string, name: string): boolean {
+  const n = native()
+  if (!inApp || !n?.share) return false
+  return safe(() => { n.share!(url, name); return true }, false)
 }
 
 /** 用手机的指纹验证本人；不在 App 里返回 null（走网页的验证弹窗） */

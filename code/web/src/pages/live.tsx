@@ -11,8 +11,8 @@ import { IconCheck, IconChevron, IconPlus } from '../components/icons'
 import { Markdown } from '../components/Markdown'
 import { WorkSheet } from '../components/WorkSheet'
 import { EditableAvatar } from '../components/AvatarPicker'
-import { PackagesSection } from '../components/Packages'
 import { EgressSection } from '../components/Egress'
+import { FolderGit2, HardDrive, KeyRound, MessageCircle, Trash2 } from 'lucide-react'
 import { ReleaseSection } from './release'
 import { AskBar, Manual } from '../components/AskBar'
 import { approvalLabel, effortLabel, execKind, modelsFor } from '../work'
@@ -22,7 +22,7 @@ import { LangPicker } from '../components/LangPicker'
 import { useLang } from '../i18n'
 import { CUR } from '../mode'
 import { headNav, type PageProps } from './nav'
-import { BuildSection, DirsSection, EmployeeWorkSections, PolicySection, WorkspaceAutoSections } from './live2'
+import { DirsSection, EmployeeWorkSections, PolicySection } from './live2'
 import { LogViewer } from './live3'
 import { EmployeeCredsSection } from './creds'
 import { getPasskey, passkeySupported, createPasskey, passkeyError, markPkHere } from '../webauthn'
@@ -143,9 +143,13 @@ export function useWorkHosts() {
 export const srvName = (x: { id: string; name: string }) => (x.id === 'local' && x.name === '本机' ? 'Opero 这台' : x.name)
 const hostLabel = (x: { id: string; name: string; online: boolean; via?: string }) => (x.id === 'local' ? srvName(x) : `${x.name}${x.online ? '' : '（离线）'}`)
 
+const EXEC_HOST_KEY = 'opero.exec.host'
 export function ExecutorsPage({ params, nav }: PageProps) {
   const workHosts = useWorkHosts()
-  const [host, setHost] = useState<string>(params.host ?? 'local')
+  // 记住上次选的哪台（主人 2026-11-28）：下次进来还是那台；那台不在了就回 Opero 这台
+  const [host, setHostRaw] = useState<string>(() => params.host ?? localStorage.getItem(EXEC_HOST_KEY) ?? 'local')
+  const setHost = (h: string) => { setHostRaw(h); localStorage.setItem(EXEC_HOST_KEY, h) }
+  useEffect(() => { if (workHosts.length && !workHosts.some((x) => x.id === host)) setHostRaw('local') }, [workHosts.length, host]) // eslint-disable-line react-hooks/exhaustive-deps
   const { info, load } = useAi(host)
   const cur = workHosts.find((x) => x.id === host)
   return (
@@ -658,6 +662,18 @@ export function LiveServerPage({ params, nav }: PageProps) {
             </div>
           </Section>
         )}
+        {/* Agent 自动升级（默认开）：比 Opero 旧就挑这台空闲的时候自己升，不打断在干活的员工 */}
+        {agent && s.id !== 'local' && (
+          <Section title="Agent 自动升级">
+            <label className="lrow">
+              <span className="row-main">
+                <span className="row-title">{`比 Opero 旧就自己升（现在 ${s.agentVersion || '?'}${opVer ? ` · Opero ${opVer}` : ''}）`}</span>
+                <span className="row-sub">{s.autoUpgrade === false ? '关着：要升级点下面「升级 Agent」' : s.agentUpgrade ? `${({ running: '在升级', ok: '升好了', failed: '没升上', waiting: '等空闲' } as const)[s.agentUpgrade.status]} · ${new Date(s.agentUpgrade.at).toLocaleString()}${s.agentUpgrade.msg ? ` · ${s.agentUpgrade.msg}` : ''}` : '挑这台没有员工干活、没在发布的时候升，不打断工作；程序从这套 Opero 拿'}</span>
+              </span>
+              <Toggle on={s.autoUpgrade !== false} onChange={(v) => call('PUT', `/api/servers/${s.id}`, { autoUpgrade: v }, v ? '已打开自动升级' : '已关掉自动升级')} />
+            </label>
+          </Section>
+        )}
         <div className="pad row-actions wrap">
           <button className="btn default" onClick={() => nav.openChat(getState().employees.find((e) => e.id === 'ops')?.id ?? getState().employees[0]?.id ?? '')}>让员工看看</button>
           {agent && s.id !== 'local' && s.online && s.agentVersion && opVer && s.agentVersion !== opVer && (
@@ -673,6 +689,9 @@ export function LiveServerPage({ params, nav }: PageProps) {
 }
 
 // ======================= 数据 =======================
+/** 数据库名字：接入时没起名（自动生成的「MySQL · 地址/库」）就只用库名或地址的头一段，免得标题三行长、和下面一行重复 */
+const hostShort = (h: string) => (/^\d+(\.\d+){3}$/.test(h) ? h : h.split('.')[0].length > 24 ? `${h.split('.')[0].slice(0, 12)}…${h.split('.')[0].slice(-6)}` : h.split('.')[0])
+const dsShort = (d: { name: string; kind: string; host: string; db: string }) => (d.name.startsWith(`${d.kind} · `) ? (d.db || hostShort(d.host)) : d.name)
 export function LiveDataPage({ nav }: PageProps) {
   const sources = useStore((s) => s.dataSources)
   const queries = useStore((s) => s.savedQueries)
@@ -685,7 +704,7 @@ export function LiveDataPage({ nav }: PageProps) {
           {sources.length === 0 && <Empty>还没有：点「接入」加一个 MySQL / PostgreSQL</Empty>}
           {sources.map((d) => (
             <Row key={d.id} chevron onClick={() => nav.push({ page: 'query', params: { source: d.id } })} icon={<span className="ws-icon">{d.kind === 'MySQL' ? 'M' : 'P'}</span>}
-              title={<>{d.name} <Tag tone={envTone(d.env)}>{d.env}</Tag> {!d.writable && <Tag>只读</Tag>}</>} sub={`${d.kind} · ${d.host}/${d.db} · ${d.tables.length} 张表`} />
+              title={<><span className="ds-name">{dsShort(d)}</span> <Tag tone={envTone(d.env)}>{d.env}</Tag> {!d.writable && <Tag>只读</Tag>}</>} sub={<span className="ds-sub" title={`${d.host}/${d.db}`}>{`${d.kind} · ${hostShort(d.host)}${d.db ? `/${d.db}` : ''} · ${d.tables.length} 张表`}</span>} />
           ))}
         </Section>
         {queries.length > 0 && (
@@ -1161,6 +1180,8 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
   const [remote, setRemote] = useState<{ def?: string; branches: string[] } | null>(null)
   const [switching, setSwitching] = useState('')
   const [workOf, setWorkOf] = useState('') // 点员工那一行的「执行器 · 模型」：弹出它的 work 设置，不用进员工资料
+  const [del, setDel] = useState(false)
+  const servers = useStore((s) => s.servers)
   const refresh = async () => { if (!w) return; setBusy(true); await call('POST', `/api/workspaces/${w.id}/refresh`); setBusy(false) }
   useEffect(() => { refresh() }, [params.id]) // eslint-disable-line react-hooks/exhaustive-deps
   if (!w) return <div className="page"><PageHeader title="项目" {...headNav(nav)} /><Empty>找不到这个项目</Empty></div>
@@ -1179,11 +1200,8 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
     setSwitching('')
     if (r) { toast(r.msg); setBrOpen(false) }
   }
-  const remove = async () => {
-    if (!confirm(`从 Opero 里去掉「${w.name}」？（服务器上的目录留着）`)) return
-    const withEmps = users.length > 0 && confirm(`它的 ${users.length} 个员工（${users.map((e) => e.name).join('、')}）也一起删掉吗？\n\n确定 = 一起删（聊天记录也删）\n取消 = 留着，变成没有项目的普通员工`)
-    if (await call('DELETE', `/api/workspaces/${w.id}${withEmps ? '?withEmployees=1' : ''}`, undefined, '已去掉')) nav.back()
-  }
+  const srv = servers.find((x) => x.id === w.server)
+  const hostName = !srv || srv.id === 'local' ? 'Opero 这台' : srv.name
   return (
     <div className="page">
       <PageHeader title={<InlineText value={w.name} onSave={(v) => call('PUT', `/api/workspaces/${w.id}`, { name: v }, '已改名')} />} sub={`${w.provider} · ${short}`} {...headNav(nav)} right={<span className="row-actions"><button className="btn ghost sm" onClick={() => copy(w.repo)}>复制地址</button><button className="btn default sm" disabled={busy} onClick={refresh}>{busy ? '刷新中…' : '刷新'}</button></span>} />
@@ -1191,20 +1209,22 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
         {w.error && <div className="pad"><div className="banner b-warn">{w.error}</div></div>}
         {/* 发布放最上面（项目和发布合在一起）：各环境线上版本、发布 / 回滚、发布记录 */}
         <ReleaseSection w={w} nav={nav} />
-        <BuildSection w={w} />
-        <PackagesSection w={w} />
-        <Section title={`员工 · ${users.length}`} right={<button className="btn ghost sm" onClick={addEmp}>+ 加一个员工</button>}>
-          {users.length === 0 && <Empty>还没有员工：点右上角「+ 加一个员工」，点了就建好</Empty>}
+        <Section title={`员工 · ${users.length}`} right={<button className="btn ghost sm" onClick={addEmp}>+ 加员工</button>}>
+          {users.length === 0 && <Empty>还没有员工：点右上角「+ 加员工」，点了就建好</Empty>}
           {users.map((e) => (
-            <Row key={e.id} icon={<EditableAvatar id={e.id} size={36} />} onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}
-              title={<><InlineText value={e.name} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { name: v }, '已改名')} /><InlineText className="role-tag" value={e.role ?? ''} placeholder="加职位" max={20} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { role: v }, '已改职位')} /></>}
-              sub={<InlineText value={e.title} placeholder="写一句它负责什么" max={80} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { title: v }, '已保存')} />}
-              right={<span className="row-actions">
-                <button className="btn ghost sm" onClick={(ev) => { ev.stopPropagation(); setWorkOf(e.id) }} title="执行器、模型、思考、审核">{`${e.executor.replace(' Code', '')} · ${e.model}`}</button>
-                <button className="btn primary sm" onClick={(ev) => { ev.stopPropagation(); nav.openChat(e.id) }}>发消息</button>
-              </span>} />
+            <div key={e.id} className="ws-emp" onClick={() => nav.push({ page: 'employee', params: { id: e.id } })}>
+              <span onClick={(ev) => ev.stopPropagation()}><EditableAvatar id={e.id} size={40} /></span>
+              <div className="ws-emp-main">
+                <div className="ws-emp-name" onClick={(ev) => ev.stopPropagation()}>
+                  <InlineText value={e.name} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { name: v }, '已改名')} />
+                  <InlineText className="role-tag" value={e.role ?? ''} placeholder="加职位" max={20} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { role: v }, '已改职位')} />
+                </div>
+                <div className="ws-emp-title" onClick={(ev) => ev.stopPropagation()}><InlineText value={e.title} placeholder="写一句它负责什么" max={80} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { title: v }, '已保存')} /></div>
+                <button className="ws-emp-work" onClick={(ev) => { ev.stopPropagation(); setWorkOf(e.id) }} title="执行器、模型、思考、审核">{`${e.executor.replace(' Code', '')} · ${e.model}`}</button>
+              </div>
+              <button className="ws-emp-chat" aria-label="发消息" title={`跟「${e.name}」发消息`} onClick={(ev) => { ev.stopPropagation(); nav.openChat(e.id) }}><MessageCircle size={18} /></button>
+            </div>
           ))}
-          {users.length > 0 && <p className="hint">同一个项目的员工共用项目目录和 docs/ 里的交接；切分支大家一起切。</p>}
         </Section>
         <Section title="分支" right={<button className="btn ghost sm" onClick={openBranches}>{brOpen ? '收起' : '切换分支'}</button>}>
           <Row title={<span className="mono" data-no-i18n="">{w.branch || '…'}</span>} sub={`当前分支 · ${users.length ? '员工都在这个分支上干活' : ''}`} />
@@ -1216,30 +1236,85 @@ export function LiveWorkspacePage({ params, nav }: PageProps) {
             </div>
           )}
         </Section>
-        {w.docs.length > 0 && (
-          <Section title="文档（docs/）" right={users[0] ? <button className="btn ghost sm" onClick={() => nav.push({ page: 'memory', params: { id: users[0].id } })}>打开</button> : undefined}>
-            {w.docs.slice(0, 8).map((d) => <Row key={d.name} title={<span className="mono" data-no-i18n="">{d.name}</span>} chevron={!!users[0]} onClick={users[0] ? () => nav.push({ page: 'memory', params: { id: users[0].id, file: `docs/${d.name}` } }) : undefined} />)}
-          </Section>
-        )}
         <Section title={`最近提交 · ${w.commits.length}`} right={w.commits.length > 3 ? <button className="btn ghost sm" onClick={() => setAllCommits(!allCommits)}>{allCommits ? '收起' : '全部'}</button> : undefined}>
           {(allCommits ? w.commits : w.commits.slice(0, 3)).map((c) => <Row key={c.sha} title={c.msg} sub={<><span className="mono">{c.sha}</span> · {c.who} · {c.when}</>} />)}
         </Section>
-        <WorkspaceAutoSections w={w} nav={nav} />
-        <Section title="预算">
-          <Row title="这个项目每月预算（美元）" sub="用满了在这个项目里干活的员工先停下；到 80% 提醒一次" />
-          <div className="pad chips">{[0, 20, 50, 100, 300].map((n) => <button key={n} className={'chip' + ((w.budget ?? 0) === n ? ' on' : '')} onClick={() => call('PUT', `/api/workspaces/${w.id}`, { budget: n }, '已保存')}>{n ? `$${n}` : '不单独限'}</button>)}</div>
+        {/* 代码在哪：接入时定了就不变，只显示（账号要换跟员工说，或者重新接入） */}
+        <Section title="代码在哪">
+          <div className="ws-where">
+            <div><span className="ws-where-k"><FolderGit2 size={15} />仓库</span><span className="ws-where-v"><b data-no-i18n="">{short}</b><small>{w.provider}</small></span><button className="btn ghost sm" onClick={() => copy(w.repo)}>复制地址</button></div>
+            <div><span className="ws-where-k"><KeyRound size={15} />拉代码用</span><span className="ws-where-v"><b>{creds.find((c) => c.id === w.credential)?.name ?? (w.credential ? '（这个凭证不在了）' : '不用账号（公开仓库）')}</b></span></div>
+            <div><span className="ws-where-k"><HardDrive size={15} />放在</span><span className="ws-where-v"><b>{hostName}</b><small className="mono" data-no-i18n="">{w.dir}</small></span><button className="btn ghost sm" onClick={() => copy(w.dir)}>复制目录</button></div>
+          </div>
         </Section>
-        <Section title="位置">
-          <Row title="目录" sub={<span className="mono small" data-no-i18n="">{w.dir}</span>} right={<button className="btn ghost sm" onClick={() => copy(w.dir)}>复制</button>} />
-          <Row title="仓库账号" right={
-            <select value={w.credential ?? ''} onChange={(e) => call('PUT', `/api/workspaces/${w.id}`, { credential: e.target.value }, '已改')}>
-              <option value="">不用（公开仓库）</option>{creds.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>} />
-        </Section>
-        <div className="pad row-actions"><button className="btn ghost danger" onClick={remove}>去掉这个项目</button></div>
+        <div className="danger-zone">
+          <div className="danger-zone-text"><b>删除项目</b><span>从 Opero 里去掉这个项目；服务器上的代码目录留着，员工可以一起删</span></div>
+          <button className="btn danger" onClick={() => setDel(true)}><Trash2 size={15} /> 删除项目</button>
+        </div>
       </div>
+      {del && <DeleteProject w={w} users={users} onClose={() => setDel(false)} onDone={() => { setDel(false); nav.back() }} />}
       {workOf && users.find((x) => x.id === workOf) && <WorkSheet emp={users.find((x) => x.id === workOf)!} onClose={() => setWorkOf('')} />}
     </div>
+  )
+}
+
+/** 删除员工：不可撤销，输入它的名字才能点 */
+function DeleteEmployee({ e, onClose, onDone }: { e: Employee; onClose: () => void; onDone: () => void }) {
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ok = typed.trim() === e.name
+  const go = async () => {
+    if (!ok) return
+    setBusy(true)
+    const r = await call('DELETE', `/api/employees/${e.id}`, undefined, `已删除「${e.name}」`)
+    setBusy(false)
+    if (r) onDone()
+  }
+  return (
+    <Sheet title={`删除员工「${e.name}」`} onClose={onClose}>
+      <div className="pad form del-proj">
+        <div className="del-proj-warn"><Trash2 size={18} /><span>删了就找不回来：它的聊天记录、触发器、能用的凭证设置一起去掉。<b>项目里的代码、交接文档不受影响。</b></span></div>
+        <Field label={`输入员工名字「${e.name}」确认`}><input value={typed} onChange={(ev) => setTyped(ev.target.value)} placeholder={e.name} autoComplete="off" spellCheck={false} /></Field>
+        <div className="row-actions">
+          <button className="btn default" onClick={onClose}>不删了</button>
+          <button className="btn danger" disabled={!ok || busy} onClick={go}>{busy ? '在删…' : '删除员工'}</button>
+        </div>
+      </div>
+    </Sheet>
+  )
+}
+
+/** 删除项目：不可撤销，二次确认——说清楚删了会怎样、员工留不留，输入项目名才能点 */
+function DeleteProject({ w, users, onClose, onDone }: { w: Workspace; users: Employee[]; onClose: () => void; onDone: () => void }) {
+  const [withEmps, setWithEmps] = useState(false)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const ok = typed.trim() === w.name
+  const go = async () => {
+    if (!ok) return
+    setBusy(true)
+    const r = await call('DELETE', `/api/workspaces/${w.id}${withEmps ? '?withEmployees=1' : ''}`, undefined, `已删除「${w.name}」`)
+    setBusy(false)
+    if (r) onDone()
+  }
+  return (
+    <Sheet title={`删除项目「${w.name}」`} onClose={onClose}>
+      <div className="pad form del-proj">
+        <div className="del-proj-warn"><Trash2 size={18} /><span>删了就找不回来。会去掉：这个项目在 Opero 里的设置、发布环境和发布记录、安装包。<b>服务器上的代码目录和远端仓库都不动。</b></span></div>
+        {users.length > 0 && (
+          <div className="del-proj-emps">
+            <span className="field-label">{`它的 ${users.length} 个员工（${users.map((e) => e.name).join('、')}）`}</span>
+            <label className={'del-opt' + (!withEmps ? ' on' : '')}><input type="radio" checked={!withEmps} onChange={() => setWithEmps(false)} /><span><b>留着</b><small>变成没有项目的普通员工，聊天记录都在</small></span></label>
+            <label className={'del-opt' + (withEmps ? ' on' : '')}><input type="radio" checked={withEmps} onChange={() => setWithEmps(true)} /><span><b>一起删</b><small>员工和它们的聊天记录也删掉</small></span></label>
+          </div>
+        )}
+        <Field label={`输入项目名「${w.name}」确认`}><input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={w.name} autoComplete="off" spellCheck={false} /></Field>
+        <div className="row-actions">
+          <button className="btn default" onClick={onClose}>不删了</button>
+          <button className="btn danger" disabled={!ok || busy} onClick={go}>{busy ? '在删…' : withEmps ? '删除项目和员工' : '删除项目'}</button>
+        </div>
+      </div>
+    </Sheet>
   )
 }
 
@@ -1252,6 +1327,8 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
   const servers = useStore((s) => s.servers)
   const sess = useStore((s) => s.sessions.find((x) => x.employee === params.id))
   const [work, setWork] = useState(false)
+  const [fullPrompt, setFullPrompt] = useState(false)
+  const [del, setDel] = useState(false)
   // 在哪干活：工作目录、记忆放哪（后台算的）
   const [where, setWhere] = useState<{ host: string; cwd: string; project?: string; mem: string } | null>(null)
   useEffect(() => { if (params.id) call<{ host: string; cwd: string; project?: string; mem: string }>('GET', `/api/employees/${params.id}/where`).then((r) => r && setWhere(r)) }, [params.id, e?.host, e?.workspace])
@@ -1260,15 +1337,11 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
   const mine = triggers.filter((t) => t.employee === e.id)
   const sv = servers.find((x) => x.id === e.host)
   const hostName = !sv ? 'Opero 这台' : sv.id === 'local' ? srvName(sv) : `${sv.name}${sv.online ? '' : '（离线）'}`
-  const remove = async () => {
-    if (!confirm(`删掉「${e.name}」？它的聊天记录也会删掉（项目里的代码不受影响）`)) return
-    if (await call('DELETE', `/api/employees/${e.id}`, undefined, '已删除')) nav.back()
-  }
   return (
     <div className="page">
       <PageHeader title={e.name} sub="员工资料" {...headNav(nav)} right={<button className="btn default sm" onClick={() => nav.push({ page: 'employeeEdit', params: { id: e.id } })}>更多设置</button>} />
       <div className="page-body">
-        <div className="hero">
+        <div className="hero emp-hero">
           <EditableAvatar id={e.id} size={64} />
           <div className="hero-main">
             <b><InlineText value={e.name} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { name: v }, '已改名')} /><InlineText className="role-tag" value={e.role ?? ''} placeholder="加职位" max={20} onSave={(v) => call('PUT', `/api/employees/${e.id}`, { role: v }, '已改职位')} /></b>
@@ -1286,15 +1359,14 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
             <Stat label="本月花费" value={`${CUR}${u.cost.toFixed(2)}`} sub={u.tokens + ' token'} />
           </div>
         )}
-        <Section title="work" right={<span className="sub">选了就记住</span>}>
-          <Row title="执行器" right={e.executor} chevron onClick={() => setWork(true)} />
-          <Row title="模型" right={e.model} chevron onClick={() => setWork(true)} />
-          <Row title="思考方式" right={effortLabel(e.effort)} chevron onClick={() => setWork(true)} />
-          <Row title="审核方式" right={approvalLabel(e.approval)} chevron onClick={() => setWork(true)} />
-          <Row title="上下文" right={`${e.contextUsed ?? 0}%`} />
+        {/* work：执行器、模型、思考、审核合成一行（点了就地改），右边上下文用了多少 */}
+        <Section title="work">
+          <Row title={`${e.executor} · ${e.model}`} sub={`思考${effortLabel(e.effort)} · 审核${approvalLabel(e.approval)}`} chevron onClick={() => setWork(true)}
+            right={<span className={'emp-ctx' + ((e.contextUsed ?? 0) >= 80 ? ' hot' : '')} title="上下文用了多少（满了它会自己压缩）"><i><b style={{ width: `${Math.min(100, e.contextUsed ?? 0)}%` }} /></i>{`${e.contextUsed ?? 0}%`}</span>} />
         </Section>
+        {/* 在哪干活：只留服务器、项目；工作目录、记忆（docs/）是员工自己的事，不摆（docs/规范/界面.md 原则 11） */}
         <Section title="在哪干活">
-          <Row title="服务器" sub="它在哪台机器上干活：Opero 这台，或装了 Agent 的服务器（那台要先装好 AI 执行器）" right={
+          <Row title="服务器" sub="它在哪台机器上干活" right={
             <select className="row-select" value={sv ? sv.id : 'local'} aria-label={hostName} onChange={(ev) => {
               const to = servers.find((x) => x.id === ev.target.value)
               if (!to || to.id === (sv?.id ?? 'local')) return
@@ -1308,10 +1380,8 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
             </select>
           } />
           <Row title="项目" right={ws ? ws.name : '没有（在它自己的目录里干活）'} chevron={!!ws} onClick={ws ? () => nav.push({ page: 'workspace', params: { id: ws.id } }) : undefined} />
-          {where && <Row title="工作目录" sub={<span className="mono small" data-no-i18n="">{where.cwd}</span>} right={<button className="btn ghost sm" onClick={() => copy(where.cwd)}>复制</button>} />}
-          {where && <Row title="记忆" sub={where.project ? '项目的 docs/（交接、规矩都在这里，同项目的员工共用）' : <span className="mono small" data-no-i18n="">{where.mem}</span>} chevron onClick={() => nav.push({ page: 'memory', params: { id: e.id } })} />}
         </Section>
-        {e.prompt && <Section title="职责"><p className="prose">{e.prompt}</p></Section>}
+        {e.prompt && <Section title="职责" right={e.prompt.length > 120 ? <button className="btn ghost sm" onClick={() => setFullPrompt(!fullPrompt)}>{fullPrompt ? '收起' : '展开'}</button> : undefined}><p className={'prose emp-prompt' + (fullPrompt ? '' : ' clamp')}>{e.prompt}</p></Section>}
         {(e.gender || e.persona) && <Section title="人设"><Row title="性别" right={e.gender || '—'} /><Row title="性格 / 说话风格" right={e.persona || '—'} /></Section>}
         <EmployeeWorkSections e={e} nav={nav} />
         <EmployeeCredsSection e={e} nav={nav} />
@@ -1321,10 +1391,14 @@ export function LiveEmployeePage({ params, nav }: PageProps) {
         </Section>
         <Section>
           <Row title="聊天设置" sub="头像、名字、背景、提醒" chevron onClick={() => nav.push({ page: 'chatSettings', params: { id: e.id } })} />
-          <Row title="删掉这个员工" danger onClick={remove} />
         </Section>
+        <div className="danger-zone">
+          <div className="danger-zone-text"><b>删除员工</b><span>它的聊天记录一起删掉；项目里的代码、交接文档不受影响</span></div>
+          <button className="btn danger" onClick={() => setDel(true)}><Trash2 size={15} /> 删除员工</button>
+        </div>
       </div>
       {work && <WorkSheet emp={e} onClose={() => setWork(false)} />}
+      {del && <DeleteEmployee e={e} onClose={() => setDel(false)} onDone={() => { setDel(false); nav.back() }} />}
     </div>
   )
 }

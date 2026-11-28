@@ -10,7 +10,8 @@ import type { Employee, Workspace } from './types.ts'
 
 const on = (w: Workspace) => ({ host: w.server, cwd: w.dir })
 const withCred = (w: Workspace) => ({ ...on(w), cred: w.credential, timeoutMs: 180_000 })
-export const autoOn = (w?: Workspace) => !!w && w.autoSync !== false
+// 项目一定自动同步（2026-11-28 主人定的标准：多端一起用才不出问题），不再有开关；老数据里的 autoSync: false 也不管
+export const autoOn = (w?: Workspace) => !!w
 
 /** 派活前同步；返回要告诉员工的话（没事返回空）。员工设了自己的分支就先切过去（没有就从主分支拉一个），没设就切回主分支 */
 export async function preSync(w: Workspace, emp?: Employee): Promise<string> {

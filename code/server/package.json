@@ -1,7 +1,7 @@
 {
   "name": "opero-server",
   "private": true,
-  "version": "0.32.0",
+  "version": "0.40.1",
   "description": "Opero backend: auth, chat, Claude Code / Codex employees, MCP agent proxy, vault, servers, databases, triggers",
   "type": "module",
   "engines": {

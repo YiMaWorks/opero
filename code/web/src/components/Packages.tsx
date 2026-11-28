@@ -6,6 +6,7 @@ import qrcode from 'qrcode-generator'
 import { Apple, Copy, Download, Laptop, Link2, Monitor, Smartphone, Terminal, Trash2, Upload } from 'lucide-react'
 import type { AppPackage, PkgChannel, PkgPlatform, Workspace } from '../types'
 import { toast, useStore } from '../store'
+import { nativeDownload } from '../native'
 import { call } from '../live'
 import { Section, Segmented, Sheet, Tag } from './ui'
 
@@ -39,17 +40,20 @@ function uploadFile(w: Workspace, f: File, platform: PkgPlatform, channel: PkgCh
 }
 
 /** 项目页 / 发布页里的「安装包」一节 */
-export function PackagesSection({ w }: { w: Workspace }) {
+/** platform 给了：只管这一个端（项目页按端分的选项卡里用，安装包属于那个端），两格（测试 / 正式）空着也摆出来 */
+export function PackagesSection({ w, platform }: { w: Workspace; platform?: PkgPlatform }) {
   const all = useStore((s) => s.packages)
-  const list = all.filter((x) => x.ws === w.id)
+  const list = all.filter((x) => x.ws === w.id && (!platform || x.platform === platform))
   const [channel, setChannel] = useState<PkgChannel>('test')
   const [busy, setBusy] = useState<{ name: string; pct: number } | null>(null)
   const [drag, setDrag] = useState(false)
   const [shareOf, setShareOf] = useState<string | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const want = useRef<{ platform?: PkgPlatform; channel: PkgChannel }>({ channel: 'test' })
+  const only = platform
   const send = async (f: File, platform?: PkgPlatform, ch: PkgChannel = channel) => {
     const p = platform ?? platOf(f.name)
+    if (only && p && p !== only) { toast(`「${f.name}」是${PLATS.find((x) => x.p === p)?.label}的包，这里是${PLATS.find((x) => x.p === only)?.label}：到「${PLATS.find((x) => x.p === p)?.label}」那个选项卡里放`); return }
     if (!p) { toast(`认不出「${f.name}」是哪个端的包：要 .apk / .aab / .ipa / .dmg / .pkg / .msix / .exe / .msi / .AppImage / .deb / .rpm`); return }
     const old = list.find((x) => x.platform === p && x.channel === ch)
     if (old && !confirm(`「${PLATS.find((x) => x.p === p)!.label} · ${CHANNEL_LABEL[ch]}」现在是 ${old.file}${old.version ? `（${old.version}）` : ''}，换成 ${f.name}？\n\n每格只留最新一个，旧的会删掉。`)) return
@@ -59,16 +63,16 @@ export function PackagesSection({ w }: { w: Workspace }) {
   }
   const pick = (platform?: PkgPlatform, ch: PkgChannel = channel) => { want.current = { platform, channel: ch }; input.current?.click() }
   const remove = async (x: AppPackage) => { if (confirm(`删掉 ${x.file}？`)) await call('DELETE', `/api/packages/${encodeURIComponent(x.id)}`, undefined, '已删') }
-  const rows = PLATS.filter((pl) => list.some((x) => x.platform === pl.p))
+  const rows = PLATS.filter((pl) => (only ? pl.p === only : list.some((x) => x.platform === pl.p)))
   const shared = list.find((x) => x.id === shareOf)
   return (
-    <Section title={`安装包 · ${list.length}`} right={<button className="btn ghost sm" disabled={!!busy} onClick={() => pick()}><Upload size={14} /> 上传</button>}>
+    <Section title={only ? '安装包' : `安装包 · ${list.length}`} right={<button className="btn ghost sm" disabled={!!busy} onClick={() => pick(only)}><Upload size={14} /> 上传</button>}>
       <input ref={input} type="file" hidden accept=".apk,.aab,.ipa,.dmg,.pkg,.msix,.msixbundle,.appx,.msi,.exe,.AppImage,.appimage,.deb,.rpm"
         onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void send(f, want.current.platform, want.current.channel) }} />
       <div className={'pkg' + (drag ? ' drag' : '')}
         onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDrag(true) } }}
         onDragLeave={() => setDrag(false)}
-        onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files?.[0]; if (f) void send(f) }}>
+        onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files?.[0]; if (f) void send(f, only) }}>
         {rows.map((pl) => (
           <div key={pl.p} className="pkg-row">
             <span className="pkg-plat"><pl.icon size={18} color={pl.color} /><b>{pl.label}</b></span>
@@ -81,7 +85,7 @@ export function PackagesSection({ w }: { w: Workspace }) {
                   <span className="pkg-meta">{`${size(x.size)} · ${when(x.at)} · ${x.by}`}</span>
                   {x.note && <span className="pkg-note" data-no-i18n="">{x.note}</span>}
                   <span className="pkg-acts">
-                    <a className="btn default sm" href={fileUrl(x)} download><Download size={14} /> 下载</a>
+                    <a className="btn default sm" href={fileUrl(x)} download onClick={(e) => { if (nativeDownload(new URL(fileUrl(x), document.baseURI).toString(), x.file)) { e.preventDefault(); toast('正在存到手机') } }}><Download size={14} /> 下载</a>
                     <button className="btn ghost sm" onClick={() => setShareOf(x.id)}><Link2 size={14} /> 分享</button>
                     <button className="btn ghost sm" title="换一个包" onClick={() => pick(pl.p, ch)}><Upload size={14} /></button>
                     <button className="btn ghost sm" title="删掉" onClick={() => remove(x)}><Trash2 size={14} /></button>
@@ -93,7 +97,7 @@ export function PackagesSection({ w }: { w: Workspace }) {
             })}
           </div>
         ))}
-        <div className="pkg-drop" onClick={() => pick()}>
+        <div className="pkg-drop" onClick={() => pick(only)}>
           {busy ? (
             <span className="pkg-up"><i className="spinner" /><span>{`正在传 ${busy.name} · ${busy.pct}%`}</span><i className="pkg-bar"><b style={{ width: `${busy.pct}%` }} /></i></span>
           ) : (

@@ -337,7 +337,7 @@ object Live {
         scope.launch { tryCall { Api.owner("PUT", "/api/sessions/$sid", JSONObject().put("draft", "")) } }
     }
 
-    fun setPhrases(list: List<String>) {
+    fun savePhrases(list: List<String>) {
         phrases = list
         scope.launch { tryCall { Api.owner("PUT", "/api/settings", JSONObject().put("phrases", JSONArray(list))) } }
     }

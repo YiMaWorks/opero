@@ -90,6 +90,13 @@ object Api {
 
     /** 拿文件 / 图片的字节：自己那套 Opero 的地址带会话令牌，别的地址不带 */
     suspend fun bytes(url: String): ByteArray {
+        if (url.startsWith("data:")) {
+            val comma = url.indexOf(',')
+            if (comma < 0) throw ApiError(0, null, t("出错了（{0}）", "data"))
+            val head = url.substring(0, comma)
+            val body = url.substring(comma + 1)
+            return if (head.endsWith(";base64")) android.util.Base64.decode(body, android.util.Base64.DEFAULT) else Uri.decode(body).toByteArray()
+        }
         val full = abs(url)
         val base = store.server ?: ""
         if (base.isNotEmpty() && full.startsWith("$base/")) return send("GET", full.removePrefix(base), null, emptyMap(), fileClient, null, Auth.OWNER)

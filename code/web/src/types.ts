@@ -287,6 +287,10 @@ export interface Server {
   /** Agent 的指纹（SHA256:…），Opero 按它认机器 */
   agentFp?: string
   agentVersion?: string
+  /** Agent 自动升级：默认开（false = 关） */
+  autoUpgrade?: boolean
+  /** 最近一次自动升级 */
+  agentUpgrade?: { target: string; at: number; status: 'running' | 'ok' | 'failed' | 'waiting'; msg?: string }
   joinedAt?: number // 最近一次接入的时间（不是心跳）
   lastSeen?: number
   executors?: { claude?: string | null; codex?: string | null; qwen?: string | null; codebuddy?: string | null }

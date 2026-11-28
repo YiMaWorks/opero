@@ -203,7 +203,7 @@ fun Composer(
             PhraseChips(session.id, phrases, editPh, gap = 6.dp)
             if (editPh) Chip(t("+ 存输入框里的"), strong = true) {
                 val v = text.trim()
-                if (v.isNotEmpty() && v !in phrases) { Live.setPhrases((phrases + v).takeLast(30)); Live.toast(t("已存成常用语")) }
+                if (v.isNotEmpty() && v !in phrases) { Live.savePhrases((phrases + v).takeLast(30)); Live.toast(t("已存成常用语")) }
             }
             Chip(if (editPh) t("完成") else if (phrases.isEmpty()) t("+ 常用语") else t("编辑")) { editPh = !editPh }
         }

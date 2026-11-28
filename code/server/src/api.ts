@@ -19,6 +19,8 @@ import * as notify from './notify.ts'
 import * as releases from './releases.ts'
 import * as packages from './packages.ts'
 import * as egress from './egress.ts'
+import * as quota from './quota.ts'
+import * as permissions from './permissions.ts'
 import * as tunnel from './tunnel.ts'
 import * as autogit from './autogit.ts'
 import { cloneFailed } from './cloneNotice.ts'
@@ -39,7 +41,7 @@ import * as hosts from './hosts.ts'
 import * as queue from './queue.ts'
 import * as keys from './keys.ts'
 import { delSecret, getSecret, hasSecret, setSecret } from './vault.ts'
-import type { Credential, DataSource, Deploy, Device, Employee, Issue, KbDoc, Message, Release, SavedQuery, LogSource, Server, ServerDir, Session, Trigger, Workspace } from './types.ts'
+import type { Card, Credential, DataSource, Deploy, Device, Employee, Issue, KbDoc, Message, Release, SavedQuery, LogSource, Server, ServerDir, Session, Trigger, Workspace } from './types.ts'
 import * as memory from './memory.ts'
 import * as issues from './issues.ts'
 import { cleanPolicy } from './policy.ts'
@@ -327,9 +329,34 @@ function accountList(kind: runner.ExecKind) {
       limitedUntil: (lim[id] ?? 0) > Date.now() ? lim[id] : 0,
       employees: kind === 'claude' || kind === 'codex' ? all<Employee>('employees').filter((e) => (kind === 'claude' ? e.claudeAccount : e.codexAccount) === id).map((e) => e.name) : [],
       plan: String(cr?.meta?.plan ?? ''),
-      sub: kind === 'claude' ? runner.isOat(runner.claudeKey(id), id) : kind === 'codex' ? runner.codexMode(id) === 'chatgpt' : false }
+      sub: kind === 'claude' ? runner.isOat(runner.claudeKey(id), id) : kind === 'codex' ? runner.codexMode(id) === 'chatgpt' : false,
+      // 订阅账号的 5 小时 / 本周用量（quota.ts）
+      quota: kind === 'claude' || kind === 'codex' ? quota.view(id) : undefined }
   })
 }
+
+// ---------- 订阅账号还剩多少（左边的用量框、「我」页面）----------
+/** Claude、Codex 的账号：订阅的带 5 小时 / 本周用量，API Key 的标「按量计费」 */
+route('GET', '/api/ai/quota', () => ({ accounts: [...accountList('claude'), ...accountList('codex')].map(({ id, kind, name, user, isDefault, limitedUntil, sub, quota: q, plan }) => ({ id, kind, name, user, isDefault, limitedUntil, sub, quota: q, plan })) }))
+/** 刷新：Codex 订阅账号马上问（一分钟内问过的不重复问）；Claude 订阅账号 claude=1 时各发一条最小的（3 分钟内发过的不重发），用它报回来的用量。
+ *  打开页面时网页只问 Codex（不花钱）；点「刷新」才带 claude=1（会用一点点额度）——主人 2026-11-28 定的 */
+route('POST', '/api/ai/quota/refresh', async (c) => {
+  const jobs: Promise<unknown>[] = []
+  for (const id of runner.codexAccounts()) {
+    const q = quota.quotaOf(id)
+    if (q?.src === 'poll' && Date.now() - (q.at || 0) < 60_000 && !q.err) continue
+    jobs.push(runner.pollCodexQuota(id).catch(() => {}))
+  }
+  // Claude：先问官方用量接口（不花额度，打开页面也问，一分钟内问过的跳过）；点了「刷新」（claude = true）接口不认时才发测试请求
+  for (const id of runner.claudeAccounts()) {
+    const q = quota.quotaOf(id)
+    // 官方接口有限流：打开页面时 5 分钟内问过的不问；点刷新时 1 分钟内问过的不问；被限流的等到点（readClaude 里管）
+    if (q?.src === 'poll' && !q.err && Date.now() - (q.at || 0) < (c.body?.claude === true ? 60_000 : 5 * 60_000)) continue
+    jobs.push(runner.probeClaudeQuota(id, c.body?.claude === true).catch(() => {}))
+  }
+  await Promise.all(jobs)
+  return { accounts: [...accountList('claude'), ...accountList('codex')].map(({ id, kind, name, user, isDefault, limitedUntil, sub, quota: q, plan }) => ({ id, kind, name, user, isDefault, limitedUntil, sub, quota: q, plan })) }
+})
 /** 这个账号是哪种执行器的 */
 const kindOfAccount = (id: string): runner.ExecKind | undefined => EXEC_KINDS.find((k) => runner.accountsOf(k).includes(id))
 /** 存一种执行器的账号列表和默认账号 */
@@ -920,8 +947,12 @@ route('POST', '/api/messages/:id/action', async (c) => {
       try { releases.start(w, d.id, { by: '主人', note: String(card.data.title ?? '') || undefined }) } catch (e) { throw bad((e as Error).message) }
       result = `已开始发布到${d.name}，进度在「发布」里看`
     }
-  } else if (card.data.pending) {
-    result = '这个请求已经失效（员工那一轮结束了或 Opero 重启过），让员工再发一次'
+  } else if (card.data.perm) {
+    // 员工申请权限（request_permission）：点了就给 / 不给，告诉员工
+    result = permissions.decide(card, act.id === 'allow', verified)
+  } else if (card.data.late || card.data.pending) {
+    // 员工当时没等到（超时 / 那一轮结束 / 重启）：现在点了照样算，告诉员工；同意的那件事半小时内再做不用再问
+    result = lateAnswer(card, s, act.id, answer, verified)
   } else {
     result = `你点了「${act.label}」`
     if (s) runner.send(s.employee, `我在卡片「${String(card.data.title ?? '')}」上点了「${act.label}」${answer ? `：${answer}` : ''}`)
@@ -930,6 +961,22 @@ route('POST', '/api/messages/:id/action', async (c) => {
   if (s) syncWaiting(s.id)
   return { ok: true, result }
 })
+
+/** 晚点的卡片（员工没等到）：选择题把答案发给员工；确认卡同意的记成「预先同意」（同一个员工同一件事 30 分钟内直接放行） */
+function lateAnswer(card: Card, s: Session | undefined, action: string, answer: string | undefined, verified: boolean): string {
+  const title = String(card.data.title ?? '')
+  const emp = s?.employee
+  if (card.type === 'ask') {
+    if (emp && answer) runner.send(emp, `（你之前问的「${title}」，那时没等到；主人现在选了：${answer}）按这个接着做。`)
+    return `你选了：${answer ?? ''}（已告诉员工）`
+  }
+  const yes = action === 'allow'
+  if (yes && emp && card.data.preKey) runner.preApprove(String(card.data.preKey), verified)
+  if (emp) runner.send(emp, yes
+    ? `主人同意了「${title}」（你之前申请的，那时没等到回复）。现在可以去做了：再执行一次就直接放行，不用再问（30 分钟内有效）。`
+    : `主人没同意「${title}」（你之前申请的）。换个办法，或者跟主人说清楚为什么需要。`)
+  return yes ? '你同意了（员工那时没等到，已告诉它：30 分钟内再做就直接放行）' : '你没同意，员工已经知道了'
+}
 
 // ---------- 服务器 ----------
 function inlineCred(name: string, group: string, kind: string, env: any, user: string, secret: string, scope: string): string {
@@ -965,6 +1012,7 @@ route('PUT', '/api/servers/:id', (c) => {
   const changes = [name && name !== old.name && `名字 → ${name}`, env && env !== old.env && `环境 ${old.env} → ${env}`, protect !== undefined && protect !== isProtected(old) && (protect ? '改东西先确认' : '改东西不用确认')].filter(Boolean)
   if (changes.length) audit({ via: '—', action: 'server.update', target: `${old.name} · ${changes.join(' · ')}`, level: '写', result: '成功', how: '本人' })
   if (b.policy !== undefined) audit({ via: '—', action: 'server.policy', target: old.name, level: '写', result: '成功', how: '本人' })
+  if (typeof b.autoUpgrade === 'boolean' && b.autoUpgrade !== (old.autoUpgrade !== false)) audit({ via: '—', action: 'server.update', target: `${old.name} · Agent 自动升级${b.autoUpgrade ? '打开' : '关掉'}`, level: '写', result: '成功', how: '本人' })
   if (b.dirs !== undefined) {
     const dirs = cleanDirs(b.dirs)
     applyDirs(old, dirs, (sv) => put1('servers', sv)).catch(() => {})
@@ -975,7 +1023,7 @@ route('PUT', '/api/servers/:id', (c) => {
     old.logSrc = cleanLogs(b.logSrc)
     audit({ via: '—', action: 'server.logs', target: `${old.name}：${old.logSrc.map((l) => l.path).join('、') || '清空'}`, level: '写', result: '成功', how: '本人' })
   }
-  const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.policy !== undefined ? { policy: cleanPolicy(b.policy, old.policy) } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}) }
+  const next: Server = { ...old, ...(name ? { name } : {}), ...(env ? { env } : {}), ...(protect !== undefined ? { protect } : {}), ...(b.policy !== undefined ? { policy: cleanPolicy(b.policy, old.policy) } : {}), ...(b.ip && old.id !== LOCAL_ID ? { ip: String(b.ip), hostKey: undefined } : {}), ...(b.port ? { port: Number(b.port) } : {}), ...(b.user ? { user: String(b.user) } : {}), ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(typeof b.autoUpgrade === 'boolean' ? { autoUpgrade: b.autoUpgrade } : {}) }
   return pub('servers', put1('servers', next))
 })
 
@@ -1366,7 +1414,7 @@ route('PUT', '/api/workspaces/:id', (c) => {
   if (!name) throw bad('项目要有名字')
   if (name !== w.name && all<Workspace>('workspaces').some((x) => x.id !== w.id && x.name === name)) throw bad('已经有同名的项目')
   return put1('workspaces', { ...w, name, ...(b.credential !== undefined ? { credential: b.credential || undefined } : {}), ...(b.preview !== undefined ? { preview: String(b.preview) } : {}),
-    ...(typeof b.autoSync === 'boolean' ? { autoSync: b.autoSync } : {}), ...(b.budget !== undefined ? { budget: Math.max(0, Number(b.budget) || 0) || undefined } : {}),
+
     builds: builds.length ? builds : undefined, deploys })
 })
 /** 编译组件列表：每个要有名字（不重名）；已有的按编号保留流水线记录，新的分配编号 */
@@ -1544,7 +1592,10 @@ route('DELETE', '/api/workspaces/:id', (c) => {
   for (const e of all<Employee>('employees').filter((x) => x.workspace === c.params.id)) {
     if (c.url.searchParams.get('withEmployees') === '1') { runner.stop(e.id); deleteEmployee(e) } else put1('employees', { ...e, workspace: '' })
   }
-  if (w) audit({ via: '—', action: 'workspace.delete', target: w.name, level: '写', result: '成功', how: '本人' })
+  // 发布记录、安装包一起删（项目页删除框里写了会去掉这些；留着也看不到、占地方）
+  for (const r of all<Release>('releases').filter((x) => x.ws === c.params.id)) del1('releases', r.id)
+  for (const x of all<packages.AppPackage>('packages').filter((y) => y.ws === c.params.id)) { try { packages.remove(x.id, '主人（删项目）') } catch { /* 已经没了 */ } }
+  if (w) audit({ via: '—', action: 'workspace.delete', target: w.name, level: '危险', result: '成功', how: '本人（输入项目名确认）' })
   return { ok: true }
 })
 // 切分支：所有员工一起换（有员工在干活就等它做完）
@@ -1953,7 +2004,8 @@ export function expireStaleCards() {
   const rows = db.prepare(`SELECT id, data FROM messages WHERE data LIKE '%"pending":true%' AND data LIKE '%"state":"open"%'`).all() as { id: string; data: string }[]
   for (const r of rows) {
     const m = JSON.parse(r.data) as Message
-    if (m.card) db.prepare('UPDATE messages SET data = ? WHERE id = ?').run(JSON.stringify({ ...m, card: { ...m.card, state: 'done', result: '已失效（Opero 重启过），让员工再发一次' } }), r.id)
+    // Opero 重启过：员工那边的等待没了，卡片照旧留着（标 late），主人点了再告诉员工
+    if (m.card) db.prepare('UPDATE messages SET data = ? WHERE id = ?').run(JSON.stringify({ ...m, card: { ...m.card, data: { ...m.card.data, pending: false, late: true } } }), r.id)
   }
   for (const s of all<Session>('sessions')) if (s.working || s.waiting) { const { working: _w, waiting: _x, ...rest } = s; put('sessions', rest) }
   // 还没处理、也不会失效的（要凭证、线上问题）：红点照旧挂着
@@ -1983,6 +2035,17 @@ export function migrateMenus() {
 }
 /** 以前员工的名字兼职位（「opero开源-android」「运维」）：一次性把名字挪到职位标签，名字换成随机的人名（按性别、不重名）；
  *  没传图的字头像跟着换成新名字的第一个字。只做一次（kv rolesMigrated）。员工互相找人时职位也认，旧名字照样能用 */
+/** 清掉 0.31.1 以前算错的花费（主人 2026-11-28 定的）：以前把执行器的累计花费又加了一遍，记的数偏大很多。
+ *  只跑一次：每轮的花费、会话的累计花费、预算提醒记录清零；轮数、成功率、token 是对的，不动。之后按新算法从头记 */
+export function migrateCostReset() {
+  if (kvGet<number>('costReset', 0)) return
+  const n = (db.prepare('SELECT COUNT(*) AS n FROM runs WHERE cost > 0').get() as { n: number }).n
+  db.prepare('UPDATE runs SET cost = 0').run()
+  for (const s of all<Session>('sessions')) if (s.cost) { const { cost: _c, ...rest } = s; put('sessions', rest as Session) }
+  kvSet('budgetWarned', {})
+  kvSet('costReset', Date.now())
+  if (n) audit({ via: '—', action: 'usage.reset', target: `清掉 ${n} 轮按旧算法记的花费（偏大），之后按新算法记`, level: '写', result: '成功', how: '主人定的（升级时自动跑一次）' })
+}
 export function migrateRoles() {
   if (kvGet('rolesMigrated', false)) return
   const emps = all<Employee>('employees')

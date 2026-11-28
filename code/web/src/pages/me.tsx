@@ -7,6 +7,7 @@ import { Avatar } from '../components/Avatar'
 import { Wordmark } from '../components/brand'
 import { Meter, PageHeader, Row, Section, Segmented, Stat, Tag, Toggle } from '../components/ui'
 import { headNav, type PageProps } from './nav'
+import { QuotaBox } from '../components/Quota'
 import { THEMES, resolveTheme, type ThemeDef } from '../themes'
 import { ThemeCard } from '../components/ThemeCard'
 import { MeHeader } from '../components/MeHeader'
@@ -22,6 +23,7 @@ export function MePage({ params, nav }: PageProps) {
       {nav.canBack && <PageHeader title="我" {...headNav(nav)} />}
       <div className="page-body">
         <MeHeader onEdit={go('meEdit')} />
+        {LIVE && <div className="pad"><QuotaBox onConnect={() => nav.push({ page: 'executors' })} /></div>}
         <Section title="按你的习惯">
           <Row title="我的习惯" sub="所有员工都遵守的个人规矩，每次派活都带上" chevron onClick={go('habits')} />
           <Row title="外观和通知" sub="风格、语言、推送什么、这台手机" chevron onClick={go('settings')} />
@@ -48,6 +50,7 @@ export function UsagePage({ nav }: PageProps) {
     <div className="page">
       <PageHeader title="用量和成本" sub={LIVE ? '本月 · 执行器报的花费（订阅登录的不算钱）' : '本月 · 按 API Key 计费'} {...headNav(nav)} />
       <div className="page-body">
+        {LIVE && <div className="pad"><QuotaBox onConnect={() => nav.push({ page: 'executors' })} /></div>}
         <div className="stats">
           <Stat label="本月花费" value={`${CUR}${total.toFixed(LIVE ? 2 : 0)}`} sub={st.budget ? `预算 ${CUR}${st.budget}` : '不限预算'} />
           <Stat label={LIVE ? '轮数' : '任务'} value={tasks} />
